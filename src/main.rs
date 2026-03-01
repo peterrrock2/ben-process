@@ -35,7 +35,7 @@ use ben::decode::{count_samples_from_file, BenDecoder};
 use clap::{Parser, ValueEnum};
 use pbr::ProgressBar;
 use polars::prelude::*;
-use rand::Rng;
+use rand::RngExt;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{Result, Value};
@@ -75,6 +75,8 @@ struct Args {
     keys: Vec<String>,
     #[arg(long)]
     edge_weight_key: Option<String>,
+    #[arg(long, default_value_t = false)]
+    no_progress: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -108,7 +110,13 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             .expect("Could not load graph");
             let output_file = &args.ben_file.replace(".jsonl.ben", "_tallies.parquet");
 
-            tally_and_save_from_key_list(graph, &args.ben_file, &output_file, args.keys)?;
+            tally_and_save_from_key_list(
+                graph,
+                &args.ben_file,
+                &output_file,
+                args.keys,
+                !args.no_progress,
+            )?;
         }
         Mode::CutEdges => {
             let graph = make_graph_from_json(match &args.graph_file {
@@ -118,7 +126,13 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             .expect("Could not load graph");
             let output_file = &args.ben_file.replace(".jsonl.ben", "_cut_edges.parquet");
 
-            tally_and_save_cut_edges(graph, &args.ben_file, &output_file, args.edge_weight_key)?;
+            tally_and_save_cut_edges(
+                graph,
+                &args.ben_file,
+                &output_file,
+                args.edge_weight_key,
+                !args.no_progress,
+            )?;
         }
         Mode::ChangedAssignments => {
             tally_and_save_changed_assignments(
@@ -126,6 +140,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 args.normalize,
                 args.max_accepted,
                 args.mkv_rand_reassignment_off,
+                !args.no_progress,
             )?;
         }
     }
@@ -293,23 +308,21 @@ fn save_tallies_to_parquet(
         }
     }
 
-    let mut df = DataFrame::new(vec![
-        Series::new("step", sample_numbers),
-        Series::new("n_reps", n_reps_numbers),
-        Series::new("accepted_count", accepted_numbers),
-        Series::new("sum_columns", keys),
+    let mut df = DataFrame::new_infer_height(vec![
+        Series::new("step".into(), sample_numbers).into(),
+        Series::new("n_reps".into(), n_reps_numbers).into(),
+        Series::new("accepted_count".into(), accepted_numbers).into(),
+        Series::new("sum_columns".into(), keys).into(),
     ])?;
 
     // Add columns for each partition key
     for (partition_key, values) in partition_data {
-        df.with_column(Series::new(&format!("district_{}", partition_key), values))?;
+        df.with_column(Series::new(format!("district_{}", partition_key).into(), values).into())?;
     }
 
     let mut file = File::create(file_path)?;
     ParquetWriter::new(&mut file)
-        .with_compression(ParquetCompression::Brotli(Some(
-            BrotliLevel::try_new(6).unwrap(),
-        )))
+        .with_compression(ParquetCompression::Brotli(None))
         .finish(&mut df)?;
 
     Ok(())
@@ -332,10 +345,15 @@ fn tally_and_save_from_key_list(
     in_file_name: &str,
     out_file_name: &str,
     key_list: Vec<String>,
+    show_progress: bool,
 ) -> io::Result<()> {
     let n_pb_tics = 1000;
 
-    let mut pb = ProgressBar::new(n_pb_tics);
+    let mut pb = if show_progress {
+        Some(ProgressBar::new(n_pb_tics))
+    } else {
+        None
+    };
 
     // pb.set_draw_target(indicatif::ProgressDrawTarget::stderr());
     let mut pb_tics = 0; // For manual printing since my
@@ -402,8 +420,9 @@ fn tally_and_save_from_key_list(
                 panic!("Error: {:?}", e);
             }
         }
-        if accepted_count - previous_step >= pb_step_size {
-            pb.inc();
+        if show_progress && accepted_count - previous_step >= pb_step_size {
+            let pb_ref = pb.as_mut().unwrap();
+            pb_ref.inc();
 
             let elapsed = start_time.elapsed();
             let elapsed_secs = elapsed.as_secs_f64();
@@ -416,7 +435,7 @@ fn tally_and_save_from_key_list(
             let remaining_remain_secs = (remaining_secs % 60.0) as u64;
 
             // Update the progress bar message to display the formatted elapsed and remaining times
-            pb.message(&format!(
+            pb_ref.message(&format!(
                 "Elapsed: {}m {}s, ETA: {}m {}s ",
                 elapsed_mins, elapsed_remain_secs, remaining_mins, remaining_remain_secs
             ));
@@ -445,7 +464,9 @@ fn tally_and_save_from_key_list(
         }
     }
 
-    pb.finish();
+    if let Some(pb_ref) = pb.as_mut() {
+        pb_ref.finish();
+    }
 
     eprintln!("Writing final output...");
     save_tallies_to_parquet(out_file_name, &all_tallies).expect("Unable to save tallies");
@@ -502,10 +523,15 @@ fn tally_and_save_cut_edges(
     in_file_name: &str,
     out_file_name: &str,
     edge_weight_key: Option<String>,
+    show_progress: bool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let n_pb_tics = 100;
 
-    let mut pb = ProgressBar::new(n_pb_tics);
+    let mut pb = if show_progress {
+        Some(ProgressBar::new(n_pb_tics))
+    } else {
+        None
+    };
 
     let ben_file = File::open(in_file_name).expect("BEN file not found");
 
@@ -560,9 +586,8 @@ fn tally_and_save_cut_edges(
 
                     batch.clear();
                 }
-                if accepted_count - previous_step >= pb_step_size {
-                    // pb.inc(1);
-                    pb.inc();
+                if show_progress && accepted_count - previous_step >= pb_step_size {
+                    pb.as_mut().unwrap().inc();
                     previous_step = accepted_count;
                 }
             }
@@ -591,24 +616,24 @@ fn tally_and_save_cut_edges(
         }
     }
 
-    pb.finish();
+    if let Some(pb_ref) = pb.as_mut() {
+        pb_ref.finish();
+    }
 
     println!();
 
-    let mut df = DataFrame::new(vec![
-        Series::new("step", sample_nums),
-        Series::new("n_reps", n_reps_nums),
-        Series::new("accepted_count", accepted_nums),
-        Series::new("cut_edges", cut_edge_counts),
+    let mut df = DataFrame::new_infer_height(vec![
+        Series::new("step".into(), sample_nums).into(),
+        Series::new("n_reps".into(), n_reps_nums).into(),
+        Series::new("accepted_count".into(), accepted_nums).into(),
+        Series::new("cut_edges".into(), cut_edge_counts).into(),
     ])?;
 
     let mut file = File::create(out_file_name)?;
 
     eprintln!("Writing final output...");
     ParquetWriter::new(&mut file)
-        .with_compression(ParquetCompression::Brotli(Some(
-            BrotliLevel::try_new(6).unwrap(),
-        )))
+        .with_compression(ParquetCompression::Brotli(None))
         .finish(&mut df)?;
 
     eprintln!("Done!");
@@ -653,6 +678,7 @@ fn tally_and_save_changed_assignments(
     normalize: bool,
     max_accepted: Option<usize>,
     with_random_reassignments: bool,
+    show_progress: bool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut ben_file = File::open(in_ben_file).expect("BEN file not found");
     let mut rng = rand::rng();
@@ -691,7 +717,11 @@ fn tally_and_save_changed_assignments(
         pb_step_size = 1;
     }
 
-    let mut pb = ProgressBar::new(n_pb_tics);
+    let mut pb = if show_progress {
+        Some(ProgressBar::new(n_pb_tics))
+    } else {
+        None
+    };
 
     ben_file.seek(SeekFrom::Start(0))?;
 
@@ -794,8 +824,8 @@ fn tally_and_save_changed_assignments(
                 break;
             }
         }
-        if count > pb_step_size {
-            pb.inc();
+        if show_progress && count > pb_step_size {
+            pb.as_mut().unwrap().inc();
             count = count - pb_step_size;
         }
         if full_count >= line_count {
@@ -814,7 +844,9 @@ fn tally_and_save_changed_assignments(
         dif_count.iter().map(|&x| x as f64).collect::<Vec<f64>>()
     };
 
-    pb.finish();
+    if let Some(pb_ref) = pb.as_mut() {
+        pb_ref.finish();
+    }
     eprintln!("Final count: {:?}", full_count);
     eprintln!("Writing final output...");
 
