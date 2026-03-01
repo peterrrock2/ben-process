@@ -42,7 +42,7 @@ use serde_json::{Result, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 #[derive(Parser, Debug, Clone, ValueEnum, PartialEq)]
@@ -50,6 +50,8 @@ enum Mode {
     TallyKeys,
     CutEdges,
     ChangedAssignments,
+    RegionSplits,
+    RegionPieces,
 }
 
 #[derive(Parser, Debug)]
@@ -77,6 +79,8 @@ struct Args {
     edge_weight_key: Option<String>,
     #[arg(long, default_value_t = false)]
     no_progress: bool,
+    #[arg(long)]
+    output_dir: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -108,12 +112,16 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 _ => panic!("graph file required"),
             })
             .expect("Could not load graph");
-            let output_file = &args.ben_file.replace(".jsonl.ben", "_tallies.parquet");
+            let output_file = build_output_path(
+                &args.ben_file,
+                "_tallies.parquet",
+                args.output_dir.as_deref(),
+            );
 
             tally_and_save_from_key_list(
                 graph,
                 &args.ben_file,
-                &output_file,
+                output_file.as_str(),
                 args.keys,
                 !args.no_progress,
             )?;
@@ -124,12 +132,16 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 _ => panic!("graph file required"),
             })
             .expect("Could not load graph");
-            let output_file = &args.ben_file.replace(".jsonl.ben", "_cut_edges.parquet");
+            let output_file = build_output_path(
+                &args.ben_file,
+                "_cut_edges.parquet",
+                args.output_dir.as_deref(),
+            );
 
             tally_and_save_cut_edges(
                 graph,
                 &args.ben_file,
-                &output_file,
+                output_file.as_str(),
                 args.edge_weight_key,
                 !args.no_progress,
             )?;
@@ -141,10 +153,78 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 args.max_accepted,
                 args.mkv_rand_reassignment_off,
                 !args.no_progress,
+                args.output_dir.as_deref(),
+            )?;
+        }
+        Mode::RegionSplits => {
+            let graph = make_graph_from_json(match &args.graph_file {
+                Some(file) => file,
+                _ => panic!("graph file required"),
+            })
+            .expect("Could not load graph");
+            let output_file = build_output_path(
+                &args.ben_file,
+                "_region_splits.parquet",
+                args.output_dir.as_deref(),
+            );
+            if args.keys.is_empty() {
+                panic!("at least one key is required for region-splits mode");
+            }
+
+            tally_and_save_region_metric(
+                graph,
+                &args.ben_file,
+                output_file.as_str(),
+                args.keys,
+                RegionMetric::Splits,
+                !args.no_progress,
+            )?;
+        }
+        Mode::RegionPieces => {
+            let graph = make_graph_from_json(match &args.graph_file {
+                Some(file) => file,
+                _ => panic!("graph file required"),
+            })
+            .expect("Could not load graph");
+            let output_file = build_output_path(
+                &args.ben_file,
+                "_region_pieces.parquet",
+                args.output_dir.as_deref(),
+            );
+            if args.keys.is_empty() {
+                panic!("at least one key is required for region-pieces mode");
+            }
+
+            tally_and_save_region_metric(
+                graph,
+                &args.ben_file,
+                output_file.as_str(),
+                args.keys,
+                RegionMetric::Pieces,
+                !args.no_progress,
             )?;
         }
     }
     Ok(())
+}
+
+fn build_output_path(in_ben_file: &str, suffix: &str, output_dir: Option<&str>) -> String {
+    let base_name = Path::new(in_ben_file)
+        .file_name()
+        .expect("Failed to extract basename")
+        .to_string_lossy()
+        .replace(".jsonl.ben", suffix);
+
+    match output_dir {
+        Some(dir) => PathBuf::from(dir).join(base_name).to_string_lossy().into_owned(),
+        None => in_ben_file.replace(".jsonl.ben", suffix),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RegionMetric {
+    Splits,
+    Pieces,
 }
 
 /// Creates a graph from a JSON file.
@@ -506,6 +586,60 @@ fn cut_edges(graph: &Graph, assignment: &Vec<u16>, edge_weight_key: Option<&str>
     cut_edges
 }
 
+fn parse_region_id(node: &Value, key: &str) -> Option<String> {
+    let value = &node[key];
+    match value {
+        Value::Null => None,
+        Value::Number(n) => {
+            let v = n.as_f64()?;
+            if v.is_nan() {
+                None
+            } else {
+                Some(value.to_string())
+            }
+        }
+        Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("nan") {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Value::Bool(_) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn region_metric_for_key(
+    graph: &Graph,
+    assignment: &Vec<u16>,
+    key: &str,
+    metric: RegionMetric,
+) -> u32 {
+    let mut region_to_districts: HashMap<String, HashSet<u16>> = HashMap::new();
+
+    for (idx, node) in graph.nodes.iter().enumerate() {
+        if let Some(region_id) = parse_region_id(node, key) {
+            region_to_districts
+                .entry(region_id)
+                .or_insert_with(HashSet::new)
+                .insert(assignment[idx]);
+        }
+    }
+
+    match metric {
+        RegionMetric::Splits => region_to_districts
+            .values()
+            .filter(|districts| districts.len() > 1)
+            .count() as u32,
+        RegionMetric::Pieces => region_to_districts
+            .values()
+            .map(|districts| districts.len() as u32)
+            .sum(),
+    }
+}
+
 /// Tallies and saves the number of cut edges in the graph to a Parquet file.
 ///
 /// # Arguments
@@ -679,6 +813,7 @@ fn tally_and_save_changed_assignments(
     max_accepted: Option<usize>,
     with_random_reassignments: bool,
     show_progress: bool,
+    output_dir: Option<&str>,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut ben_file = File::open(in_ben_file).expect("BEN file not found");
     let mut rng = rand::rng();
@@ -703,9 +838,10 @@ fn tally_and_save_changed_assignments(
         line_count = max_accepted as usize;
     }
 
-    let out_file_name = &in_ben_file.replace(
-        ".jsonl.ben",
+    let out_file_name = build_output_path(
+        in_ben_file,
         format!("_accept_{}_changed_assignments.txt", line_count).as_str(),
+        output_dir,
     );
 
     let mut n_pb_tics = 100;
@@ -738,7 +874,7 @@ fn tally_and_save_changed_assignments(
         }
     };
 
-    let mut out = File::create(out_file_name)
+    let mut out = File::create(&out_file_name)
         .expect("Could not create output file. The file may already exist.");
 
     let (mut curr_assignment, mut dif_count) = if let Some(result) = decoder.next() {
@@ -854,6 +990,151 @@ fn tally_and_save_changed_assignments(
         .expect("Could not write to output file");
     out.write(format!("\nTotal Accepted: {:?}", line_count).as_bytes())
         .expect("Could not write to output file");
+
+    eprintln!("Done!");
+    Ok(())
+}
+
+fn tally_and_save_region_metric(
+    graph: Graph,
+    in_file_name: &str,
+    out_file_name: &str,
+    key_list: Vec<String>,
+    metric: RegionMetric,
+    show_progress: bool,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let n_pb_tics = 100;
+    let mut pb = if show_progress {
+        Some(ProgressBar::new(n_pb_tics))
+    } else {
+        None
+    };
+
+    let ben_file = File::open(in_file_name).expect("BEN file not found");
+    let decoder = BenDecoder::new(&ben_file).expect("Failed to initialize decoder");
+
+    let basename = Path::new(in_file_name)
+        .file_name()
+        .expect("Failed to extract basename")
+        .to_string_lossy();
+    eprintln!("Reading {:?}...", basename);
+
+    let line_count = count_samples_from_file(Path::new(in_file_name), "ben")
+        .expect("Failed to count samples in BEN file");
+
+    let pb_step_size = (line_count / n_pb_tics as usize) as u32;
+    let mut previous_step = 0;
+
+    let mut sample_nums = Vec::with_capacity(line_count * key_list.len());
+    let mut n_reps_nums = Vec::with_capacity(line_count * key_list.len());
+    let mut accepted_nums = Vec::with_capacity(line_count * key_list.len());
+    let mut metric_keys = Vec::with_capacity(line_count * key_list.len());
+    let mut metric_values = Vec::with_capacity(line_count * key_list.len());
+
+    let mut sample_count = 1;
+    let mut accepted_count = 1;
+
+    const BATCH_SIZE: usize = 100;
+    let mut batch = Vec::with_capacity(BATCH_SIZE);
+
+    for (_idx, record) in decoder.enumerate() {
+        match record {
+            Ok((assignment, n_reps)) => {
+                batch.push((assignment, n_reps));
+                if batch.len() == BATCH_SIZE {
+                    let results: Vec<_> = batch
+                        .par_iter()
+                        .map(|(assignment, n_reps)| {
+                            let counts = key_list
+                                .iter()
+                                .map(|key| {
+                                    (
+                                        key.clone(),
+                                        region_metric_for_key(&graph, assignment, key, metric),
+                                    )
+                                })
+                                .collect::<Vec<(String, u32)>>();
+                            (*n_reps, counts)
+                        })
+                        .collect();
+
+                    for (n_reps, counts_by_key) in results {
+                        for (key, count_val) in counts_by_key {
+                            sample_nums.push(sample_count);
+                            n_reps_nums.push(n_reps as u32);
+                            accepted_nums.push(accepted_count);
+                            metric_keys.push(key);
+                            metric_values.push(count_val);
+                        }
+                        sample_count += n_reps as u64;
+                        accepted_count += 1;
+                    }
+                    batch.clear();
+                }
+
+                if show_progress && accepted_count - previous_step >= pb_step_size {
+                    pb.as_mut().unwrap().inc();
+                    previous_step = accepted_count;
+                }
+            }
+            Err(e) => {
+                panic!("Error: {:?}", e);
+            }
+        }
+    }
+
+    if !batch.is_empty() {
+        let results: Vec<_> = batch
+            .par_iter()
+            .map(|(assignment, n_reps)| {
+                let counts = key_list
+                    .iter()
+                    .map(|key| {
+                        (
+                            key.clone(),
+                            region_metric_for_key(&graph, assignment, key, metric),
+                        )
+                    })
+                    .collect::<Vec<(String, u32)>>();
+                (*n_reps, counts)
+            })
+            .collect();
+
+        for (n_reps, counts_by_key) in results {
+            for (key, count_val) in counts_by_key {
+                sample_nums.push(sample_count);
+                n_reps_nums.push(n_reps as u32);
+                accepted_nums.push(accepted_count);
+                metric_keys.push(key);
+                metric_values.push(count_val);
+            }
+            sample_count += n_reps as u64;
+            accepted_count += 1;
+        }
+    }
+
+    if let Some(pb_ref) = pb.as_mut() {
+        pb_ref.finish();
+    }
+
+    let metric_col_name = match metric {
+        RegionMetric::Splits => "region_splits",
+        RegionMetric::Pieces => "region_pieces",
+    };
+
+    let mut df = DataFrame::new_infer_height(vec![
+        Series::new("step".into(), sample_nums).into(),
+        Series::new("n_reps".into(), n_reps_nums).into(),
+        Series::new("accepted_count".into(), accepted_nums).into(),
+        Series::new("region_key".into(), metric_keys).into(),
+        Series::new(metric_col_name.into(), metric_values).into(),
+    ])?;
+
+    let mut file = File::create(out_file_name)?;
+    eprintln!("Writing final output...");
+    ParquetWriter::new(&mut file)
+        .with_compression(ParquetCompression::Brotli(None))
+        .finish(&mut df)?;
 
     eprintln!("Done!");
     Ok(())
