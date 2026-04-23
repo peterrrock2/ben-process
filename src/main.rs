@@ -60,7 +60,6 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 graph,
                 &args.ben_file,
                 output_file.as_str(),
-                args.edge_weight_key,
                 !args.no_progress,
             )?;
         }

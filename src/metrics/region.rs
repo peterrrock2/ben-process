@@ -3,7 +3,6 @@ use ben::decode::{count_samples_from_file, BenDecoder};
 use pbr::ProgressBar;
 use polars::prelude::*;
 use rayon::prelude::*;
-use std::collections::HashSet;
 use std::fs::File;
 use std::path::Path;
 
@@ -17,9 +16,12 @@ pub enum RegionMetric {
 /// sizes over all regions) for a single assignment against a single pre-loaded
 /// region column.
 ///
-/// The column is `&[Option<u32>]` where the `u32` is a dense region id (0..N)
-/// interned at load time, so this loop has no string allocations and no
-/// string hashing. Dense-buffer / bitset refinement lands in Phase 3.
+/// Dense bitset keyed by interned region id × district id: one
+/// `Vec<u64>` of length `n_regions * words_per_region`. `words_per_region`
+/// is `ceil(n_districts / 64)` — for typical FL runs (< 64 districts) each
+/// region occupies exactly one u64, so the whole bitset is `n_regions * 8`
+/// bytes and sits in L1. Replaces the per-sample
+/// `Vec<HashSet<u16>>` allocations from Phase 2.
 fn region_metric_for_key(
     graph: &Graph,
     assignment: &[u16],
@@ -28,24 +30,41 @@ fn region_metric_for_key(
 ) -> u32 {
     let col = &graph.region_columns[region_col_idx];
     let n_regions = graph.region_id_counts[region_col_idx] as usize;
-    let mut region_to_districts: Vec<HashSet<u16>> = (0..n_regions)
-        .map(|_| HashSet::new())
-        .collect();
+    if n_regions == 0 {
+        return 0;
+    }
+
+    let max_d = assignment.iter().copied().max().unwrap_or(0) as usize;
+    let words_per_region = (max_d / 64) + 1;
+    let mut bitset = vec![0u64; n_regions * words_per_region];
 
     for (i, maybe_rid) in col.iter().enumerate() {
         if let Some(rid) = *maybe_rid {
-            region_to_districts[rid as usize].insert(assignment[i]);
+            let d = assignment[i] as usize;
+            let w = rid as usize * words_per_region + (d >> 6);
+            bitset[w] |= 1u64 << (d & 63);
         }
     }
 
     match metric {
-        RegionMetric::Splits => region_to_districts
-            .iter()
-            .filter(|s| s.len() > 1)
+        RegionMetric::Splits => (0..n_regions)
+            .filter(|&r| {
+                let start = r * words_per_region;
+                let popcount: u32 = bitset[start..start + words_per_region]
+                    .iter()
+                    .map(|w| w.count_ones())
+                    .sum();
+                popcount > 1
+            })
             .count() as u32,
-        RegionMetric::Pieces => region_to_districts
-            .iter()
-            .map(|s| s.len() as u32)
+        RegionMetric::Pieces => (0..n_regions)
+            .map(|r| {
+                let start = r * words_per_region;
+                bitset[start..start + words_per_region]
+                    .iter()
+                    .map(|w| w.count_ones())
+                    .sum::<u32>()
+            })
             .sum(),
     }
 }

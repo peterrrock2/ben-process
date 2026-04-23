@@ -3,75 +3,109 @@ use ben::decode::BenDecoder;
 use pbr::ProgressBar;
 use polars::prelude::*;
 use rayon::prelude::*;
-use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, BufReader, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::time::Instant;
 
-/// Sum each requested attribute column into per-district buckets.
+/// Upper bound on district ids the dense-buffer path supports.
+/// `observed` is a u128 bitmask indexed by district id.
+const MAX_DISTRICTS: u16 = 128;
+
+/// Per-sample tally result.
 ///
-/// Output preserves the old shape (`HashMap<String, HashMap<u16, f64>>`) so
-/// `save_tallies_to_parquet` is unchanged. The speedup vs. the previous
-/// implementation comes from sourcing values from `graph.attr_columns`
-/// (pre-parsed `f64`) instead of re-walking `serde_json::Value` on every call.
+/// `totals` is a flat `Vec<f64>` of shape `[n_keys * n_districts]`, where
+/// `n_districts = max(assignment) + 1`. `observed` has bit `d` set iff
+/// district `d` appeared in this sample's assignment. Keeping `observed`
+/// lets the writer emit columns only for districts that actually show up
+/// somewhere in the ensemble (matching the pre-Phase-3 output shape).
+struct TallyRow {
+    sample_num: u64,
+    n_reps: u32,
+    accepted_count: u32,
+    totals: Vec<f64>,
+    n_districts: u16,
+    observed: u128,
+}
+
+/// Hot loop: flat index into pre-parsed attribute columns, accumulate into a
+/// flat per-district totals vector. No HashMap work inside the inner loop.
 fn tally_keys(
     graph: &Graph,
     assignment: &[u16],
-    key_list: &[String],
     attr_col_indices: &[usize],
-) -> HashMap<String, HashMap<u16, f64>> {
-    let partition_values: HashSet<u16> = assignment.iter().copied().collect();
-
-    let mut tallies: HashMap<String, HashMap<u16, f64>> = key_list
-        .iter()
-        .map(|k| (k.clone(), partition_values.iter().map(|&d| (d, 0.0)).collect()))
-        .collect();
-
-    for (k_idx, key) in key_list.iter().enumerate() {
-        let col = &graph.attr_columns[attr_col_indices[k_idx]];
-        let sub = tallies.get_mut(key).unwrap();
-        for (i, &v) in col.iter().enumerate() {
-            *sub.get_mut(&assignment[i]).unwrap() += v;
+) -> (Vec<f64>, u16, u128) {
+    let mut observed: u128 = 0;
+    let mut max_d: u16 = 0;
+    for &d in assignment {
+        if d >= MAX_DISTRICTS {
+            panic!(
+                "district id {} exceeds current {}-district limit; widen the observed bitmask",
+                d, MAX_DISTRICTS
+            );
+        }
+        observed |= 1u128 << d;
+        if d > max_d {
+            max_d = d;
         }
     }
-
-    tallies
+    let n_districts = max_d as usize + 1;
+    let n_keys = attr_col_indices.len();
+    let mut totals = vec![0.0f64; n_keys * n_districts];
+    for (k, &col_idx) in attr_col_indices.iter().enumerate() {
+        let col = &graph.attr_columns[col_idx];
+        let offset = k * n_districts;
+        for (i, &v) in col.iter().enumerate() {
+            totals[offset + assignment[i] as usize] += v;
+        }
+    }
+    (totals, n_districts as u16, observed)
 }
 
-/// Given a (parquet) file path to save to and a list of tallies corresponding to values obtained from
-/// assessing some function over an ensemble of graph partitions, this function saves the tallies
-/// to a Parquet file.
+/// Bits set in `mask`, returned in ascending order.
+fn sorted_district_ids(mut mask: u128) -> Vec<u16> {
+    let mut out = Vec::with_capacity(mask.count_ones() as usize);
+    while mask != 0 {
+        out.push(mask.trailing_zeros() as u16);
+        mask &= mask - 1;
+    }
+    out
+}
+
 fn save_tallies_to_parquet(
     file_path: &str,
-    tallies: &Vec<(u64, u32, u32, HashMap<String, HashMap<u16, f64>>)>,
+    tallies: &[TallyRow],
+    key_list: &[String],
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let mut sample_numbers = Vec::new();
-    let mut n_reps_numbers = Vec::new();
-    let mut accepted_numbers = Vec::new();
+    // Global union of districts observed anywhere in the ensemble. Columns
+    // come out in ascending district-id order, same as the BTreeMap fix
+    // from Phase 0.
+    let global_observed: u128 = tallies.iter().fold(0u128, |acc, t| acc | t.observed);
+    let district_ids = sorted_district_ids(global_observed);
 
-    let mut keys = Vec::new();
-    // BTreeMap so district columns come out in a stable, sorted order.
-    let mut partition_data: BTreeMap<u16, Vec<Option<f64>>> = BTreeMap::new();
+    let n_rows = tallies.len() * key_list.len();
+    let mut sample_numbers: Vec<u64> = Vec::with_capacity(n_rows);
+    let mut n_reps_numbers: Vec<u32> = Vec::with_capacity(n_rows);
+    let mut accepted_numbers: Vec<u32> = Vec::with_capacity(n_rows);
+    let mut sum_columns: Vec<String> = Vec::with_capacity(n_rows);
+    let mut district_cols: Vec<Vec<Option<f64>>> = district_ids
+        .iter()
+        .map(|_| Vec::with_capacity(n_rows))
+        .collect();
 
-    // Initialize partition_data with empty vectors for each unique partition key
-    for (_, _, _, tally) in tallies {
-        for (_, sub_map) in tally {
-            for (&partition_key, _) in sub_map {
-                partition_data.entry(partition_key).or_insert_with(Vec::new);
-            }
-        }
-    }
+    for row in tallies {
+        let n_d = row.n_districts as usize;
+        for (k, key) in key_list.iter().enumerate() {
+            sample_numbers.push(row.sample_num);
+            n_reps_numbers.push(row.n_reps);
+            accepted_numbers.push(row.accepted_count);
+            sum_columns.push(key.clone());
 
-    // Fill in the data
-    for (sample_num, n_reps, accepted_num, tally) in tallies {
-        for (key, sub_map) in tally {
-            sample_numbers.push(*sample_num);
-            n_reps_numbers.push(*n_reps);
-            accepted_numbers.push(*accepted_num);
-            keys.push(key.clone());
-            for (&partition_key, value) in partition_data.iter_mut() {
-                value.push(sub_map.get(&partition_key).copied());
+            let offset = k * n_d;
+            for (ci, &d) in district_ids.iter().enumerate() {
+                let di = d as usize;
+                let present = di < n_d && (row.observed & (1u128 << d)) != 0;
+                district_cols[ci].push(if present { Some(row.totals[offset + di]) } else { None });
             }
         }
     }
@@ -80,11 +114,12 @@ fn save_tallies_to_parquet(
         Series::new("step".into(), sample_numbers).into(),
         Series::new("n_reps".into(), n_reps_numbers).into(),
         Series::new("accepted_count".into(), accepted_numbers).into(),
-        Series::new("sum_columns".into(), keys).into(),
+        Series::new("sum_columns".into(), sum_columns).into(),
     ])?;
 
-    for (partition_key, values) in partition_data {
-        df.with_column(Series::new(format!("district_{}", partition_key).into(), values).into())?;
+    for (ci, &d) in district_ids.iter().enumerate() {
+        let col = std::mem::take(&mut district_cols[ci]);
+        df.with_column(Series::new(format!("district_{}", d).into(), col).into())?;
     }
 
     let mut file = File::create(file_path)?;
@@ -102,9 +137,6 @@ pub fn tally_and_save_from_key_list(
     key_list: Vec<String>,
     show_progress: bool,
 ) -> io::Result<()> {
-    // Resolve requested keys to column indices once, up-front. load_graph
-    // already parsed these columns; if any key is missing we want to fail
-    // loudly here rather than silently per-sample.
     let attr_col_indices: Vec<usize> = key_list
         .iter()
         .map(|k| {
@@ -145,8 +177,7 @@ pub fn tally_and_save_from_key_list(
     let ben_reader = BufReader::new(ben_file);
     let decoder = BenDecoder::new(ben_reader).unwrap();
 
-    let mut all_tallies: Vec<(u64, u32, u32, HashMap<String, HashMap<u16, f64>>)> =
-        Vec::with_capacity(line_count);
+    let mut all_tallies: Vec<TallyRow> = Vec::with_capacity(line_count);
 
     let mut sample_count: u64 = 1;
     let mut accepted_count: u32 = 1;
@@ -163,15 +194,21 @@ pub fn tally_and_save_from_key_list(
                     let results: Vec<_> = batch
                         .par_iter()
                         .map(|(assignment, n_reps)| {
-                            (
-                                *n_reps,
-                                tally_keys(&graph, assignment, &key_list, &attr_col_indices),
-                            )
+                            let (totals, n_districts, observed) =
+                                tally_keys(&graph, assignment, &attr_col_indices);
+                            (*n_reps, totals, n_districts, observed)
                         })
                         .collect();
 
-                    for (n_reps, tallies) in results {
-                        all_tallies.push((sample_count, n_reps as u32, accepted_count, tallies));
+                    for (n_reps, totals, n_districts, observed) in results {
+                        all_tallies.push(TallyRow {
+                            sample_num: sample_count,
+                            n_reps: n_reps as u32,
+                            accepted_count,
+                            totals,
+                            n_districts,
+                            observed,
+                        });
                         sample_count += n_reps as u64;
                         accepted_count += 1;
                     }
@@ -206,14 +243,20 @@ pub fn tally_and_save_from_key_list(
         let results: Vec<_> = batch
             .par_iter()
             .map(|(assignment, n_reps)| {
-                (
-                    *n_reps,
-                    tally_keys(&graph, assignment, &key_list, &attr_col_indices),
-                )
+                let (totals, n_districts, observed) =
+                    tally_keys(&graph, assignment, &attr_col_indices);
+                (*n_reps, totals, n_districts, observed)
             })
             .collect();
-        for (n_reps, tallies) in results {
-            all_tallies.push((sample_count, n_reps as u32, accepted_count, tallies));
+        for (n_reps, totals, n_districts, observed) in results {
+            all_tallies.push(TallyRow {
+                sample_num: sample_count,
+                n_reps: n_reps as u32,
+                accepted_count,
+                totals,
+                n_districts,
+                observed,
+            });
             sample_count += n_reps as u64;
             accepted_count += 1;
         }
@@ -224,7 +267,8 @@ pub fn tally_and_save_from_key_list(
     }
 
     eprintln!("Writing final output...");
-    save_tallies_to_parquet(out_file_name, &all_tallies).expect("Unable to save tallies");
+    save_tallies_to_parquet(out_file_name, &all_tallies, &key_list)
+        .expect("Unable to save tallies");
     eprintln!("Done!");
     Ok(())
 }

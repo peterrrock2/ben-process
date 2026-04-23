@@ -39,10 +39,6 @@ pub fn tally_and_save_cut_edges(
     graph: Graph,
     in_file_name: &str,
     out_file_name: &str,
-    // edge_weight_key is now resolved at graph-load time into graph.edge_weights,
-    // so this parameter is retained only to keep the main.rs dispatch shape
-    // stable during the Phase 2 cut-over. Phase 4 will fold it away.
-    _edge_weight_key: Option<String>,
     show_progress: bool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let n_pb_tics = 100;
