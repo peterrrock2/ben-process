@@ -216,8 +216,11 @@ fn build_output_path(in_ben_file: &str, suffix: &str, output_dir: Option<&str>) 
         .replace(".jsonl.ben", suffix);
 
     match output_dir {
-        Some(dir) => PathBuf::from(dir).join(base_name).to_string_lossy().into_owned(),
-        None => in_ben_file.replace(".jsonl.ben", suffix),
+        Some(dir) => PathBuf::from(dir)
+            .join(base_name)
+            .to_string_lossy()
+            .into_owned(),
+        _ => in_ben_file.replace(".jsonl.ben", suffix),
     }
 }
 
@@ -247,7 +250,7 @@ fn make_graph_from_json(file_path: &str) -> Result<Graph> {
     file.read_to_string(&mut data).expect("Unable to read file");
 
     // Parse the JSON data
-    let graph_data: JsonGraphData = serde_json::from_str(&data)?;
+    let graph_data: JsonGraphData = serde_json::from_str(&data).expect("Unable to parse JSON");
 
     let mut graph = Graph {
         nodes: graph_data.nodes.clone(),
@@ -255,14 +258,14 @@ fn make_graph_from_json(file_path: &str) -> Result<Graph> {
         edge_weights: HashMap::new(),
     };
 
-    for (source_idx, target_array) in graph_data
-        .adjacency
-        .iter()
-        .enumerate()
-        .map(|(x, y)| (x as u64, y.as_array().unwrap().to_vec()))
-    {
+    for (source_idx, target_array) in graph_data.adjacency.iter().enumerate().map(|(x, y)| {
+        (
+            x as u64,
+            y.as_array().expect("Failed to unwrap adjacency").to_vec(),
+        )
+    }) {
         for target_data in target_array {
-            let target_idx: u64 = target_data["id"].as_u64().unwrap();
+            let target_idx: u64 = target_data["id"].as_u64().expect("Failed to unwrap id");
             graph
                 .edges
                 .insert((source_idx.min(target_idx), source_idx.max(target_idx)));
@@ -577,7 +580,7 @@ fn cut_edges(graph: &Graph, assignment: &Vec<u16>, edge_weight_key: Option<&str>
                     .get(&(*source, *target))
                     .and_then(|weights_by_key| weights_by_key.get(key).copied())
                     .unwrap_or(1.0),
-                None => 1.0,
+                _ => 1.0,
             };
             cut_edges += weight;
         }
@@ -1130,7 +1133,13 @@ fn tally_and_save_region_metric(
         Series::new(metric_col_name.into(), metric_values).into(),
     ])?;
 
-    let mut file = File::create(out_file_name)?;
+    let mut file = File::create(out_file_name).expect(
+        format!(
+            "Failed to create output file {:?}. The file may already exist.",
+            out_file_name
+        )
+        .as_str(),
+    );
     eprintln!("Writing final output...");
     ParquetWriter::new(&mut file)
         .with_compression(ParquetCompression::Brotli(None))
