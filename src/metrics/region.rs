@@ -1,10 +1,7 @@
 use crate::graph::Graph;
-use ben::decode::{count_samples_from_file, BenDecoder};
-use pbr::ProgressBar;
+use crate::pipeline::{count_samples, run_pipeline};
 use polars::prelude::*;
-use rayon::prelude::*;
 use std::fs::File;
-use std::path::Path;
 
 #[derive(Clone, Copy)]
 pub enum RegionMetric {
@@ -77,7 +74,6 @@ pub fn tally_and_save_region_metric(
     metric: RegionMetric,
     show_progress: bool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    // Resolve keys → column indices once.
     let region_col_indices: Vec<usize> = key_list
         .iter()
         .map(|k| {
@@ -88,120 +84,40 @@ pub fn tally_and_save_region_metric(
         })
         .collect();
 
-    let n_pb_tics = 100;
-    let mut pb = if show_progress {
-        Some(ProgressBar::new(n_pb_tics))
-    } else {
-        None
-    };
+    let total = count_samples(in_file_name)?;
+    let cap = total * key_list.len();
+    let mut sample_nums: Vec<u64> = Vec::with_capacity(cap);
+    let mut n_reps_nums: Vec<u32> = Vec::with_capacity(cap);
+    let mut accepted_nums: Vec<u32> = Vec::with_capacity(cap);
+    let mut metric_keys: Vec<String> = Vec::with_capacity(cap);
+    let mut metric_values: Vec<u32> = Vec::with_capacity(cap);
 
-    let ben_file = File::open(in_file_name).expect("BEN file not found");
-    let decoder = BenDecoder::new(&ben_file).expect("Failed to initialize decoder");
-
-    let basename = Path::new(in_file_name)
-        .file_name()
-        .expect("Failed to extract basename")
-        .to_string_lossy();
-    eprintln!("Reading {:?}...", basename);
-
-    let line_count = count_samples_from_file(Path::new(in_file_name), "ben")
-        .expect("Failed to count samples in BEN file");
-
-    let pb_step_size = (line_count / n_pb_tics as usize) as u32;
-    let mut previous_step = 0;
-
-    let mut sample_nums = Vec::with_capacity(line_count * key_list.len());
-    let mut n_reps_nums = Vec::with_capacity(line_count * key_list.len());
-    let mut accepted_nums = Vec::with_capacity(line_count * key_list.len());
-    let mut metric_keys = Vec::with_capacity(line_count * key_list.len());
-    let mut metric_values = Vec::with_capacity(line_count * key_list.len());
-
-    let mut sample_count: u64 = 1;
-    let mut accepted_count: u32 = 1;
-
-    const BATCH_SIZE: usize = 100;
-    let mut batch: Vec<(Vec<u16>, u16)> = Vec::with_capacity(BATCH_SIZE);
-
-    for (_idx, record) in decoder.enumerate() {
-        match record {
-            Ok((assignment, n_reps)) => {
-                batch.push((assignment, n_reps));
-                if batch.len() == BATCH_SIZE {
-                    let results: Vec<_> = batch
-                        .par_iter()
-                        .map(|(assignment, n_reps)| {
-                            let counts: Vec<(String, u32)> = key_list
-                                .iter()
-                                .zip(region_col_indices.iter())
-                                .map(|(key, &col_idx)| {
-                                    (
-                                        key.clone(),
-                                        region_metric_for_key(
-                                            &graph, assignment, col_idx, metric,
-                                        ),
-                                    )
-                                })
-                                .collect();
-                            (*n_reps, counts)
-                        })
-                        .collect();
-
-                    for (n_reps, counts_by_key) in results {
-                        for (key, count_val) in counts_by_key {
-                            sample_nums.push(sample_count);
-                            n_reps_nums.push(n_reps as u32);
-                            accepted_nums.push(accepted_count);
-                            metric_keys.push(key);
-                            metric_values.push(count_val);
-                        }
-                        sample_count += n_reps as u64;
-                        accepted_count += 1;
-                    }
-                    batch.clear();
-                }
-
-                if show_progress && accepted_count - previous_step >= pb_step_size {
-                    pb.as_mut().unwrap().inc();
-                    previous_step = accepted_count;
-                }
-            }
-            Err(e) => panic!("Error: {:?}", e),
-        }
-    }
-
-    if !batch.is_empty() {
-        let results: Vec<_> = batch
-            .par_iter()
-            .map(|(assignment, n_reps)| {
-                let counts: Vec<(String, u32)> = key_list
-                    .iter()
-                    .zip(region_col_indices.iter())
-                    .map(|(key, &col_idx)| {
-                        (
-                            key.clone(),
-                            region_metric_for_key(&graph, assignment, col_idx, metric),
-                        )
-                    })
-                    .collect();
-                (*n_reps, counts)
-            })
-            .collect();
-        for (n_reps, counts_by_key) in results {
-            for (key, count_val) in counts_by_key {
-                sample_nums.push(sample_count);
-                n_reps_nums.push(n_reps as u32);
-                accepted_nums.push(accepted_count);
+    run_pipeline(
+        in_file_name,
+        total,
+        |assignment, _n_reps| {
+            key_list
+                .iter()
+                .zip(region_col_indices.iter())
+                .map(|(key, &col_idx)| {
+                    (
+                        key.clone(),
+                        region_metric_for_key(&graph, assignment, col_idx, metric),
+                    )
+                })
+                .collect::<Vec<(String, u32)>>()
+        },
+        |step, n_reps, accepted, counts| {
+            for (key, count_val) in counts {
+                sample_nums.push(step);
+                n_reps_nums.push(n_reps);
+                accepted_nums.push(accepted);
                 metric_keys.push(key);
                 metric_values.push(count_val);
             }
-            sample_count += n_reps as u64;
-            accepted_count += 1;
-        }
-    }
-
-    if let Some(pb_ref) = pb.as_mut() {
-        pb_ref.finish();
-    }
+        },
+        show_progress,
+    )?;
 
     let metric_col_name = match metric {
         RegionMetric::Splits => "region_splits",

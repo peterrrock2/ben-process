@@ -10,6 +10,7 @@ mod changed_assignments;
 mod cli;
 mod graph;
 mod metrics;
+mod pipeline;
 
 use cli::{build_output_path, Args, Mode};
 use graph::load_graph;

@@ -1,12 +1,8 @@
 use crate::graph::Graph;
-use ben::decode::BenDecoder;
-use pbr::ProgressBar;
+use crate::pipeline::{count_samples, run_pipeline};
 use polars::prelude::*;
-use rayon::prelude::*;
 use std::fs::File;
-use std::io::{self, BufReader, Seek, SeekFrom, Write};
-use std::path::Path;
-use std::time::Instant;
+use std::io;
 
 /// Upper bound on district ids the dense-buffer path supports.
 /// `observed` is a u128 bitmask indexed by district id.
@@ -147,124 +143,26 @@ pub fn tally_and_save_from_key_list(
         })
         .collect();
 
-    let n_pb_tics = 1000;
-    let mut pb = if show_progress {
-        Some(ProgressBar::new(n_pb_tics))
-    } else {
-        None
-    };
-    let mut pb_tics = 0;
+    let total = count_samples(in_file_name)?;
+    let mut all_tallies: Vec<TallyRow> = Vec::with_capacity(total);
 
-    let mut ben_file = File::open(in_file_name).expect("BEN file not found");
-    let line_checker = BenDecoder::new(&ben_file).expect("Failed to initialize decoder");
-
-    let basename = Path::new(in_file_name)
-        .file_name()
-        .expect("Failed to extract basename")
-        .to_string_lossy();
-    eprintln!("Reading {:?}...", basename);
-
-    let mut line_count: usize = 0;
-    for _ in line_checker.enumerate() {
-        line_count += 1;
-    }
-    println!("Found {:?} unique plans in {:?}\r", line_count, basename);
-
-    let pb_step_size = (line_count / n_pb_tics as usize) as u32;
-    let mut previous_step = 0;
-
-    ben_file.seek(SeekFrom::Start(0))?;
-    let ben_reader = BufReader::new(ben_file);
-    let decoder = BenDecoder::new(ben_reader).unwrap();
-
-    let mut all_tallies: Vec<TallyRow> = Vec::with_capacity(line_count);
-
-    let mut sample_count: u64 = 1;
-    let mut accepted_count: u32 = 1;
-
-    const BATCH_SIZE: usize = 100;
-    let mut batch: Vec<(Vec<u16>, u16)> = Vec::with_capacity(BATCH_SIZE);
-
-    let start_time = Instant::now();
-    for (_idx, record) in decoder.enumerate() {
-        match record {
-            Ok((assignment, n_reps)) => {
-                batch.push((assignment, n_reps));
-                if batch.len() == BATCH_SIZE {
-                    let results: Vec<_> = batch
-                        .par_iter()
-                        .map(|(assignment, n_reps)| {
-                            let (totals, n_districts, observed) =
-                                tally_keys(&graph, assignment, &attr_col_indices);
-                            (*n_reps, totals, n_districts, observed)
-                        })
-                        .collect();
-
-                    for (n_reps, totals, n_districts, observed) in results {
-                        all_tallies.push(TallyRow {
-                            sample_num: sample_count,
-                            n_reps: n_reps as u32,
-                            accepted_count,
-                            totals,
-                            n_districts,
-                            observed,
-                        });
-                        sample_count += n_reps as u64;
-                        accepted_count += 1;
-                    }
-                    batch.clear();
-                }
-            }
-            Err(e) => panic!("Error: {:?}", e),
-        }
-        if show_progress && accepted_count - previous_step >= pb_step_size {
-            let pb_ref = pb.as_mut().unwrap();
-            pb_ref.inc();
-
-            let elapsed_secs = start_time.elapsed().as_secs_f64();
-            let rate = (pb_tics + 1) as f64 / elapsed_secs;
-            let remaining_secs = (n_pb_tics - pb_tics - 1) as f64 / rate;
-            let elapsed_mins = (elapsed_secs / 60.0).floor() as u64;
-            let elapsed_remain_secs = (elapsed_secs % 60.0) as u64;
-            let remaining_mins = (remaining_secs / 60.0).floor() as u64;
-            let remaining_remain_secs = (remaining_secs % 60.0) as u64;
-            pb_ref.message(&format!(
-                "Elapsed: {}m {}s, ETA: {}m {}s ",
-                elapsed_mins, elapsed_remain_secs, remaining_mins, remaining_remain_secs
-            ));
-            pb_tics += 1;
-            io::stderr().flush().unwrap();
-            io::stdout().flush().unwrap();
-            previous_step = accepted_count;
-        }
-    }
-
-    if !batch.is_empty() {
-        let results: Vec<_> = batch
-            .par_iter()
-            .map(|(assignment, n_reps)| {
-                let (totals, n_districts, observed) =
-                    tally_keys(&graph, assignment, &attr_col_indices);
-                (*n_reps, totals, n_districts, observed)
-            })
-            .collect();
-        for (n_reps, totals, n_districts, observed) in results {
+    run_pipeline(
+        in_file_name,
+        total,
+        |assignment, _n_reps| tally_keys(&graph, assignment, &attr_col_indices),
+        |step, n_reps, accepted, row| {
+            let (totals, n_districts, observed) = row;
             all_tallies.push(TallyRow {
-                sample_num: sample_count,
-                n_reps: n_reps as u32,
-                accepted_count,
+                sample_num: step,
+                n_reps,
+                accepted_count: accepted,
                 totals,
                 n_districts,
                 observed,
             });
-            sample_count += n_reps as u64;
-            accepted_count += 1;
-        }
-    }
-
-    if let Some(pb_ref) = pb.as_mut() {
-        pb_ref.finish();
-    }
+        },
+        show_progress,
+    )?;
 
     eprintln!("Writing final output...");
     save_tallies_to_parquet(out_file_name, &all_tallies, &key_list)
