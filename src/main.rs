@@ -1,11 +1,8 @@
 //! Entry point for `ben-tally`. Dispatches CLI mode → per-mode runner.
 //!
-//! The bulk of the logic lives in the submodules:
-//!
-//! - [`cli`]: clap args + output path helper
-//! - [`graph`]: graph struct + JSON loader
-//! - [`metrics`]: per-sample compute (tally_keys, cut_edges, region)
-//! - [`changed_assignments`]: sequential across-sample mode
+//! Each mode asks `load_graph` to pre-parse only the columns it needs:
+//! tally-keys wants numeric node attrs, region-* want interned region ids,
+//! cut-edges wants an edge-weight vector (or none).
 
 use clap::Parser;
 
@@ -15,19 +12,22 @@ mod graph;
 mod metrics;
 
 use cli::{build_output_path, Args, Mode};
-use graph::make_graph_from_json;
+use graph::load_graph;
 use metrics::region::RegionMetric;
+
+fn graph_file_or_die(args: &Args) -> &str {
+    args.graph_file
+        .as_deref()
+        .unwrap_or_else(|| panic!("graph file required"))
+}
 
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let args: Args = Args::parse();
 
     match args.mode {
         Mode::TallyKeys => {
-            let graph = make_graph_from_json(match &args.graph_file {
-                Some(file) => file,
-                _ => panic!("graph file required"),
-            })
-            .expect("Could not load graph");
+            let graph = load_graph(graph_file_or_die(&args), &args.keys, &[], None)
+                .expect("Could not load graph");
             let output_file = build_output_path(
                 &args.ben_file,
                 "_tallies.parquet",
@@ -43,10 +43,12 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             )?;
         }
         Mode::CutEdges => {
-            let graph = make_graph_from_json(match &args.graph_file {
-                Some(file) => file,
-                _ => panic!("graph file required"),
-            })
+            let graph = load_graph(
+                graph_file_or_die(&args),
+                &[],
+                &[],
+                args.edge_weight_key.as_deref(),
+            )
             .expect("Could not load graph");
             let output_file = build_output_path(
                 &args.ben_file,
@@ -73,19 +75,16 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             )?;
         }
         Mode::RegionSplits => {
-            let graph = make_graph_from_json(match &args.graph_file {
-                Some(file) => file,
-                _ => panic!("graph file required"),
-            })
-            .expect("Could not load graph");
+            if args.keys.is_empty() {
+                panic!("at least one key is required for region-splits mode");
+            }
+            let graph = load_graph(graph_file_or_die(&args), &[], &args.keys, None)
+                .expect("Could not load graph");
             let output_file = build_output_path(
                 &args.ben_file,
                 "_region_splits.parquet",
                 args.output_dir.as_deref(),
             );
-            if args.keys.is_empty() {
-                panic!("at least one key is required for region-splits mode");
-            }
 
             metrics::region::tally_and_save_region_metric(
                 graph,
@@ -97,19 +96,16 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             )?;
         }
         Mode::RegionPieces => {
-            let graph = make_graph_from_json(match &args.graph_file {
-                Some(file) => file,
-                _ => panic!("graph file required"),
-            })
-            .expect("Could not load graph");
+            if args.keys.is_empty() {
+                panic!("at least one key is required for region-pieces mode");
+            }
+            let graph = load_graph(graph_file_or_die(&args), &[], &args.keys, None)
+                .expect("Could not load graph");
             let output_file = build_output_path(
                 &args.ben_file,
                 "_region_pieces.parquet",
                 args.output_dir.as_deref(),
             );
-            if args.keys.is_empty() {
-                panic!("at least one key is required for region-pieces mode");
-            }
 
             metrics::region::tally_and_save_region_metric(
                 graph,

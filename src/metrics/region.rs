@@ -3,8 +3,7 @@ use ben::decode::{count_samples_from_file, BenDecoder};
 use pbr::ProgressBar;
 use polars::prelude::*;
 use rayon::prelude::*;
-use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs::File;
 use std::path::Path;
 
@@ -14,56 +13,39 @@ pub enum RegionMetric {
     Pieces,
 }
 
-fn parse_region_id(node: &Value, key: &str) -> Option<String> {
-    let value = &node[key];
-    match value {
-        Value::Null => None,
-        Value::Number(n) => {
-            let v = n.as_f64()?;
-            if v.is_nan() {
-                None
-            } else {
-                Some(value.to_string())
-            }
-        }
-        Value::String(s) => {
-            let trimmed = s.trim();
-            if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("nan") {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        }
-        Value::Bool(_) => Some(value.to_string()),
-        _ => None,
-    }
-}
-
+/// Count splits (regions spanning >1 district) or pieces (sum of district-set
+/// sizes over all regions) for a single assignment against a single pre-loaded
+/// region column.
+///
+/// The column is `&[Option<u32>]` where the `u32` is a dense region id (0..N)
+/// interned at load time, so this loop has no string allocations and no
+/// string hashing. Dense-buffer / bitset refinement lands in Phase 3.
 fn region_metric_for_key(
     graph: &Graph,
-    assignment: &Vec<u16>,
-    key: &str,
+    assignment: &[u16],
+    region_col_idx: usize,
     metric: RegionMetric,
 ) -> u32 {
-    let mut region_to_districts: HashMap<String, HashSet<u16>> = HashMap::new();
+    let col = &graph.region_columns[region_col_idx];
+    let n_regions = graph.region_id_counts[region_col_idx] as usize;
+    let mut region_to_districts: Vec<HashSet<u16>> = (0..n_regions)
+        .map(|_| HashSet::new())
+        .collect();
 
-    for (idx, node) in graph.nodes.iter().enumerate() {
-        if let Some(region_id) = parse_region_id(node, key) {
-            region_to_districts
-                .entry(region_id)
-                .or_insert_with(HashSet::new)
-                .insert(assignment[idx]);
+    for (i, maybe_rid) in col.iter().enumerate() {
+        if let Some(rid) = *maybe_rid {
+            region_to_districts[rid as usize].insert(assignment[i]);
         }
     }
 
     match metric {
         RegionMetric::Splits => region_to_districts
-            .values()
-            .filter(|districts| districts.len() > 1)
+            .iter()
+            .filter(|s| s.len() > 1)
             .count() as u32,
         RegionMetric::Pieces => region_to_districts
-            .values()
-            .map(|districts| districts.len() as u32)
+            .iter()
+            .map(|s| s.len() as u32)
             .sum(),
     }
 }
@@ -76,6 +58,17 @@ pub fn tally_and_save_region_metric(
     metric: RegionMetric,
     show_progress: bool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    // Resolve keys → column indices once.
+    let region_col_indices: Vec<usize> = key_list
+        .iter()
+        .map(|k| {
+            *graph
+                .region_index
+                .get(k)
+                .unwrap_or_else(|| panic!("region key {:?} not pre-loaded on graph", k))
+        })
+        .collect();
+
     let n_pb_tics = 100;
     let mut pb = if show_progress {
         Some(ProgressBar::new(n_pb_tics))
@@ -104,11 +97,11 @@ pub fn tally_and_save_region_metric(
     let mut metric_keys = Vec::with_capacity(line_count * key_list.len());
     let mut metric_values = Vec::with_capacity(line_count * key_list.len());
 
-    let mut sample_count = 1;
-    let mut accepted_count = 1;
+    let mut sample_count: u64 = 1;
+    let mut accepted_count: u32 = 1;
 
     const BATCH_SIZE: usize = 100;
-    let mut batch = Vec::with_capacity(BATCH_SIZE);
+    let mut batch: Vec<(Vec<u16>, u16)> = Vec::with_capacity(BATCH_SIZE);
 
     for (_idx, record) in decoder.enumerate() {
         match record {
@@ -118,15 +111,18 @@ pub fn tally_and_save_region_metric(
                     let results: Vec<_> = batch
                         .par_iter()
                         .map(|(assignment, n_reps)| {
-                            let counts = key_list
+                            let counts: Vec<(String, u32)> = key_list
                                 .iter()
-                                .map(|key| {
+                                .zip(region_col_indices.iter())
+                                .map(|(key, &col_idx)| {
                                     (
                                         key.clone(),
-                                        region_metric_for_key(&graph, assignment, key, metric),
+                                        region_metric_for_key(
+                                            &graph, assignment, col_idx, metric,
+                                        ),
                                     )
                                 })
-                                .collect::<Vec<(String, u32)>>();
+                                .collect();
                             (*n_reps, counts)
                         })
                         .collect();
@@ -150,9 +146,7 @@ pub fn tally_and_save_region_metric(
                     previous_step = accepted_count;
                 }
             }
-            Err(e) => {
-                panic!("Error: {:?}", e);
-            }
+            Err(e) => panic!("Error: {:?}", e),
         }
     }
 
@@ -160,19 +154,19 @@ pub fn tally_and_save_region_metric(
         let results: Vec<_> = batch
             .par_iter()
             .map(|(assignment, n_reps)| {
-                let counts = key_list
+                let counts: Vec<(String, u32)> = key_list
                     .iter()
-                    .map(|key| {
+                    .zip(region_col_indices.iter())
+                    .map(|(key, &col_idx)| {
                         (
                             key.clone(),
-                            region_metric_for_key(&graph, assignment, key, metric),
+                            region_metric_for_key(&graph, assignment, col_idx, metric),
                         )
                     })
-                    .collect::<Vec<(String, u32)>>();
+                    .collect();
                 (*n_reps, counts)
             })
             .collect();
-
         for (n_reps, counts_by_key) in results {
             for (key, count_val) in counts_by_key {
                 sample_nums.push(sample_count);
@@ -203,13 +197,12 @@ pub fn tally_and_save_region_metric(
         Series::new(metric_col_name.into(), metric_values).into(),
     ])?;
 
-    let mut file = File::create(out_file_name).expect(
-        format!(
+    let mut file = File::create(out_file_name).unwrap_or_else(|_| {
+        panic!(
             "Failed to create output file {:?}. The file may already exist.",
             out_file_name
         )
-        .as_str(),
-    );
+    });
     eprintln!("Writing final output...");
     ParquetWriter::new(&mut file)
         .with_compression(ParquetCompression::Brotli(None))
