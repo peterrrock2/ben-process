@@ -39,7 +39,7 @@ use rand::RngExt;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{Result, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -367,7 +367,8 @@ fn save_tallies_to_parquet(
     let mut accepted_numbers = Vec::new();
 
     let mut keys = Vec::new();
-    let mut partition_data: HashMap<u16, Vec<Option<f64>>> = HashMap::new();
+    // BTreeMap so district columns come out in a stable, sorted order.
+    let mut partition_data: BTreeMap<u16, Vec<Option<f64>>> = BTreeMap::new();
 
     // Initialize partition_data with empty vectors for each unique partition key
     for (_, _, _, tally) in tallies {
