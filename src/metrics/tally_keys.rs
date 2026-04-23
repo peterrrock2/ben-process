@@ -1,5 +1,5 @@
 use crate::graph::Graph;
-use crate::pipeline::{count_samples, run_pipeline};
+use crate::pipeline::{count_samples, parquet_compression, run_pipeline};
 use polars::prelude::*;
 use std::fs::File;
 use std::io;
@@ -72,6 +72,7 @@ fn save_tallies_to_parquet(
     file_path: &str,
     tallies: &[TallyRow],
     key_list: &[String],
+    high_compression: bool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     // Global union of districts observed anywhere in the ensemble. Columns
     // come out in ascending district-id order, same as the BTreeMap fix
@@ -120,7 +121,7 @@ fn save_tallies_to_parquet(
 
     let mut file = File::create(file_path)?;
     ParquetWriter::new(&mut file)
-        .with_compression(ParquetCompression::Brotli(None))
+        .with_compression(parquet_compression(high_compression))
         .finish(&mut df)?;
 
     Ok(())
@@ -132,6 +133,7 @@ pub fn tally_and_save_from_key_list(
     out_file_name: &str,
     key_list: Vec<String>,
     show_progress: bool,
+    high_compression: bool,
 ) -> io::Result<()> {
     let attr_col_indices: Vec<usize> = key_list
         .iter()
@@ -165,7 +167,7 @@ pub fn tally_and_save_from_key_list(
     )?;
 
     eprintln!("Writing final output...");
-    save_tallies_to_parquet(out_file_name, &all_tallies, &key_list)
+    save_tallies_to_parquet(out_file_name, &all_tallies, &key_list, high_compression)
         .expect("Unable to save tallies");
     eprintln!("Done!");
     Ok(())

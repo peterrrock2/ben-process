@@ -41,6 +41,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 output_file.as_str(),
                 args.keys,
                 !args.no_progress,
+                args.high_compression,
             )?;
         }
         Mode::CutEdges => {
@@ -62,6 +63,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 &args.ben_file,
                 output_file.as_str(),
                 !args.no_progress,
+                args.high_compression,
             )?;
         }
         Mode::ChangedAssignments => {
@@ -69,7 +71,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 &args.ben_file,
                 args.normalize,
                 args.max_accepted,
-                args.mkv_rand_reassignment_off,
+                args.randomize_reassignments,
                 !args.no_progress,
                 args.output_dir.as_deref(),
             )?;
@@ -93,6 +95,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 args.keys,
                 RegionMetric::Splits,
                 !args.no_progress,
+                args.high_compression,
             )?;
         }
         Mode::RegionPieces => {
@@ -114,6 +117,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 args.keys,
                 RegionMetric::Pieces,
                 !args.no_progress,
+                args.high_compression,
             )?;
         }
     }

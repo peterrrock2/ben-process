@@ -15,14 +15,36 @@
 
 use ben::decode::{count_samples_from_file, decode_ben_line, BenDecoder, BenFrame};
 use ben::utils::rle_to_vec;
-use pbr::ProgressBar;
+use indicatif::{ProgressBar, ProgressStyle};
+use polars::prelude::ParquetCompression;
 use rayon::prelude::*;
 use std::fs::File;
 use std::io::{self, Cursor};
 use std::path::Path;
 
+/// Parquet compression to write with. Snappy is fast and plenty compact for
+/// tally outputs; Brotli only pays off when storage is the bottleneck.
+pub fn parquet_compression(high: bool) -> ParquetCompression {
+    if high {
+        ParquetCompression::Brotli(None)
+    } else {
+        ParquetCompression::Snappy
+    }
+}
+
 const BATCH: usize = 256;
-const N_PB_TICS: u64 = 100;
+
+fn make_progress_bar(total_samples: usize) -> ProgressBar {
+    let pb = ProgressBar::new(total_samples as u64);
+    pb.set_style(
+        ProgressStyle::with_template(
+            "{bar:40.cyan/blue} {pos}/{len} [{elapsed_precise} ETA {eta}]",
+        )
+        .unwrap()
+        .progress_chars("=>-"),
+    );
+    pb
+}
 
 fn decode_frame(frame: &BenFrame) -> Vec<u16> {
     decode_ben_line(
@@ -86,13 +108,7 @@ where
         .unwrap_or_default();
     eprintln!("Reading {:?}...", basename);
 
-    let mut pb = if show_progress {
-        Some(ProgressBar::new(N_PB_TICS))
-    } else {
-        None
-    };
-    let pb_step: u32 = ((total_samples as u64) / N_PB_TICS).max(1) as u32;
-    let mut last_pb_tick: u32 = 0;
+    let pb = show_progress.then(|| make_progress_bar(total_samples));
 
     let frames = BenDecoder::new(&ben_file)?.into_frames();
     let mut frame_batch: Vec<BenFrame> = Vec::with_capacity(BATCH);
@@ -109,9 +125,9 @@ where
             on_row(sample_count, n_reps as u32, accepted_count, row);
             sample_count += n_reps as u64;
             accepted_count += 1;
-            if show_progress && accepted_count - last_pb_tick >= pb_step {
-                pb.as_mut().unwrap().inc();
-                last_pb_tick = accepted_count;
+            // Advance by n_reps so MkvChain repetitions tick the bar correctly.
+            if let Some(pb) = &pb {
+                pb.inc(n_reps as u64);
             }
         }
         frame_batch.clear();
@@ -122,15 +138,14 @@ where
             on_row(sample_count, n_reps as u32, accepted_count, row);
             sample_count += n_reps as u64;
             accepted_count += 1;
-            if show_progress && accepted_count - last_pb_tick >= pb_step {
-                pb.as_mut().unwrap().inc();
-                last_pb_tick = accepted_count;
+            if let Some(pb) = &pb {
+                pb.inc(n_reps as u64);
             }
         }
     }
 
-    if let Some(pb) = pb.as_mut() {
-        pb.finish();
+    if let Some(pb) = pb {
+        pb.finish_and_clear();
     }
     Ok(())
 }

@@ -1,5 +1,5 @@
 use crate::graph::Graph;
-use crate::pipeline::{count_samples, run_pipeline};
+use crate::pipeline::{count_samples, parquet_compression, run_pipeline};
 use polars::prelude::*;
 use std::fs::File;
 
@@ -73,6 +73,7 @@ pub fn tally_and_save_region_metric(
     key_list: Vec<String>,
     metric: RegionMetric,
     show_progress: bool,
+    high_compression: bool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let region_col_indices: Vec<usize> = key_list
         .iter()
@@ -140,7 +141,7 @@ pub fn tally_and_save_region_metric(
     });
     eprintln!("Writing final output...");
     ParquetWriter::new(&mut file)
-        .with_compression(ParquetCompression::Brotli(None))
+        .with_compression(parquet_compression(high_compression))
         .finish(&mut df)?;
 
     eprintln!("Done!");

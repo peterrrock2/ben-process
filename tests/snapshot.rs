@@ -246,11 +246,6 @@ fn region_pieces_for_region_key() {
     assert_eq!(u32_col(&df, "region_pieces"), vec![4, 4, 2]);
 }
 
-/// Smoke test for changed-assignments on a single-plan file. The full
-/// multi-plan case depends on a CLI flag (`--mkv-rand-reassignment-off`) whose
-/// default semantics are inverted from its name, making multi-plan runs
-/// nondeterministic. We fix that in a later phase; for now verify the mode
-/// runs end-to-end and emits the expected all-zeros output for one plan.
 #[test]
 fn changed_assignments_single_plan_smoke() {
     let plans = vec![vec![1u16, 1, 1, 2, 2, 2]];
@@ -266,4 +261,44 @@ fn changed_assignments_single_plan_smoke() {
     )
     .unwrap();
     assert_eq!(body, "[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]\nTotal Accepted: 1");
+}
+
+/// Multi-plan changed-assignments: with `--randomize-reassignments` default
+/// `false`, output is deterministic.
+///
+/// Manual trace for `tri_plans()`:
+///  - curr=[1,1,1,2,2,2] vs p1=[1,2,1,2,1,2] → diffs at i=1,4  → dif=[0,1,0,0,1,0]
+///  - curr=[1,2,1,2,1,2] vs p2=[1,1,2,2,1,1] → diffs at i=1,2,5 → dif=[0,2,1,0,1,1]
+#[test]
+fn changed_assignments_tri_plans_deterministic() {
+    let f = fixture(&tri_plans());
+    run(&[
+        "--mode", "changed-assignments",
+        "--ben-file", f.ben.to_str().unwrap(),
+        "--output-dir", f.dir.to_str().unwrap(),
+        "--no-progress",
+    ]);
+    let body = std::fs::read_to_string(
+        f.dir.join("plans_accept_3_changed_assignments.txt"),
+    )
+    .unwrap();
+    assert_eq!(body, "[0.0, 2.0, 1.0, 0.0, 1.0, 1.0]\nTotal Accepted: 3");
+}
+
+/// Normalize divides each count by `line_count - 1` = 2.
+#[test]
+fn changed_assignments_tri_plans_normalized() {
+    let f = fixture(&tri_plans());
+    run(&[
+        "--mode", "changed-assignments",
+        "--ben-file", f.ben.to_str().unwrap(),
+        "--output-dir", f.dir.to_str().unwrap(),
+        "--normalize",
+        "--no-progress",
+    ]);
+    let body = std::fs::read_to_string(
+        f.dir.join("plans_accept_3_changed_assignments.txt"),
+    )
+    .unwrap();
+    assert_eq!(body, "[0.0, 1.0, 0.5, 0.0, 0.5, 0.5]\nTotal Accepted: 3");
 }

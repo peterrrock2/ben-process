@@ -27,8 +27,10 @@ pub struct Args {
     pub normalize: bool,
     #[arg(short, long)]
     pub max_accepted: Option<usize>,
-    #[arg(short, long, default_value_t = true)]
-    pub mkv_rand_reassignment_off: bool,
+    /// Randomize merge-split label reassignments (changed-assignments mode only).
+    /// Only set this for MCMC merge-split ensembles. Default: off.
+    #[arg(long, default_value_t = false)]
+    pub randomize_reassignments: bool,
     #[arg(short, long, num_args(1..))]
     pub keys: Vec<String>,
     #[arg(long)]
@@ -37,6 +39,10 @@ pub struct Args {
     pub no_progress: bool,
     #[arg(long)]
     pub output_dir: Option<String>,
+    /// Use Brotli compression for Parquet output (default: Snappy).
+    /// Brotli is CPU-heavy and rarely worth it unless you're storage-bound.
+    #[arg(long, default_value_t = false)]
+    pub high_compression: bool,
 }
 
 pub fn build_output_path(in_ben_file: &str, suffix: &str, output_dir: Option<&str>) -> String {

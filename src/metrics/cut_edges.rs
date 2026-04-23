@@ -1,5 +1,5 @@
 use crate::graph::Graph;
-use crate::pipeline::{count_samples, run_pipeline};
+use crate::pipeline::{count_samples, parquet_compression, run_pipeline};
 use polars::prelude::*;
 use std::fs::File;
 
@@ -37,6 +37,7 @@ pub fn tally_and_save_cut_edges(
     in_file_name: &str,
     out_file_name: &str,
     show_progress: bool,
+    high_compression: bool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let total = count_samples(in_file_name)?;
 
@@ -71,7 +72,7 @@ pub fn tally_and_save_cut_edges(
 
     eprintln!("Writing final output...");
     ParquetWriter::new(&mut file)
-        .with_compression(ParquetCompression::Brotli(None))
+        .with_compression(parquet_compression(high_compression))
         .finish(&mut df)?;
 
     eprintln!("Done!");
