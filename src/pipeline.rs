@@ -73,9 +73,26 @@ where
 }
 
 /// Walk the BEN file once (fast — just counts frames) and return the total
-/// sample count. Useful for Vec preallocation before calling `run_pipeline`.
+/// sample count (sum of `frame.count` across all frames). Useful for Vec
+/// preallocation before calling `run_pipeline`.
 pub fn count_samples(in_file: &str) -> io::Result<usize> {
     count_samples_from_file(Path::new(in_file), "ben")
+}
+
+/// Walk the BEN file once and return the number of **frames** (accepted
+/// records), independent of repetition counts. For Standard BEN this equals
+/// the sample count; for MkvChain BEN it is ≤ the sample count. Needed by
+/// modes (like changed-assignments) whose progress and output-sizing are
+/// per-accepted-step, not per-sample.
+pub fn count_frames(in_file: &str) -> io::Result<usize> {
+    let file = File::open(in_file)?;
+    let frames = BenDecoder::new(file)?.into_frames();
+    let mut n = 0usize;
+    for frame in frames {
+        frame?;
+        n += 1;
+    }
+    Ok(n)
 }
 
 /// Run a per-sample `process` closure over every record in `in_file`, with

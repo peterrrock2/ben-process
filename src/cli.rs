@@ -25,7 +25,7 @@ pub struct Args {
     pub ben_file: String,
     #[arg(short, long, default_value_t = false)]
     pub normalize: bool,
-    #[arg(short, long)]
+    #[arg(long)]
     pub max_accepted: Option<usize>,
     /// Randomize merge-split label reassignments (changed-assignments mode only).
     /// Only set this for MCMC merge-split ensembles. Default: off.

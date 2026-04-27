@@ -59,8 +59,6 @@ pub fn tally_and_save_cut_edges(
         show_progress,
     )?;
 
-    println!();
-
     let mut df = DataFrame::new_infer_height(vec![
         Series::new("step".into(), sample_nums).into(),
         Series::new("n_reps".into(), n_reps_nums).into(),

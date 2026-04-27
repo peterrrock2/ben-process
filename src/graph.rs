@@ -157,6 +157,17 @@ pub fn load_graph(
     }
 
     // --- flat dedup'd edges + (optionally) parallel weight vector ---
+    //
+    // Semantics match the pre-refactor code exactly:
+    //   - `edge_set` tracks which (min, max) pairs exist.
+    //   - `edge_weights_map` only holds entries for edges that carry at least
+    //     one *numerically parseable* value for `edge_weight_key` on at least
+    //     one endpoint. Missing or non-numeric values are not stored; those
+    //     edges fall back to 1.0 at lookup time.
+    //   - `.insert()` (not `.or_insert()`) — last valid weight wins, matching
+    //     the old nested-HashMap `.insert(key, weight)` behavior.
+    let mut edge_set: std::collections::HashSet<(u32, u32)> =
+        std::collections::HashSet::new();
     let mut edge_weights_map: HashMap<(u32, u32), f64> = HashMap::new();
     for (source_idx, adjacency_val) in graph_data.adjacency.iter().enumerate() {
         let src = source_idx as u32;
@@ -168,24 +179,25 @@ pub fn load_graph(
                 .as_u64()
                 .expect("Failed to unwrap id") as u32;
             let edge = (src.min(tgt), src.max(tgt));
-            let weight = edge_weight_key
-                .and_then(|wkey| target_data.get(wkey))
-                .and_then(parse_numeric_opt)
-                .unwrap_or(1.0);
-            // Insert-once semantics (NetworkX lists each edge from both
-            // endpoints); first-seen weight wins, matching the old HashSet
-            // + nested-HashMap behavior.
-            edge_weights_map.entry(edge).or_insert(weight);
+            edge_set.insert(edge);
+
+            if let Some(wkey) = edge_weight_key {
+                if let Some(weight) = target_data.get(wkey).and_then(parse_numeric_opt) {
+                    // .insert (overwrite) — matches old last-seen-wins behavior.
+                    edge_weights_map.insert(edge, weight);
+                }
+            }
         }
     }
 
-    let mut edges: Vec<(u32, u32)> = edge_weights_map.keys().copied().collect();
+    let mut edges: Vec<(u32, u32)> = edge_set.into_iter().collect();
     edges.sort_unstable();
-    let edge_weights: Option<Vec<f64>> = if edge_weight_key.is_some() {
-        Some(edges.iter().map(|e| edge_weights_map[e]).collect())
-    } else {
-        None
-    };
+    let edge_weights: Option<Vec<f64>> = edge_weight_key.map(|_| {
+        edges
+            .iter()
+            .map(|e| edge_weights_map.get(e).copied().unwrap_or(1.0))
+            .collect()
+    });
 
     Ok(Graph {
         attr_columns,

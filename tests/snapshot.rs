@@ -59,6 +59,18 @@ fn write_fixture_ben(path: &Path, plans: &[Vec<u16>]) {
     enc.finish().unwrap();
 }
 
+/// Encode with `BenVariant::MkvChain` so consecutive identical assignments
+/// collapse into a single frame with `count > 1`. Used by the MkvChain
+/// regression test for changed-assignments frame counting.
+fn write_fixture_ben_mkv(path: &Path, plans: &[Vec<u16>]) {
+    let f = File::create(path).unwrap();
+    let mut enc = BenEncoder::new(f, BenVariant::MkvChain);
+    for p in plans {
+        enc.write_assignment(p.clone()).unwrap();
+    }
+    enc.finish().unwrap();
+}
+
 struct Fixture {
     _tmp: TempDir, // keeps the temp dir alive for the duration of the test
     dir: PathBuf,
@@ -283,6 +295,98 @@ fn changed_assignments_tri_plans_deterministic() {
     )
     .unwrap();
     assert_eq!(body, "[0.0, 2.0, 1.0, 0.0, 1.0, 1.0]\nTotal Accepted: 3");
+}
+
+/// MkvChain BEN with a repeated assignment collapses into a frame with
+/// `count > 1`. `changed-assignments` semantics are per-accepted-record
+/// (per-frame), so a 3-sample / 2-frame ensemble should report 2 accepted.
+///
+/// Fixture frames (after MkvChain run-length):
+///   frame 1: assignment=[1,1,1,2,2,2], count=2 (two repeated samples)
+///   frame 2: assignment=[1,2,1,2,1,2], count=1
+///
+/// With per-frame semantics:
+///   - curr=[1,1,1,2,2,2] (first frame)
+///   - curr vs [1,2,1,2,1,2] → diffs at i=1, i=4 → dif_count=[0,1,0,0,1,0]
+///   - Output filename carries "_accept_2_" (frames), not "_accept_3_".
+#[test]
+fn changed_assignments_mkvchain_uses_frame_count() {
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let graph = dir.join("graph.json");
+    let ben = dir.join("plans.jsonl.ben");
+    write_fixture_graph(&graph);
+    write_fixture_ben_mkv(
+        &ben,
+        &[
+            vec![1, 1, 1, 2, 2, 2],
+            vec![1, 1, 1, 2, 2, 2], // coalesces with previous → count=2
+            vec![1, 2, 1, 2, 1, 2],
+        ],
+    );
+    run(&[
+        "--mode", "changed-assignments",
+        "--ben-file", ben.to_str().unwrap(),
+        "--output-dir", dir.to_str().unwrap(),
+        "--no-progress",
+    ]);
+    let body = std::fs::read_to_string(dir.join("plans_accept_2_changed_assignments.txt"))
+        .expect("output file should use frame count (2), not sample count (3)");
+    assert_eq!(body, "[0.0, 1.0, 0.0, 0.0, 1.0, 0.0]\nTotal Accepted: 2");
+}
+
+/// Asymmetric edge-weight fixture: the same edge carries a valid weight from
+/// one endpoint and a missing/non-numeric value from the other. The
+/// pre-refactor code's semantics were "last valid weight wins" (and don't
+/// store anything when the parsed value isn't numeric). Must still give 8.0
+/// for cut_edges on p0=[1,1,1,2,2,2] regardless of which endpoint's JSON
+/// entry is seen first.
+///
+/// Edge (0,5): node 0 says weight missing; node 5 says weight=3.0 → must pick 3.0.
+/// Edge (2,3): node 2 says weight=5.0; node 3 says weight missing → must pick 5.0.
+/// p0 cuts (2,3) and (0,5), so cut_edges = 5.0 + 3.0 = 8.0.
+#[test]
+fn cut_edges_weighted_tolerates_asymmetric_missing_weight() {
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let graph = dir.join("graph.json");
+    let ben = dir.join("plans.jsonl.ben");
+    // Edge (0,5): weight only on node 5's side.
+    // Edge (2,3): weight only on node 2's side.
+    // All others symmetric with weight 1.0.
+    let graph_json = serde_json::json!({
+        "directed": false,
+        "multigraph": false,
+        "graph": [],
+        "nodes": [
+            { "pop": 10.0, "region": "A" },
+            { "pop": 20.0, "region": "A" },
+            { "pop": 30.0, "region": "B" },
+            { "pop": 40.0, "region": "B" },
+            { "pop": 50.0, "region": "A" },
+            { "pop": 60.0, "region": "A" },
+        ],
+        "adjacency": [
+            [ { "id": 1, "weight": 1.0 }, { "id": 5 } ],
+            [ { "id": 0, "weight": 1.0 }, { "id": 2, "weight": 1.0 } ],
+            [ { "id": 1, "weight": 1.0 }, { "id": 3, "weight": 5.0 } ],
+            [ { "id": 2 },                { "id": 4, "weight": 1.0 } ],
+            [ { "id": 3, "weight": 1.0 }, { "id": 5, "weight": 1.0 } ],
+            [ { "id": 0, "weight": 3.0 }, { "id": 4, "weight": 1.0 } ],
+        ]
+    });
+    std::fs::write(&graph, graph_json.to_string()).unwrap();
+    write_fixture_ben(&ben, &[vec![1u16, 1, 1, 2, 2, 2]]);
+    run(&[
+        "--mode", "cut-edges",
+        "--graph-file", graph.to_str().unwrap(),
+        "--ben-file", ben.to_str().unwrap(),
+        "--output-dir", dir.to_str().unwrap(),
+        "--edge-weight-key", "weight",
+        "--no-progress",
+    ]);
+    let df = read_parquet(&dir.join("plans_cut_edges.parquet"));
+    assert_eq!(f64_col(&df, "cut_edges"), vec![8.0]);
 }
 
 /// Normalize divides each count by `line_count - 1` = 2.
