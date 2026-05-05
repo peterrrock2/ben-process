@@ -14,8 +14,8 @@ pub enum Mode {
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "BEN Parquet Tally Tool",
-    about = "A tool for tallying and saving data from BEN files to Parquet files.",
+    name = "BEN Process Tool",
+    about = "A tool for processing BEN files and saving outputs to Parquet or text.",
     version = "0.1.0"
 )]
 pub struct Args {

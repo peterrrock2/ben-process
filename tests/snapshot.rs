@@ -1,7 +1,7 @@
-//! End-to-end regression tests for ben-tally.
+//! End-to-end regression tests for ben-process.
 //!
 //! Each test builds a tiny 6-node ring fixture + a handful of assignment vectors,
-//! invokes the compiled `ben-tally` binary via `env!("CARGO_BIN_EXE_ben-tally")`,
+//! invokes the compiled `ben-process` binary via `env!("CARGO_BIN_EXE_ben-process")`,
 //! and asserts the produced Parquet / text output against manually-computed
 //! expected values. The fixture is intentionally small enough that a reader can
 //! verify every expected value on paper.
@@ -18,7 +18,7 @@ use polars::prelude::*;
 use tempfile::{tempdir, TempDir};
 
 fn bin() -> &'static str {
-    env!("CARGO_BIN_EXE_ben-tally")
+    env!("CARGO_BIN_EXE_ben-process")
 }
 
 // Six-node ring:
@@ -93,8 +93,8 @@ fn run(args: &[&str]) {
     let status = Command::new(bin())
         .args(args)
         .status()
-        .expect("failed to spawn ben-tally");
-    assert!(status.success(), "ben-tally exited non-zero");
+        .expect("failed to spawn ben-process");
+    assert!(status.success(), "ben-process exited non-zero");
 }
 
 fn read_parquet(path: &Path) -> DataFrame {

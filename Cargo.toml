@@ -1,5 +1,5 @@
 [package]
-name = "ben_tally"
+name = "ben_process"
 version = "0.1.0"
 edition = "2021"
 
@@ -17,7 +17,7 @@ serde_json = "1.0.117"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 [[bin]]
-name = "ben-tally"
+name = "ben-process"
 path = "src/main.rs"
 
 [dev-dependencies]

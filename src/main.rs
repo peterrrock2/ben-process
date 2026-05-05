@@ -1,4 +1,4 @@
-//! Entry point for `ben-tally`. Dispatches CLI mode → per-mode runner.
+//! Entry point for `ben-process`. Dispatches CLI mode → per-mode runner.
 //!
 //! Each mode asks `load_graph` to pre-parse only the columns it needs:
 //! tally-keys wants numeric node attrs, region-* want interned region ids,
