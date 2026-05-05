@@ -1,8 +1,7 @@
 use crate::graph::Graph;
-use crate::pipeline::{count_samples, parquet_compression, run_pipeline};
+use crate::pipeline::{count_samples, parquet_compression, run_pipeline, PARQUET_BATCH_ROWS};
 use polars::prelude::*;
 use std::fs::File;
-use std::io;
 
 /// Upper bound on district ids the dense-buffer path supports.
 /// `observed` is a u128 bitmask indexed by district id.
@@ -68,6 +67,7 @@ fn sorted_district_ids(mut mask: u128) -> Vec<u16> {
     out
 }
 
+#[cfg(test)]
 fn save_tallies_to_parquet(
     file_path: &str,
     tallies: &[TallyRow],
@@ -127,6 +127,80 @@ fn save_tallies_to_parquet(
     Ok(())
 }
 
+fn empty_tallies_df(district_ids: &[u16]) -> std::result::Result<DataFrame, Box<dyn std::error::Error>> {
+    let n_rows = 0usize;
+    let mut sample_numbers: Vec<u64> = Vec::with_capacity(n_rows);
+    let mut n_reps_numbers: Vec<u32> = Vec::with_capacity(n_rows);
+    let mut accepted_numbers: Vec<u32> = Vec::with_capacity(n_rows);
+    let mut sum_columns: Vec<String> = Vec::with_capacity(n_rows);
+    let mut district_cols: Vec<Vec<Option<f64>>> = district_ids
+        .iter()
+        .map(|_| Vec::with_capacity(n_rows))
+        .collect();
+
+    batch_tallies_to_df(
+        &mut sample_numbers,
+        &mut n_reps_numbers,
+        &mut accepted_numbers,
+        &mut sum_columns,
+        &mut district_cols,
+        district_ids,
+    )
+}
+
+fn batch_tallies_to_df(
+    sample_numbers: &mut Vec<u64>,
+    n_reps_numbers: &mut Vec<u32>,
+    accepted_numbers: &mut Vec<u32>,
+    sum_columns: &mut Vec<String>,
+    district_cols: &mut Vec<Vec<Option<f64>>>,
+    district_ids: &[u16],
+) -> std::result::Result<DataFrame, Box<dyn std::error::Error>> {
+    let mut df = DataFrame::new_infer_height(vec![
+        Series::new("step".into(), std::mem::take(sample_numbers)).into(),
+        Series::new("n_reps".into(), std::mem::take(n_reps_numbers)).into(),
+        Series::new("accepted_count".into(), std::mem::take(accepted_numbers)).into(),
+        Series::new("sum_columns".into(), std::mem::take(sum_columns)).into(),
+    ])?;
+
+    for (ci, &d) in district_ids.iter().enumerate() {
+        let col = std::mem::take(&mut district_cols[ci]);
+        df.with_column(Series::new(format!("district_{}", d).into(), col).into())?;
+    }
+
+    Ok(df)
+}
+
+fn push_tally_row(
+    row: &TallyRow,
+    key_list: &[String],
+    district_ids: &[u16],
+    sample_numbers: &mut Vec<u64>,
+    n_reps_numbers: &mut Vec<u32>,
+    accepted_numbers: &mut Vec<u32>,
+    sum_columns: &mut Vec<String>,
+    district_cols: &mut [Vec<Option<f64>>],
+) {
+    let n_d = row.n_districts as usize;
+    for (k, key) in key_list.iter().enumerate() {
+        sample_numbers.push(row.sample_num);
+        n_reps_numbers.push(row.n_reps);
+        accepted_numbers.push(row.accepted_count);
+        sum_columns.push(key.clone());
+
+        let offset = k * n_d;
+        for (ci, &d) in district_ids.iter().enumerate() {
+            let di = d as usize;
+            let present = di < n_d && (row.observed & (1u128 << d)) != 0;
+            district_cols[ci].push(if present {
+                Some(row.totals[offset + di])
+            } else {
+                None
+            });
+        }
+    }
+}
+
 pub fn tally_and_save_from_key_list(
     graph: Graph,
     in_file_name: &str,
@@ -134,7 +208,7 @@ pub fn tally_and_save_from_key_list(
     key_list: Vec<String>,
     show_progress: bool,
     high_compression: bool,
-) -> io::Result<()> {
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let attr_col_indices: Vec<usize> = key_list
         .iter()
         .map(|k| {
@@ -146,7 +220,16 @@ pub fn tally_and_save_from_key_list(
         .collect();
 
     let total = count_samples(in_file_name)?;
-    let mut all_tallies: Vec<TallyRow> = Vec::with_capacity(total);
+    let mut file = Some(File::create(out_file_name)?);
+    let mut writer: Option<polars::io::parquet::write::BatchedWriter<File>> = None;
+    let mut sample_numbers: Vec<u64> = Vec::with_capacity(PARQUET_BATCH_ROWS * key_list.len());
+    let mut n_reps_numbers: Vec<u32> = Vec::with_capacity(PARQUET_BATCH_ROWS * key_list.len());
+    let mut accepted_numbers: Vec<u32> = Vec::with_capacity(PARQUET_BATCH_ROWS * key_list.len());
+    let mut sum_columns: Vec<String> = Vec::with_capacity(PARQUET_BATCH_ROWS * key_list.len());
+    let mut district_cols: Vec<Vec<Option<f64>>> = Vec::new();
+    let mut district_ids: Vec<u16> = Vec::new();
+    let mut expected_observed: Option<u128> = None;
+    let flush_threshold = PARQUET_BATCH_ROWS * key_list.len();
 
     run_pipeline(
         in_file_name,
@@ -154,21 +237,111 @@ pub fn tally_and_save_from_key_list(
         |assignment, _n_reps| tally_keys(&graph, assignment, &attr_col_indices),
         |step, n_reps, accepted, row| {
             let (totals, n_districts, observed) = row;
-            all_tallies.push(TallyRow {
+            let row = TallyRow {
                 sample_num: step,
                 n_reps,
                 accepted_count: accepted,
                 totals,
                 n_districts,
                 observed,
-            });
+            };
+
+            if writer.is_none() {
+                expected_observed = Some(row.observed);
+                district_ids = sorted_district_ids(row.observed);
+                district_cols = district_ids
+                    .iter()
+                    .map(|_| Vec::with_capacity(flush_threshold))
+                    .collect();
+                let empty_df = empty_tallies_df(&district_ids)
+                    .expect("Unable to build tally schema DataFrame");
+                writer = Some(
+                    ParquetWriter::new(
+                        file.take()
+                            .expect("output file should be available when initializing writer"),
+                    )
+                        .with_compression(parquet_compression(high_compression))
+                        .batched(empty_df.schema())
+                        .expect("Unable to initialize tally parquet writer"),
+                );
+            }
+
+            let expected = expected_observed.expect("writer should initialize on first row");
+            let unseen = row.observed & !expected;
+            if unseen != 0 {
+                panic!(
+                    "encountered districts {:?} not present in first assignment; cannot stream tally output with a fixed schema",
+                    sorted_district_ids(unseen)
+                );
+            }
+
+            push_tally_row(
+                &row,
+                &key_list,
+                &district_ids,
+                &mut sample_numbers,
+                &mut n_reps_numbers,
+                &mut accepted_numbers,
+                &mut sum_columns,
+                &mut district_cols,
+            );
+
+            if sample_numbers.len() >= flush_threshold {
+                let df = batch_tallies_to_df(
+                    &mut sample_numbers,
+                    &mut n_reps_numbers,
+                    &mut accepted_numbers,
+                    &mut sum_columns,
+                    &mut district_cols,
+                    &district_ids,
+                )
+                .expect("Unable to build tally batch DataFrame");
+                writer
+                    .as_mut()
+                    .expect("writer should exist before flushing tally batch")
+                    .write_batch(&df)
+                    .expect("Unable to write tally batch");
+                district_cols = district_ids
+                    .iter()
+                    .map(|_| Vec::with_capacity(flush_threshold))
+                    .collect();
+            }
         },
         show_progress,
     )?;
 
     eprintln!("Writing final output...");
-    save_tallies_to_parquet(out_file_name, &all_tallies, &key_list, high_compression)
-        .expect("Unable to save tallies");
+    if writer.is_none() {
+        let empty_df = empty_tallies_df(&[])
+            .expect("Unable to build empty tally schema DataFrame");
+        writer = Some(
+            ParquetWriter::new(
+                file.take()
+                    .expect("output file should be available when initializing empty writer"),
+            )
+                .with_compression(parquet_compression(high_compression))
+                .batched(empty_df.schema())
+                .expect("Unable to initialize empty tally parquet writer"),
+        );
+    }
+    if !sample_numbers.is_empty() {
+        let df = batch_tallies_to_df(
+            &mut sample_numbers,
+            &mut n_reps_numbers,
+            &mut accepted_numbers,
+            &mut sum_columns,
+            &mut district_cols,
+            &district_ids,
+        )?;
+        writer
+            .as_mut()
+            .expect("writer should exist before final tally flush")
+            .write_batch(&df)?;
+    }
+    writer
+        .as_ref()
+        .expect("writer should exist before finalizing tally output")
+        .finish()?;
     eprintln!("Done!");
     Ok(())
 }

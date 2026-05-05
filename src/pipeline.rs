@@ -32,6 +32,11 @@ pub fn parquet_compression(high: bool) -> ParquetCompression {
     }
 }
 
+/// Default batch size for streaming Parquet row-group writes.
+/// Matches Polars' current fallback row-group size (`512 * 512`) so the
+/// streaming path stays close to the library's non-streaming behavior.
+pub const PARQUET_BATCH_ROWS: usize = 512 * 512;
+
 const BATCH: usize = 256;
 
 fn make_progress_bar(total_samples: usize) -> ProgressBar {

@@ -1,5 +1,5 @@
 use crate::graph::Graph;
-use crate::pipeline::{count_samples, parquet_compression, run_pipeline};
+use crate::pipeline::{count_samples, parquet_compression, run_pipeline, PARQUET_BATCH_ROWS};
 use polars::prelude::*;
 use std::fs::File;
 
@@ -7,6 +7,13 @@ use std::fs::File;
 pub enum RegionMetric {
     Splits,
     Pieces,
+}
+
+fn region_metric_col_name(metric: RegionMetric) -> &'static str {
+    match metric {
+        RegionMetric::Splits => "region_splits",
+        RegionMetric::Pieces => "region_pieces",
+    }
 }
 
 /// Count splits (regions spanning >1 district) or pieces (sum of district-set
@@ -66,6 +73,23 @@ fn region_metric_for_key(
     }
 }
 
+fn region_batch_to_df(
+    metric_col_name: &str,
+    sample_nums: &mut Vec<u64>,
+    n_reps_nums: &mut Vec<u32>,
+    accepted_nums: &mut Vec<u32>,
+    metric_keys: &mut Vec<String>,
+    metric_values: &mut Vec<u32>,
+) -> PolarsResult<DataFrame> {
+    DataFrame::new_infer_height(vec![
+        Series::new("step".into(), std::mem::take(sample_nums)).into(),
+        Series::new("n_reps".into(), std::mem::take(n_reps_nums)).into(),
+        Series::new("accepted_count".into(), std::mem::take(accepted_nums)).into(),
+        Series::new("region_key".into(), std::mem::take(metric_keys)).into(),
+        Series::new(metric_col_name.into(), std::mem::take(metric_values)).into(),
+    ])
+}
+
 pub fn tally_and_save_region_metric(
     graph: Graph,
     in_file_name: &str,
@@ -86,7 +110,25 @@ pub fn tally_and_save_region_metric(
         .collect();
 
     let total = count_samples(in_file_name)?;
-    let cap = total * key_list.len();
+    let metric_col_name = region_metric_col_name(metric);
+    let mut file = File::create(out_file_name).unwrap_or_else(|_| {
+        panic!(
+            "Failed to create output file {:?}. The file may already exist.",
+            out_file_name
+        )
+    });
+    let empty_df = DataFrame::new_infer_height(vec![
+        Series::new("step".into(), Vec::<u64>::new()).into(),
+        Series::new("n_reps".into(), Vec::<u32>::new()).into(),
+        Series::new("accepted_count".into(), Vec::<u32>::new()).into(),
+        Series::new("region_key".into(), Vec::<String>::new()).into(),
+        Series::new(metric_col_name.into(), Vec::<u32>::new()).into(),
+    ])?;
+    let mut writer = ParquetWriter::new(&mut file)
+        .with_compression(parquet_compression(high_compression))
+        .batched(empty_df.schema())?;
+
+    let cap = PARQUET_BATCH_ROWS * key_list.len();
     let mut sample_nums: Vec<u64> = Vec::with_capacity(cap);
     let mut n_reps_nums: Vec<u32> = Vec::with_capacity(cap);
     let mut accepted_nums: Vec<u32> = Vec::with_capacity(cap);
@@ -116,33 +158,37 @@ pub fn tally_and_save_region_metric(
                 metric_keys.push(key);
                 metric_values.push(count_val);
             }
+            if sample_nums.len() >= cap {
+                let df = region_batch_to_df(
+                    metric_col_name,
+                    &mut sample_nums,
+                    &mut n_reps_nums,
+                    &mut accepted_nums,
+                    &mut metric_keys,
+                    &mut metric_values,
+                )
+                .expect("Unable to build region-metric batch DataFrame");
+                writer
+                    .write_batch(&df)
+                    .expect("Unable to write region-metric batch");
+            }
         },
         show_progress,
     )?;
 
-    let metric_col_name = match metric {
-        RegionMetric::Splits => "region_splits",
-        RegionMetric::Pieces => "region_pieces",
-    };
-
-    let mut df = DataFrame::new_infer_height(vec![
-        Series::new("step".into(), sample_nums).into(),
-        Series::new("n_reps".into(), n_reps_nums).into(),
-        Series::new("accepted_count".into(), accepted_nums).into(),
-        Series::new("region_key".into(), metric_keys).into(),
-        Series::new(metric_col_name.into(), metric_values).into(),
-    ])?;
-
-    let mut file = File::create(out_file_name).unwrap_or_else(|_| {
-        panic!(
-            "Failed to create output file {:?}. The file may already exist.",
-            out_file_name
-        )
-    });
     eprintln!("Writing final output...");
-    ParquetWriter::new(&mut file)
-        .with_compression(parquet_compression(high_compression))
-        .finish(&mut df)?;
+    if !sample_nums.is_empty() {
+        let df = region_batch_to_df(
+            metric_col_name,
+            &mut sample_nums,
+            &mut n_reps_nums,
+            &mut accepted_nums,
+            &mut metric_keys,
+            &mut metric_values,
+        )?;
+        writer.write_batch(&df)?;
+    }
+    writer.finish()?;
 
     eprintln!("Done!");
     Ok(())
