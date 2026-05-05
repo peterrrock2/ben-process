@@ -11,6 +11,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use ben::decode::BenDecoder;
 use ben::encode::BenEncoder;
 use ben::BenVariant;
 use polars::prelude::*;
@@ -405,4 +406,43 @@ fn changed_assignments_tri_plans_normalized() {
     )
     .unwrap();
     assert_eq!(body, "[0.0, 1.0, 0.5, 0.0, 0.5, 0.5]\nTotal Accepted: 3");
+}
+
+/// Five input frames with three label-invariant partitions:
+///   * P_A appears as itself and again with districts {1,2} swapped (label-perm)
+///   * P_B appears as itself and again byte-identical
+///   * P_C appears once
+/// Expected: extract-unique-plans writes exactly the 3 first-occurrences,
+/// preserving original labels of the first time each partition was seen.
+#[test]
+fn extract_unique_plans_dedups_label_permutations() {
+    let plans: Vec<Vec<u16>> = vec![
+        vec![1, 1, 1, 2, 2, 2], // P_A first
+        vec![1, 1, 2, 2, 1, 1], // P_B first
+        vec![2, 2, 2, 1, 1, 1], // P_A again, labels swapped — should dedup
+        vec![1, 1, 2, 2, 1, 1], // P_B again, identical — should dedup
+        vec![1, 2, 1, 2, 1, 2], // P_C first
+    ];
+    let f = fixture(&plans);
+    run(&[
+        "--mode", "extract-unique-plans",
+        "--ben-file", f.ben.to_str().unwrap(),
+        "--output-dir", f.dir.to_str().unwrap(),
+        "--no-progress",
+    ]);
+
+    let out = f.dir.join("plans_unique.jsonl.ben");
+    let decoder = BenDecoder::new(File::open(&out).unwrap()).unwrap();
+    let extracted: Vec<Vec<u16>> = decoder
+        .map(|r| r.unwrap().0)
+        .collect();
+
+    assert_eq!(
+        extracted,
+        vec![
+            vec![1u16, 1, 1, 2, 2, 2], // P_A first occurrence (original labels)
+            vec![1u16, 1, 2, 2, 1, 1], // P_B first occurrence
+            vec![1u16, 2, 1, 2, 1, 2], // P_C first occurrence
+        ]
+    );
 }

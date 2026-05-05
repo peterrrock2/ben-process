@@ -120,6 +120,32 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 args.high_compression,
             )?;
         }
+        Mode::UniquePlans => {
+            let output_file = build_output_path(
+                &args.ben_file,
+                "_unique_plans.txt",
+                args.output_dir.as_deref(),
+            );
+
+            metrics::unique_plans::count_and_save_unique_plans(
+                &args.ben_file,
+                output_file.as_str(),
+                !args.no_progress,
+            )?;
+        }
+        Mode::ExtractUniquePlans => {
+            let output_file = build_output_path(
+                &args.ben_file,
+                "_unique.jsonl.ben",
+                args.output_dir.as_deref(),
+            );
+
+            metrics::extract_unique_plans::extract_unique_plans(
+                &args.ben_file,
+                output_file.as_str(),
+                !args.no_progress,
+            )?;
+        }
     }
     Ok(())
 }

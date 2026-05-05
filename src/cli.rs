@@ -8,6 +8,8 @@ pub enum Mode {
     ChangedAssignments,
     RegionSplits,
     RegionPieces,
+    UniquePlans,
+    ExtractUniquePlans,
 }
 
 #[derive(Parser, Debug)]
