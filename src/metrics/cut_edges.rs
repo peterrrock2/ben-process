@@ -76,3 +76,38 @@ pub fn tally_and_save_cut_edges(
     eprintln!("Done!");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::cut_edges;
+    use crate::graph::Graph;
+    use std::collections::HashMap;
+
+    fn graph_with_edges(edge_weights: Option<Vec<f64>>) -> Graph {
+        Graph {
+            attr_columns: vec![],
+            attr_index: HashMap::new(),
+            region_columns: vec![],
+            region_index: HashMap::new(),
+            region_id_counts: vec![],
+            edges: vec![(0, 1), (1, 2), (2, 3)],
+            edge_weights,
+        }
+    }
+
+    #[test]
+    fn cut_edges_counts_unweighted_crossings() {
+        let graph = graph_with_edges(None);
+        assert_eq!(cut_edges(&graph, &[1, 1, 2, 2]), 1.0);
+        assert_eq!(cut_edges(&graph, &[1, 2, 1, 2]), 3.0);
+        assert_eq!(cut_edges(&graph, &[7, 7, 7, 7]), 0.0);
+    }
+
+    #[test]
+    fn cut_edges_sums_aligned_weights_for_crossings() {
+        let graph = graph_with_edges(Some(vec![2.0, 5.5, 3.0]));
+        assert_eq!(cut_edges(&graph, &[1, 1, 2, 2]), 5.5);
+        assert_eq!(cut_edges(&graph, &[1, 2, 1, 2]), 10.5);
+        assert_eq!(cut_edges(&graph, &[4, 4, 4, 4]), 0.0);
+    }
+}

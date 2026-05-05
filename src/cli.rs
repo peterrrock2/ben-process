@@ -62,3 +62,28 @@ pub fn build_output_path(in_ben_file: &str, suffix: &str, output_dir: Option<&st
         _ => in_ben_file.replace(".jsonl.ben", suffix),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::build_output_path;
+
+    #[test]
+    fn build_output_path_replaces_suffix_in_place_without_output_dir() {
+        assert_eq!(
+            build_output_path("/tmp/runs/plans.jsonl.ben", "_cut_edges.parquet", None),
+            "/tmp/runs/plans_cut_edges.parquet"
+        );
+    }
+
+    #[test]
+    fn build_output_path_uses_basename_when_output_dir_is_set() {
+        assert_eq!(
+            build_output_path(
+                "/tmp/runs/plans.jsonl.ben",
+                "_unique_plans.txt",
+                Some("/tmp/out"),
+            ),
+            "/tmp/out/plans_unique_plans.txt"
+        );
+    }
+}

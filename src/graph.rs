@@ -209,3 +209,124 @@ pub fn load_graph(
         edge_weights,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{load_graph, parse_numeric, parse_numeric_opt, parse_region_id};
+    use serde_json::json;
+    use tempfile::NamedTempFile;
+
+    fn write_graph(graph_json: serde_json::Value) -> NamedTempFile {
+        let file = NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), graph_json.to_string()).unwrap();
+        file
+    }
+
+    #[test]
+    fn parse_region_id_treats_blank_and_nan_strings_as_missing() {
+        let node = json!({
+            "blank": "   ",
+            "nan": " NaN ",
+            "null": null,
+            "bool": true,
+            "number": 7,
+            "name": " county-a ",
+        });
+
+        assert_eq!(parse_region_id(&node, "blank"), None);
+        assert_eq!(parse_region_id(&node, "nan"), None);
+        assert_eq!(parse_region_id(&node, "null"), None);
+        assert_eq!(parse_region_id(&node, "bool"), Some("true".to_string()));
+        assert_eq!(parse_region_id(&node, "number"), Some("7".to_string()));
+        assert_eq!(parse_region_id(&node, "name"), Some("county-a".to_string()));
+    }
+
+    #[test]
+    fn parse_numeric_accepts_numbers_and_numeric_strings() {
+        assert_eq!(parse_numeric(&json!(3.5), "pop"), 3.5);
+        assert_eq!(parse_numeric(&json!("4.25"), "pop"), 4.25);
+    }
+
+    #[test]
+    #[should_panic(expected = "Failed to parse")]
+    fn parse_numeric_panics_on_invalid_string() {
+        let _ = parse_numeric(&json!("not-a-number"), "pop");
+    }
+
+    #[test]
+    fn parse_numeric_opt_ignores_unparseable_values() {
+        assert_eq!(parse_numeric_opt(&json!(2.0)), Some(2.0));
+        assert_eq!(parse_numeric_opt(&json!("2.5")), Some(2.5));
+        assert_eq!(parse_numeric_opt(&json!("oops")), None);
+        assert_eq!(parse_numeric_opt(&json!(false)), None);
+    }
+
+    #[test]
+    fn load_graph_dedups_sorts_and_populates_requested_columns() {
+        let graph_json = json!({
+            "directed": false,
+            "multigraph": false,
+            "graph": [],
+            "nodes": [
+                { "pop": 1.0, "region": "A" },
+                { "pop": "2.5", "region": "A" },
+                { "pop": 3.0, "region": " nan " },
+            ],
+            "adjacency": [
+                [ { "id": 1, "weight": 2.0 }, { "id": 2, "weight": "oops" } ],
+                [ { "id": 0, "weight": 4.5 }, { "id": 2 } ],
+                [ { "id": 0, "weight": 9.0 }, { "id": 1, "weight": "3.5" } ]
+            ]
+        });
+        let graph_file = write_graph(graph_json);
+
+        let numeric_keys = vec!["pop".to_string()];
+        let region_keys = vec!["region".to_string()];
+        let graph = load_graph(
+            graph_file.path().to_str().unwrap(),
+            &numeric_keys,
+            &region_keys,
+            Some("weight"),
+        )
+        .unwrap();
+
+        assert_eq!(graph.attr_columns, vec![vec![1.0, 2.5, 3.0]]);
+        assert_eq!(graph.attr_index["pop"], 0);
+
+        assert_eq!(graph.region_columns, vec![vec![Some(0), Some(0), None]]);
+        assert_eq!(graph.region_index["region"], 0);
+        assert_eq!(graph.region_id_counts, vec![1]);
+
+        assert_eq!(graph.edges, vec![(0, 1), (0, 2), (1, 2)]);
+        assert_eq!(graph.edge_weights, Some(vec![4.5, 9.0, 3.5]));
+    }
+
+    #[test]
+    fn load_graph_defaults_missing_weights_to_one() {
+        let graph_json = json!({
+            "directed": false,
+            "multigraph": false,
+            "graph": [],
+            "nodes": [
+                { "pop": 1.0 },
+                { "pop": 2.0 },
+            ],
+            "adjacency": [
+                [ { "id": 1 } ],
+                [ { "id": 0, "weight": "oops" } ]
+            ]
+        });
+        let graph_file = write_graph(graph_json);
+
+        let graph = load_graph(
+            graph_file.path().to_str().unwrap(),
+            &[],
+            &[],
+            Some("weight"),
+        )
+        .unwrap();
+
+        assert_eq!(graph.edges, vec![(0, 1)]);
+        assert_eq!(graph.edge_weights, Some(vec![1.0]));
+    }
+}

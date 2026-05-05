@@ -26,6 +26,50 @@ fn swap_labels(v: &mut [u16], a: u16, b: u16) {
     }
 }
 
+fn update_changed_assignment_state(
+    curr_assignment: &[u16],
+    assignment: &mut [u16],
+    current_permutation: &mut [u16],
+    dif_count: &mut [u32],
+    randomize_reassignment: bool,
+) {
+    for v in assignment.iter_mut() {
+        *v = current_permutation[*v as usize];
+    }
+
+    if randomize_reassignment {
+        let (_idx, (a, b)) = find_first_disagreement_index(curr_assignment, assignment)
+            .unwrap_or((0, (1, 1)));
+        swap_labels(assignment, a, b);
+        swap_labels(current_permutation, a, b);
+    }
+
+    for ((c, a), d) in curr_assignment
+        .iter()
+        .zip(assignment.iter())
+        .zip(dif_count.iter_mut())
+    {
+        if c != a {
+            *d += 1;
+        }
+    }
+}
+
+fn finalize_changed_counts(dif_count: &[u32], line_count: usize, normalize: bool) -> Vec<f64> {
+    if !normalize {
+        return dif_count.iter().map(|&x| x as f64).collect();
+    }
+
+    if line_count <= 1 {
+        return vec![0.0; dif_count.len()];
+    }
+
+    dif_count
+        .iter()
+        .map(|&x| x as f64 / (line_count - 1) as f64)
+        .collect()
+}
+
 /// Tallies and saves the number of changed assignments (flips) to a text file.
 ///
 /// # Arguments
@@ -122,29 +166,15 @@ pub fn tally_and_save_changed_assignments(
         full_count += 1;
         match result {
             Ok((mut assignment, _)) => {
-                // Apply the accumulated permutation in-place.
-                for v in assignment.iter_mut() {
-                    *v = current_permutation[*v as usize];
-                }
-
-                if with_random_reassignments && rng.random_bool(0.5) {
-                    let (_idx, (a, b)) =
-                        find_first_disagreement_index(&curr_assignment, &assignment)
-                            .unwrap_or((0, (1, 1)));
-                    swap_labels(&mut assignment, a, b);
-                    swap_labels(&mut current_permutation, a, b);
-                }
-
-                // Update per-node flip count.
-                for ((c, a), d) in curr_assignment
-                    .iter()
-                    .zip(assignment.iter())
-                    .zip(dif_count.iter_mut())
-                {
-                    if c != a {
-                        *d += 1;
-                    }
-                }
+                let randomize_reassignment =
+                    with_random_reassignments && rng.random_bool(0.5);
+                update_changed_assignment_state(
+                    &curr_assignment,
+                    &mut assignment,
+                    &mut current_permutation,
+                    &mut dif_count,
+                    randomize_reassignment,
+                );
                 curr_assignment = assignment;
             }
             Err(e) => {
@@ -160,14 +190,7 @@ pub fn tally_and_save_changed_assignments(
         }
     }
 
-    let final_count: Vec<f64> = if normalize {
-        dif_count
-            .iter()
-            .map(|&x| x as f64 / (line_count - 1) as f64)
-            .collect()
-    } else {
-        dif_count.iter().map(|&x| x as f64).collect()
-    };
+    let final_count = finalize_changed_counts(&dif_count, line_count, normalize);
 
     if let Some(pb) = pb {
         pb.finish_and_clear();
@@ -180,4 +203,88 @@ pub fn tally_and_save_changed_assignments(
 
     eprintln!("Done!");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        finalize_changed_counts, find_first_disagreement_index, swap_labels,
+        update_changed_assignment_state,
+    };
+
+    #[test]
+    fn disagreement_index_returns_first_mismatch() {
+        assert_eq!(
+            find_first_disagreement_index(&[1, 2, 3], &[1, 9, 3]),
+            Some((1, (2, 9)))
+        );
+        assert_eq!(find_first_disagreement_index(&[1, 2], &[1, 2]), None);
+    }
+
+    #[test]
+    fn swap_labels_rewrites_all_occurrences() {
+        let mut labels = vec![1, 2, 3, 2, 1];
+        swap_labels(&mut labels, 1, 2);
+        assert_eq!(labels, vec![2, 1, 3, 1, 2]);
+    }
+
+    #[test]
+    fn update_state_applies_existing_permutation_before_counting() {
+        let curr_assignment = vec![1, 1, 2, 2];
+        let mut next_assignment = vec![2, 2, 1, 1];
+        let mut current_permutation = vec![0, 2, 1];
+        let mut dif_count = vec![0u32; 4];
+
+        update_changed_assignment_state(
+            &curr_assignment,
+            &mut next_assignment,
+            &mut current_permutation,
+            &mut dif_count,
+            false,
+        );
+
+        assert_eq!(next_assignment, curr_assignment);
+        assert_eq!(dif_count, vec![0, 0, 0, 0]);
+        assert_eq!(current_permutation, vec![0, 2, 1]);
+    }
+
+    #[test]
+    fn update_state_randomized_reassignment_swaps_labels_and_updates_permutation() {
+        let curr_assignment = vec![1, 1, 2, 2];
+        let mut next_assignment = vec![1, 2, 1, 2];
+        let mut current_permutation = vec![0, 1, 2];
+        let mut dif_count = vec![0u32; 4];
+
+        update_changed_assignment_state(
+            &curr_assignment,
+            &mut next_assignment,
+            &mut current_permutation,
+            &mut dif_count,
+            true,
+        );
+
+        assert_eq!(next_assignment, vec![2, 1, 2, 1]);
+        assert_eq!(current_permutation, vec![0, 2, 1]);
+        assert_eq!(dif_count, vec![1, 0, 0, 1]);
+    }
+
+    #[test]
+    fn finalize_counts_normalizes_single_plan_to_zeroes() {
+        assert_eq!(
+            finalize_changed_counts(&[0, 0, 0], 1, true),
+            vec![0.0, 0.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn finalize_counts_divides_by_transition_count_when_normalizing() {
+        assert_eq!(
+            finalize_changed_counts(&[0, 2, 1], 3, true),
+            vec![0.0, 1.0, 0.5]
+        );
+        assert_eq!(
+            finalize_changed_counts(&[0, 2, 1], 3, false),
+            vec![0.0, 2.0, 1.0]
+        );
+    }
 }

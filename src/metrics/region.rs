@@ -147,3 +147,65 @@ pub fn tally_and_save_region_metric(
     eprintln!("Done!");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{region_metric_for_key, RegionMetric};
+    use crate::graph::Graph;
+    use std::collections::HashMap;
+
+    fn graph_with_region_column(region_column: Vec<Option<u32>>, region_count: u32) -> Graph {
+        Graph {
+            attr_columns: vec![],
+            attr_index: HashMap::new(),
+            region_columns: vec![region_column],
+            region_index: HashMap::new(),
+            region_id_counts: vec![region_count],
+            edges: vec![],
+            edge_weights: None,
+        }
+    }
+
+    #[test]
+    fn region_metric_counts_splits_and_pieces_while_ignoring_missing_regions() {
+        let graph = graph_with_region_column(vec![Some(0), Some(0), Some(1), None], 2);
+        let assignment = vec![1, 2, 2, 3];
+
+        assert_eq!(
+            region_metric_for_key(&graph, &assignment, 0, RegionMetric::Splits),
+            1
+        );
+        assert_eq!(
+            region_metric_for_key(&graph, &assignment, 0, RegionMetric::Pieces),
+            3
+        );
+    }
+
+    #[test]
+    fn region_metric_handles_district_ids_across_word_boundaries() {
+        let graph = graph_with_region_column(vec![Some(0), Some(0), Some(1)], 2);
+        let assignment = vec![0, 64, 64];
+
+        assert_eq!(
+            region_metric_for_key(&graph, &assignment, 0, RegionMetric::Splits),
+            1
+        );
+        assert_eq!(
+            region_metric_for_key(&graph, &assignment, 0, RegionMetric::Pieces),
+            3
+        );
+    }
+
+    #[test]
+    fn region_metric_returns_zero_when_no_regions_are_present() {
+        let graph = graph_with_region_column(vec![None, None], 0);
+        assert_eq!(
+            region_metric_for_key(&graph, &[1, 2], 0, RegionMetric::Splits),
+            0
+        );
+        assert_eq!(
+            region_metric_for_key(&graph, &[1, 2], 0, RegionMetric::Pieces),
+            0
+        );
+    }
+}

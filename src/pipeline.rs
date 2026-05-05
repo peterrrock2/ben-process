@@ -166,3 +166,67 @@ where
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{count_frames, count_samples, run_pipeline};
+    use ben::encode::BenEncoder;
+    use ben::BenVariant;
+    use tempfile::NamedTempFile;
+
+    fn write_ben_file(variant: BenVariant, assignments: &[Vec<u16>]) -> NamedTempFile {
+        let file = NamedTempFile::new().unwrap();
+        let writer = std::fs::File::create(file.path()).unwrap();
+        let mut encoder = BenEncoder::new(writer, variant);
+        for assignment in assignments {
+            encoder.write_assignment(assignment.clone()).unwrap();
+        }
+        encoder.finish().unwrap();
+        file
+    }
+
+    #[test]
+    fn count_samples_and_frames_diverge_for_mkvchain_repetitions() {
+        let ben_file = write_ben_file(
+            BenVariant::MkvChain,
+            &[
+                vec![1, 1, 2, 2],
+                vec![1, 1, 2, 2],
+                vec![2, 2, 1, 1],
+            ],
+        );
+
+        assert_eq!(count_samples(ben_file.path().to_str().unwrap()).unwrap(), 3);
+        assert_eq!(count_frames(ben_file.path().to_str().unwrap()).unwrap(), 2);
+    }
+
+    #[test]
+    fn run_pipeline_reports_steps_repetitions_and_acceptance_order() {
+        let ben_file = write_ben_file(
+            BenVariant::MkvChain,
+            &[
+                vec![1, 1, 2, 2],
+                vec![1, 1, 2, 2],
+                vec![2, 2, 1, 1],
+            ],
+        );
+
+        let mut rows = Vec::new();
+        run_pipeline(
+            ben_file.path().to_str().unwrap(),
+            3,
+            |assignment, n_reps| (assignment[0], n_reps),
+            |step, n_reps, accepted, row| rows.push((step, n_reps, accepted, row)),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            rows,
+            vec![
+                (1, 2, 1, (1, 2)),
+                (3, 1, 2, (2, 1)),
+            ]
+        );
+    }
+}

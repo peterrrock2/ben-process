@@ -172,3 +172,101 @@ pub fn tally_and_save_from_key_list(
     eprintln!("Done!");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{save_tallies_to_parquet, sorted_district_ids, tally_keys, TallyRow};
+    use crate::graph::Graph;
+    use polars::prelude::{ParquetReader, SerReader};
+    use std::collections::HashMap;
+    use std::fs::File;
+    use tempfile::NamedTempFile;
+
+    fn graph_with_attr_columns(attr_columns: Vec<Vec<f64>>) -> Graph {
+        Graph {
+            attr_columns,
+            attr_index: HashMap::new(),
+            region_columns: vec![],
+            region_index: HashMap::new(),
+            region_id_counts: vec![],
+            edges: vec![],
+            edge_weights: None,
+        }
+    }
+
+    #[test]
+    fn tally_keys_accumulates_multiple_keys_and_sparse_district_ids() {
+        let graph = graph_with_attr_columns(vec![vec![1.0, 2.0, 3.0], vec![10.0, 20.0, 30.0]]);
+
+        let (totals, n_districts, observed) = tally_keys(&graph, &[1, 3, 1], &[0, 1]);
+
+        assert_eq!(n_districts, 4);
+        assert_eq!(observed, (1u128 << 1) | (1u128 << 3));
+        assert_eq!(totals, vec![0.0, 4.0, 0.0, 2.0, 0.0, 40.0, 0.0, 20.0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "district id 128 exceeds current 128-district limit")]
+    fn tally_keys_panics_when_assignment_exceeds_supported_district_limit() {
+        let graph = graph_with_attr_columns(vec![vec![1.0]]);
+        let _ = tally_keys(&graph, &[128], &[0]);
+    }
+
+    #[test]
+    fn sorted_district_ids_returns_ascending_order() {
+        let mask = (1u128 << 63) | (1u128 << 1) | (1u128 << 65);
+        assert_eq!(sorted_district_ids(mask), vec![1, 63, 65]);
+    }
+
+    #[test]
+    fn save_tallies_to_parquet_writes_union_of_observed_districts_with_nulls() {
+        let file = NamedTempFile::new().unwrap();
+        let key_list = vec!["pop".to_string()];
+        let tallies = vec![
+            TallyRow {
+                sample_num: 1,
+                n_reps: 1,
+                accepted_count: 1,
+                totals: vec![0.0, 60.0],
+                n_districts: 2,
+                observed: 1u128 << 1,
+            },
+            TallyRow {
+                sample_num: 2,
+                n_reps: 1,
+                accepted_count: 2,
+                totals: vec![0.0, 0.0, 0.0, 20.0],
+                n_districts: 4,
+                observed: 1u128 << 3,
+            },
+        ];
+
+        save_tallies_to_parquet(file.path().to_str().unwrap(), &tallies, &key_list, false)
+            .unwrap();
+
+        let df = ParquetReader::new(&mut File::open(file.path()).unwrap())
+            .finish()
+            .unwrap();
+        let district_1 = df.column("district_1").unwrap().f64().unwrap();
+        let district_3 = df.column("district_3").unwrap().f64().unwrap();
+
+        assert_eq!(
+            df.get_column_names()
+                .iter()
+                .map(|name| name.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "step",
+                "n_reps",
+                "accepted_count",
+                "sum_columns",
+                "district_1",
+                "district_3",
+            ]
+        );
+        assert_eq!(district_1.get(0), Some(60.0));
+        assert_eq!(district_1.get(1), None);
+        assert_eq!(district_3.get(0), None);
+        assert_eq!(district_3.get(1), Some(20.0));
+    }
+}
