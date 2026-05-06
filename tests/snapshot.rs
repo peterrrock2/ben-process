@@ -331,7 +331,7 @@ fn tally_keys_pop_per_district() {
         "--keys", "pop",
         "--no-progress",
     ]);
-    let df = read_parquet(&f.dir.join("graph_tallies").join("pop_tally_graph.parquet"));
+    let df = read_parquet(&f.dir.join("plans_tallies").join("pop_tally_plans.parquet"));
     assert_eq!(f64_col(&df, "district_1"), vec![60.0, 90.0, 140.0]);
     assert_eq!(f64_col(&df, "district_2"), vec![150.0, 120.0, 70.0]);
     assert_eq!(u64_col(&df, "step"), vec![1, 2, 3]);
@@ -364,8 +364,8 @@ fn tally_keys_multiple_keys_write_separate_files() {
         "--no-progress",
     ]);
 
-    let pop_df = read_parquet(&f.dir.join("graph_tallies").join("pop_tally_graph.parquet"));
-    let area_df = read_parquet(&f.dir.join("graph_tallies").join("area_tally_graph.parquet"));
+    let pop_df = read_parquet(&f.dir.join("plans_tallies").join("pop_tally_plans.parquet"));
+    let area_df = read_parquet(&f.dir.join("plans_tallies").join("area_tally_plans.parquet"));
 
     assert_eq!(f64_col(&pop_df, "district_1"), vec![60.0, 90.0, 140.0]);
     assert_eq!(f64_col(&pop_df, "district_2"), vec![150.0, 120.0, 70.0]);
@@ -389,11 +389,11 @@ fn tally_keys_output_dir_nests_files_under_graph_stem_directory() {
     ]);
 
     let expected = output_dir
-        .join("graph_tallies")
-        .join("pop_tally_graph.parquet");
+        .join("plans_tallies")
+        .join("pop_tally_plans.parquet");
     assert!(expected.exists(), "expected tally file at {:?}", expected);
     assert!(
-        !f.dir.join("graph_tallies").join("pop_tally_graph.parquet").exists(),
+        !f.dir.join("plans_tallies").join("pop_tally_plans.parquet").exists(),
         "tally file should respect --output-dir rather than defaulting to fixture dir"
     );
 }
@@ -797,6 +797,59 @@ fn extract_unique_plans_dedups_label_permutations() {
             vec![1u16, 1, 2, 2, 1, 1], // P_B first occurrence
             vec![1u16, 2, 1, 2, 1, 2], // P_C first occurrence
         ]
+    );
+}
+
+/// `--high-compression` switches the parquet writer from Snappy to Brotli.
+/// None of the other snapshot tests exercise this branch, so a regression in
+/// the Brotli writer setup wouldn't be caught. Run cut-edges with
+/// --high-compression and verify the output is still a valid parquet file
+/// with the expected values; the polars reader is compression-agnostic.
+#[test]
+fn cut_edges_with_high_compression_round_trips() {
+    let f = fixture(&tri_plans());
+    run(&[
+        "--mode", "cut-edges",
+        "--graph-file", f.graph.to_str().unwrap(),
+        "--ben-file", f.ben.to_str().unwrap(),
+        "--output-dir", f.dir.to_str().unwrap(),
+        "--high-compression",
+        "--no-progress",
+    ]);
+    let df = read_parquet(&f.dir.join("plans_cut_edges.parquet"));
+    assert_eq!(f64_col(&df, "cut_edges"), vec![2.0, 6.0, 2.0]);
+    assert_eq!(u64_col(&df, "step"), vec![1, 2, 3]);
+}
+
+/// `extract-unique-plans` opens the input via `BenDecoder::new` after a
+/// `count_frames` pass, both of which return errors that propagate via `?`.
+/// Feed it a non-BEN file and assert the binary exits non-zero rather than
+/// silently producing an empty/corrupt output. This guards the error path
+/// in src/metrics/extract_unique_plans.rs and src/pipeline.rs (count_frames).
+#[test]
+fn extract_unique_plans_fails_on_corrupted_ben_input() {
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let bogus = dir.join("not_a_real.jsonl.ben");
+    // Bytes that are definitely not a valid BEN stream — neither the magic
+    // header nor any decodable frames.
+    std::fs::write(&bogus, b"this is not a BEN file").unwrap();
+
+    let output = Command::new(bin())
+        .args([
+            "--mode", "extract-unique-plans",
+            "--ben-file", bogus.to_str().unwrap(),
+            "--output-dir", dir.to_str().unwrap(),
+            "--no-progress",
+        ])
+        .output()
+        .expect("failed to spawn ben-process");
+
+    assert!(
+        !output.status.success(),
+        "extract-unique-plans should fail on a corrupted BEN input; stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
     );
 }
 

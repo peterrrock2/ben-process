@@ -325,6 +325,41 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "Failed to parse")]
+    fn load_graph_panics_when_strict_numeric_key_is_missing_from_nodes() {
+        // Indexing a JSON object with an absent key yields `Value::Null`,
+        // which falls through `parse_numeric`'s catch-all and panics. This
+        // is the failure mode users hit when --keys references an attribute
+        // that doesn't exist on the graph nodes; pin it so a regression that
+        // silently fills 0.0 (or NaN) on the strict path would be caught.
+        // (The lenient `partial_numeric_keys` path is covered separately by
+        // load_graph_partial_numeric_defaults_missing_values_to_zero.)
+        let graph_json = json!({
+            "directed": false,
+            "multigraph": false,
+            "graph": [],
+            "nodes": [
+                { "pop": 1.0 },
+                { "pop": 2.0 },
+            ],
+            "adjacency": [
+                [ { "id": 1 } ],
+                [ { "id": 0 } ]
+            ]
+        });
+        let graph_file = write_graph(graph_json);
+
+        let _ = load_graph(
+            graph_file.path().to_str().unwrap(),
+            &["does_not_exist".to_string()],
+            &[],
+            &[],
+            None,
+            1.0,
+        );
+    }
+
+    #[test]
     fn load_graph_defaults_missing_weights_to_one() {
         let graph_json = json!({
             "directed": false,

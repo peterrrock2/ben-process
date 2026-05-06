@@ -59,16 +59,16 @@ Required:
 - `--keys <KEYS>...`
 
 Output:
-- creates a directory named `<graph_stem>_tallies`
+- creates a directory named `<ben_stem>_tallies`
 - writes one parquet file per key:
-  `<key>_tally_<graph_stem>.parquet`
+  `<key>_tally_<ben_stem>.parquet`
 - each file contains:
   `step`, `n_reps`, `accepted_count`, `district_*`
 
 If `--output-dir` is set, the output layout is:
 
 ```text
-<output_dir>/<graph_stem>_tallies/<key>_tally_<graph_stem>.parquet
+<output_dir>/<ben_stem>_tallies/<key>_tally_<ben_stem>.parquet
 ```
 
 Example:
@@ -85,9 +85,9 @@ ben-process \
 This produces files like:
 
 ```text
-out/graph_tallies/pop_tally_graph.parquet
-out/graph_tallies/area_tally_graph.parquet
-out/graph_tallies/vap_tally_graph.parquet
+out/plans_tallies/pop_tally_plans.parquet
+out/plans_tallies/area_tally_plans.parquet
+out/plans_tallies/vap_tally_plans.parquet
 ```
 
 ### `cut-edges`

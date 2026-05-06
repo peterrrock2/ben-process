@@ -115,13 +115,13 @@ fn key_batch_to_df(
 }
 
 fn make_key_writer_state(
-    graph_file_name: &str,
+    ben_file_name: &str,
     output_dir: Option<&str>,
     key: &str,
     district_ids: &[u16],
     high_compression: bool,
 ) -> Result<KeyWriterState, Box<dyn std::error::Error>> {
-    let output_path = build_tally_output_path(graph_file_name, key, output_dir);
+    let output_path = build_tally_output_path(ben_file_name, key, output_dir);
     let file = File::create(output_path)?;
     let empty_df = empty_key_df(district_ids)?;
     let writer = ParquetWriter::new(file)
@@ -218,7 +218,6 @@ fn save_single_key_tallies_to_parquet(
 pub fn tally_and_save_from_key_list(
     graph: Graph,
     in_file_name: &str,
-    graph_file_name: &str,
     output_dir: Option<&str>,
     key_list: Vec<String>,
     show_progress: bool,
@@ -234,7 +233,7 @@ pub fn tally_and_save_from_key_list(
         })
         .collect();
 
-    create_dir_all(build_tally_output_dir(graph_file_name, output_dir))?;
+    create_dir_all(build_tally_output_dir(in_file_name, output_dir))?;
 
     let total = count_samples(in_file_name)?;
     let mut key_states: Option<Vec<KeyWriterState>> = None;
@@ -264,7 +263,7 @@ pub fn tally_and_save_from_key_list(
                         .iter()
                         .map(|key| {
                             make_key_writer_state(
-                                graph_file_name,
+                                in_file_name,
                                 output_dir,
                                 key,
                                 &district_ids,
@@ -325,7 +324,7 @@ pub fn tally_and_save_from_key_list(
                 .iter()
                 .map(|key| {
                     make_key_writer_state(
-                        graph_file_name,
+                        in_file_name,
                         output_dir,
                         key,
                         &district_ids,

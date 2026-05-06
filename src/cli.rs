@@ -67,15 +67,7 @@ pub struct Args {
 /// and asserts distinctness as a safety net.
 pub fn build_output_path(in_ben_file: &str, suffix: &str, output_dir: Option<&str>) -> String {
     let in_path = Path::new(in_ben_file);
-    let base_name = in_path
-        .file_name()
-        .expect("Failed to extract basename")
-        .to_string_lossy()
-        .into_owned();
-    let stem = base_name
-        .strip_suffix(".jsonl.ben")
-        .or_else(|| base_name.strip_suffix(".ben"))
-        .unwrap_or(&base_name);
+    let stem = ben_stem(in_ben_file);
     let new_name = format!("{}{}", stem, suffix);
 
     let out = match output_dir {
@@ -100,31 +92,38 @@ pub fn build_output_path(in_ben_file: &str, suffix: &str, output_dir: Option<&st
     out
 }
 
-pub fn build_tally_output_dir(graph_file: &str, output_dir: Option<&str>) -> PathBuf {
-    let graph_path = Path::new(graph_file);
-    let graph_stem = graph_path
-        .file_stem()
-        .expect("Failed to extract graph stem")
-        .to_string_lossy();
-    let dir_name = format!("{}_tallies", graph_stem);
+fn ben_stem(in_ben_file: &str) -> String {
+    let in_path = Path::new(in_ben_file);
+    let base_name = in_path
+        .file_name()
+        .expect("Failed to extract basename")
+        .to_string_lossy()
+        .into_owned();
+    base_name
+        .strip_suffix(".jsonl.ben")
+        .or_else(|| base_name.strip_suffix(".ben"))
+        .unwrap_or(&base_name)
+        .to_string()
+}
+
+pub fn build_tally_output_dir(in_ben_file: &str, output_dir: Option<&str>) -> PathBuf {
+    let ben_path = Path::new(in_ben_file);
+    let ben_stem = ben_stem(in_ben_file);
+    let dir_name = format!("{}_tallies", ben_stem);
 
     match output_dir {
         Some(dir) => PathBuf::from(dir).join(dir_name),
-        None => graph_path
+        None => ben_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .join(dir_name),
     }
 }
 
-pub fn build_tally_output_path(graph_file: &str, key: &str, output_dir: Option<&str>) -> PathBuf {
-    let graph_path = Path::new(graph_file);
-    let graph_stem = graph_path
-        .file_stem()
-        .expect("Failed to extract graph stem")
-        .to_string_lossy();
-    build_tally_output_dir(graph_file, output_dir)
-        .join(format!("{}_tally_{}.parquet", key, graph_stem))
+pub fn build_tally_output_path(in_ben_file: &str, key: &str, output_dir: Option<&str>) -> PathBuf {
+    let ben_stem = ben_stem(in_ben_file);
+    build_tally_output_dir(in_ben_file, output_dir)
+        .join(format!("{}_tally_{}.parquet", key, ben_stem))
 }
 
 #[cfg(test)]
@@ -187,18 +186,18 @@ mod tests {
     }
 
     #[test]
-    fn build_tally_output_dir_uses_graph_stem() {
+    fn build_tally_output_dir_uses_ben_stem() {
         assert_eq!(
-            build_tally_output_dir("/tmp/runs/graph.json", Some("/tmp/out")),
-            PathBuf::from("/tmp/out/graph_tallies")
+            build_tally_output_dir("/tmp/runs/plans.jsonl.ben", Some("/tmp/out")),
+            PathBuf::from("/tmp/out/plans_tallies")
         );
     }
 
     #[test]
-    fn build_tally_output_path_uses_key_and_graph_stem() {
+    fn build_tally_output_path_uses_key_and_ben_stem() {
         assert_eq!(
-            build_tally_output_path("/tmp/runs/graph.json", "pop", Some("/tmp/out")),
-            PathBuf::from("/tmp/out/graph_tallies/pop_tally_graph.parquet")
+            build_tally_output_path("/tmp/runs/plans.jsonl.ben", "pop", Some("/tmp/out")),
+            PathBuf::from("/tmp/out/plans_tallies/pop_tally_plans.parquet")
         );
     }
 }

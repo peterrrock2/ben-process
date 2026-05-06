@@ -354,6 +354,20 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "exceeds current 128-district limit")]
+    fn polsby_popper_rows_panics_when_assignment_exceeds_supported_district_limit() {
+        // Mirrors the tally_keys MAX_DISTRICTS guard: any district id >= 128
+        // must trip the bitmask-width panic before it silently overflows.
+        let _ = polsby_popper_rows(
+            &[128],
+            &[1.0],
+            &[1.0],
+            &[],
+            &[],
+        );
+    }
+
+    #[test]
     fn polsby_batched_writer_appends_multiple_batches() {
         let file = NamedTempFile::new().unwrap();
         let district_ids = vec![1, 2];
