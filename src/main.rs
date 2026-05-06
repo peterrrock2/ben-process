@@ -65,20 +65,29 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             )?;
         }
         Mode::PolsbyPopper => {
-            let area_key = args
-                .area_key
+            let area_key = args.area_key.clone().unwrap_or_else(|| "area".to_string());
+            let shared_perim_key = args
+                .shared_perim_key
                 .clone()
-                .unwrap_or_else(|| panic!("--area-key is required for polsby-popper mode"));
-            let shared_perim_key = args.shared_perim_key.clone().unwrap_or_else(|| {
-                panic!("--shared-perim-key is required for polsby-popper mode")
-            });
-            let perim_key = args.perim_key.clone();
-            let boundary_perim_key = args.boundary_perim_key.clone();
-            if perim_key.is_none() && boundary_perim_key.is_none() {
-                panic!(
-                    "polsby-popper mode requires --perim-key or --boundary-perim-key"
-                );
+                .unwrap_or_else(|| "shared_perim".to_string());
+            let (perim_key, boundary_perim_key) = match (&args.perim_key, &args.boundary_perim_key)
+            {
+                (Some(perim_key), _) => Some(perim_key.clone()),
+                (None, _) => None,
             }
+            .map_or_else(
+                || {
+                    (
+                        None,
+                        Some(
+                            args.boundary_perim_key
+                                .clone()
+                                .unwrap_or_else(|| "boundary_perim".to_string()),
+                        ),
+                    )
+                },
+                |perim_key| (Some(perim_key), args.boundary_perim_key.clone()),
+            );
 
             let mut numeric_keys = vec![area_key.clone()];
             if let Some(perim_key) = &perim_key {

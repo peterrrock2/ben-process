@@ -423,6 +423,43 @@ fn polsby_popper_with_boundary_and_shared_perimeter_matches_direct_perimeter() {
 }
 
 #[test]
+fn polsby_popper_uses_gerrychain_default_geometry_keys() {
+    let plans = vec![vec![1u16, 1, 2, 2]];
+    let f = polsby_fixture(&plans);
+    run(&[
+        "--mode", "polsby-popper",
+        "--graph-file", f.graph.to_str().unwrap(),
+        "--ben-file", f.ben.to_str().unwrap(),
+        "--output-dir", f.dir.to_str().unwrap(),
+        "--no-progress",
+    ]);
+
+    let df = read_parquet(&f.dir.join("plans_polsby_popper.parquet"));
+    let expected = [2.0 * std::f64::consts::PI / 9.0];
+    assert_f64_vec_close(&f64_col(&df, "district_1"), &expected);
+    assert_f64_vec_close(&f64_col(&df, "district_2"), &expected);
+}
+
+#[test]
+fn polsby_popper_uses_default_area_and_shared_keys_with_explicit_boundary_perimeter_key() {
+    let plans = vec![vec![1u16, 1, 2, 2]];
+    let f = polsby_fixture(&plans);
+    run(&[
+        "--mode", "polsby-popper",
+        "--graph-file", f.graph.to_str().unwrap(),
+        "--ben-file", f.ben.to_str().unwrap(),
+        "--output-dir", f.dir.to_str().unwrap(),
+        "--boundary-perim-key", "boundary_perim",
+        "--no-progress",
+    ]);
+
+    let df = read_parquet(&f.dir.join("plans_polsby_popper.parquet"));
+    let expected = [2.0 * std::f64::consts::PI / 9.0];
+    assert_f64_vec_close(&f64_col(&df, "district_1"), &expected);
+    assert_f64_vec_close(&f64_col(&df, "district_2"), &expected);
+}
+
+#[test]
 fn region_splits_for_region_key() {
     let f = fixture(&tri_plans());
     run(&[

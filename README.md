@@ -129,9 +129,8 @@ Computes district-level Polsby-Popper scores for each accepted plan.
 
 Required:
 - `--graph-file`
-- `--area-key <AREA_KEY>`
-- `--shared-perim-key <SHARED_PERIM_KEY>`
 - one of:
+  default GerryChain geometry keys
   `--perim-key <PERIM_KEY>`
   `--boundary-perim-key <BOUNDARY_PERIM_KEY>`
 
@@ -141,22 +140,25 @@ Output:
   `step`, `n_reps`, `accepted_count`, `district_*`
 
 Notes:
-- if `--perim-key` is provided, node total perimeter comes directly from that column
-- otherwise node total perimeter is derived once from
+- default column names are:
+  `area`, `boundary_perim`, and `shared_perim`
+- with no Polsby-Popper key flags, `ben-process` assumes a standard
+  GerryChain dual-graph export and derives node total perimeter from
   `boundary_perim + sum(shared perimeter on incident edges)`
+- if `--perim-key` is provided, node total perimeter comes directly from
+  that column instead
 - the first assignment fixes the output district columns; if later plans
   introduce unseen district ids, the run fails fast
 
 Examples:
+
+Use the default GerryChain geometry keys:
 
 ```bash
 ben-process \
   --mode polsby-popper \
   --graph-file data/dual_graph.json \
   --ben-file runs/plans.jsonl.ben \
-  --area-key area \
-  --perim-key perim \
-  --shared-perim-key shared_perim \
   --output-dir out
 ```
 
@@ -165,9 +167,16 @@ ben-process \
   --mode polsby-popper \
   --graph-file data/dual_graph.json \
   --ben-file runs/plans.jsonl.ben \
-  --area-key area \
+  --perim-key perim \
+  --output-dir out
+```
+
+```bash
+ben-process \
+  --mode polsby-popper \
+  --graph-file data/dual_graph.json \
+  --ben-file runs/plans.jsonl.ben \
   --boundary-perim-key boundary_perim \
-  --shared-perim-key shared_perim \
   --output-dir out
 ```
 
@@ -335,9 +344,7 @@ ben-process \
   --mode polsby-popper \
   --graph-file data/dual_graph.json \
   --ben-file runs/plans.jsonl.ben \
-  --area-key area \
   --perim-key perim \
-  --shared-perim-key shared_perim \
   --output-dir out
 ```
 
