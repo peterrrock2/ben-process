@@ -93,6 +93,10 @@ fn parse_numeric(value: &Value, key: &str) -> f64 {
     }
 }
 
+fn parse_numeric_or_zero(value: &Value) -> f64 {
+    parse_numeric_opt(value).unwrap_or(0.0)
+}
+
 fn parse_numeric_opt(value: &Value) -> Option<f64> {
     match value {
         Value::Number(n) => n.as_f64(),
@@ -113,8 +117,10 @@ fn parse_numeric_opt(value: &Value) -> Option<f64> {
 pub fn load_graph(
     file_path: &str,
     numeric_keys: &[String],
+    partial_numeric_keys: &[String],
     region_keys: &[String],
     edge_weight_key: Option<&str>,
+    edge_default_value: f64,
 ) -> Result<Graph> {
     let file =
         File::open(file_path).unwrap_or_else(|_| panic!("File {} not found", file_path));
@@ -123,13 +129,28 @@ pub fn load_graph(
         serde_json::from_reader(reader).expect("Unable to parse JSON");
 
     // --- numeric node attributes ---
-    let mut attr_columns: Vec<Vec<f64>> = Vec::with_capacity(numeric_keys.len());
-    let mut attr_index: HashMap<String, usize> = HashMap::with_capacity(numeric_keys.len());
+    let mut attr_columns: Vec<Vec<f64>> =
+        Vec::with_capacity(numeric_keys.len() + partial_numeric_keys.len());
+    let mut attr_index: HashMap<String, usize> =
+        HashMap::with_capacity(numeric_keys.len() + partial_numeric_keys.len());
     for key in numeric_keys {
         let col: Vec<f64> = graph_data
             .nodes
             .iter()
             .map(|node| parse_numeric(&node[key], key))
+            .collect();
+        attr_index.insert(key.clone(), attr_columns.len());
+        attr_columns.push(col);
+    }
+    for key in partial_numeric_keys {
+        let col: Vec<f64> = graph_data
+            .nodes
+            .iter()
+            .map(|node| {
+                node.get(key.as_str())
+                    .map(parse_numeric_or_zero)
+                    .unwrap_or(0.0)
+            })
             .collect();
         attr_index.insert(key.clone(), attr_columns.len());
         attr_columns.push(col);
@@ -195,7 +216,7 @@ pub fn load_graph(
     let edge_weights: Option<Vec<f64>> = edge_weight_key.map(|_| {
         edges
             .iter()
-            .map(|e| edge_weights_map.get(e).copied().unwrap_or(1.0))
+            .map(|e| edge_weights_map.get(e).copied().unwrap_or(edge_default_value))
             .collect()
     });
 
@@ -285,8 +306,10 @@ mod tests {
         let graph = load_graph(
             graph_file.path().to_str().unwrap(),
             &numeric_keys,
+            &[],
             &region_keys,
             Some("weight"),
+            1.0,
         )
         .unwrap();
 
@@ -322,11 +345,77 @@ mod tests {
             graph_file.path().to_str().unwrap(),
             &[],
             &[],
+            &[],
             Some("weight"),
+            1.0,
         )
         .unwrap();
 
         assert_eq!(graph.edges, vec![(0, 1)]);
         assert_eq!(graph.edge_weights, Some(vec![1.0]));
+    }
+
+    #[test]
+    fn load_graph_partial_numeric_defaults_missing_values_to_zero() {
+        let graph_json = json!({
+            "directed": false,
+            "multigraph": false,
+            "graph": [],
+            "nodes": [
+                { "area": 1.0, "boundary_perim": 3.0 },
+                { "area": 2.0 },
+                { "area": 3.0, "boundary_perim": null },
+                { "area": 4.0, "boundary_perim": "oops" }
+            ],
+            "adjacency": [[], [], [], []]
+        });
+        let graph_file = write_graph(graph_json);
+
+        let graph = load_graph(
+            graph_file.path().to_str().unwrap(),
+            &["area".to_string()],
+            &["boundary_perim".to_string()],
+            &[],
+            None,
+            0.0,
+        )
+        .unwrap();
+
+        assert_eq!(graph.attr_columns[graph.attr_index["area"]], vec![1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(
+            graph.attr_columns[graph.attr_index["boundary_perim"]],
+            vec![3.0, 0.0, 0.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn load_graph_uses_requested_edge_default_value() {
+        let graph_json = json!({
+            "directed": false,
+            "multigraph": false,
+            "graph": [],
+            "nodes": [
+                { "pop": 1.0 },
+                { "pop": 2.0 },
+            ],
+            "adjacency": [
+                [ { "id": 1 } ],
+                [ { "id": 0 } ]
+            ]
+        });
+        let graph_file = write_graph(graph_json);
+
+        let graph = load_graph(
+            graph_file.path().to_str().unwrap(),
+            &[],
+            &[],
+            &[],
+            Some("shared_perim"),
+            0.0,
+        )
+        .unwrap();
+
+        assert_eq!(graph.edges, vec![(0, 1)]);
+        assert_eq!(graph.edge_weights, Some(vec![0.0]));
     }
 }

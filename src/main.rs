@@ -28,7 +28,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     match args.mode {
         Mode::TallyKeys => {
-            let graph = load_graph(graph_file_or_die(&args), &args.keys, &[], None)
+            let graph = load_graph(graph_file_or_die(&args), &args.keys, &[], &[], None, 0.0)
                 .expect("Could not load graph");
             let graph_file = graph_file_or_die(&args).to_string();
             let output_dir = args.output_dir.as_deref();
@@ -47,7 +47,9 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 graph_file_or_die(&args),
                 &[],
                 &[],
+                &[],
                 args.edge_weight_key.as_deref(),
+                1.0,
             )
             .expect("Could not load graph");
             let output_file = build_output_path(
@@ -90,17 +92,20 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             );
 
             let mut numeric_keys = vec![area_key.clone()];
+            let mut partial_numeric_keys = Vec::new();
             if let Some(perim_key) = &perim_key {
                 numeric_keys.push(perim_key.clone());
             } else if let Some(boundary_perim_key) = &boundary_perim_key {
-                numeric_keys.push(boundary_perim_key.clone());
+                partial_numeric_keys.push(boundary_perim_key.clone());
             }
 
             let graph = load_graph(
                 graph_file_or_die(&args),
                 &numeric_keys,
+                &partial_numeric_keys,
                 &[],
                 Some(shared_perim_key.as_str()),
+                0.0,
             )
             .expect("Could not load graph");
             let output_file = build_output_path(
@@ -135,7 +140,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             if args.keys.is_empty() {
                 panic!("at least one key is required for region-splits mode");
             }
-            let graph = load_graph(graph_file_or_die(&args), &[], &args.keys, None)
+            let graph = load_graph(graph_file_or_die(&args), &[], &[], &args.keys, None, 0.0)
                 .expect("Could not load graph");
             let output_file = build_output_path(
                 &args.ben_file,
@@ -157,7 +162,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             if args.keys.is_empty() {
                 panic!("at least one key is required for region-pieces mode");
             }
-            let graph = load_graph(graph_file_or_die(&args), &[], &args.keys, None)
+            let graph = load_graph(graph_file_or_die(&args), &[], &[], &args.keys, None, 0.0)
                 .expect("Could not load graph");
             let output_file = build_output_path(
                 &args.ben_file,

@@ -84,6 +84,55 @@ fn write_polsby_fixture_graph(path: &Path) {
     f.write_all(graph_json.to_string().as_bytes()).unwrap();
 }
 
+// Same four-node path as `write_polsby_fixture_graph`, but with GerryChain-like
+// partial boundary perimeter data: only boundary nodes carry `boundary_perim`.
+// The middle nodes omit the key entirely.
+fn write_polsby_partial_boundary_graph(path: &Path) {
+    let graph_json = serde_json::json!({
+        "directed": false,
+        "multigraph": false,
+        "graph": [],
+        "nodes": [
+            { "area": 1.0, "boundary_perim": 3.0 },
+            { "area": 1.0 },
+            { "area": 1.0 },
+            { "area": 1.0, "boundary_perim": 3.0 }
+        ],
+        "adjacency": [
+            [{ "id": 1, "shared_perim": 1.0 }],
+            [{ "id": 0, "shared_perim": 1.0 }, { "id": 2, "shared_perim": 1.0 }],
+            [{ "id": 1, "shared_perim": 1.0 }, { "id": 3, "shared_perim": 1.0 }],
+            [{ "id": 2, "shared_perim": 1.0 }]
+        ]
+    });
+    let mut f = File::create(path).unwrap();
+    f.write_all(graph_json.to_string().as_bytes()).unwrap();
+}
+
+// Four-node path with one internal shared-perimeter edge omitted entirely.
+// `frcw` treats missing shared_perim as 0.0 during derivation.
+fn write_polsby_missing_shared_perim_graph(path: &Path) {
+    let graph_json = serde_json::json!({
+        "directed": false,
+        "multigraph": false,
+        "graph": [],
+        "nodes": [
+            { "area": 1.0, "boundary_perim": 3.0 },
+            { "area": 1.0, "boundary_perim": 2.0 },
+            { "area": 1.0, "boundary_perim": 2.0 },
+            { "area": 1.0, "boundary_perim": 3.0 }
+        ],
+        "adjacency": [
+            [{ "id": 1, "shared_perim": 1.0 }],
+            [{ "id": 0, "shared_perim": 1.0 }, { "id": 2 }],
+            [{ "id": 1 }, { "id": 3, "shared_perim": 1.0 }],
+            [{ "id": 2, "shared_perim": 1.0 }]
+        ]
+    });
+    let mut f = File::create(path).unwrap();
+    f.write_all(graph_json.to_string().as_bytes()).unwrap();
+}
+
 fn write_fixture_ben(path: &Path, plans: &[Vec<u16>]) {
     let f = File::create(path).unwrap();
     let mut enc = BenEncoder::new(f, BenVariant::Standard);
@@ -128,6 +177,26 @@ fn polsby_fixture(plans: &[Vec<u16>]) -> Fixture {
     let graph = dir.join("graph.json");
     let ben = dir.join("plans.jsonl.ben");
     write_polsby_fixture_graph(&graph);
+    write_fixture_ben(&ben, plans);
+    Fixture { _tmp: tmp, dir, graph, ben }
+}
+
+fn polsby_partial_boundary_fixture(plans: &[Vec<u16>]) -> Fixture {
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let graph = dir.join("graph.json");
+    let ben = dir.join("plans.jsonl.ben");
+    write_polsby_partial_boundary_graph(&graph);
+    write_fixture_ben(&ben, plans);
+    Fixture { _tmp: tmp, dir, graph, ben }
+}
+
+fn polsby_missing_shared_perim_fixture(plans: &[Vec<u16>]) -> Fixture {
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let graph = dir.join("graph.json");
+    let ben = dir.join("plans.jsonl.ben");
+    write_polsby_missing_shared_perim_graph(&graph);
     write_fixture_ben(&ben, plans);
     Fixture { _tmp: tmp, dir, graph, ben }
 }
@@ -436,6 +505,42 @@ fn polsby_popper_uses_gerrychain_default_geometry_keys() {
 
     let df = read_parquet(&f.dir.join("plans_polsby_popper.parquet"));
     let expected = [2.0 * std::f64::consts::PI / 9.0];
+    assert_f64_vec_close(&f64_col(&df, "district_1"), &expected);
+    assert_f64_vec_close(&f64_col(&df, "district_2"), &expected);
+}
+
+#[test]
+fn polsby_popper_treats_missing_boundary_perimeter_as_zero() {
+    let plans = vec![vec![1u16, 1, 2, 2]];
+    let f = polsby_partial_boundary_fixture(&plans);
+    run(&[
+        "--mode", "polsby-popper",
+        "--graph-file", f.graph.to_str().unwrap(),
+        "--ben-file", f.ben.to_str().unwrap(),
+        "--output-dir", f.dir.to_str().unwrap(),
+        "--no-progress",
+    ]);
+
+    let df = read_parquet(&f.dir.join("plans_polsby_popper.parquet"));
+    let expected = [std::f64::consts::PI / 2.0];
+    assert_f64_vec_close(&f64_col(&df, "district_1"), &expected);
+    assert_f64_vec_close(&f64_col(&df, "district_2"), &expected);
+}
+
+#[test]
+fn polsby_popper_treats_missing_shared_perimeter_as_zero() {
+    let plans = vec![vec![1u16, 1, 2, 2]];
+    let f = polsby_missing_shared_perim_fixture(&plans);
+    run(&[
+        "--mode", "polsby-popper",
+        "--graph-file", f.graph.to_str().unwrap(),
+        "--ben-file", f.ben.to_str().unwrap(),
+        "--output-dir", f.dir.to_str().unwrap(),
+        "--no-progress",
+    ]);
+
+    let df = read_parquet(&f.dir.join("plans_polsby_popper.parquet"));
+    let expected = [8.0 * std::f64::consts::PI / 25.0];
     assert_f64_vec_close(&f64_col(&df, "district_1"), &expected);
     assert_f64_vec_close(&f64_col(&df, "district_2"), &expected);
 }
