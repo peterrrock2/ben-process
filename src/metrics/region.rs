@@ -247,6 +247,40 @@ mod tests {
     }
 
     #[test]
+    fn region_metric_handles_single_district_plan() {
+        // max_d == 0 → words_per_region = 1 (the floor of 0/64 still buys us
+        // one word). Every node maps to district 0, so each region has exactly
+        // one piece and zero splits regardless of how many regions exist.
+        let graph = graph_with_region_column(vec![Some(0), Some(1), Some(0), Some(1)], 2);
+        let assignment = vec![0u16, 0, 0, 0];
+
+        assert_eq!(
+            region_metric_for_key(&graph, &assignment, 0, RegionMetric::Splits),
+            0
+        );
+        assert_eq!(
+            region_metric_for_key(&graph, &assignment, 0, RegionMetric::Pieces),
+            2
+        );
+    }
+
+    #[test]
+    fn region_metric_collapses_when_every_node_is_same_region_and_district() {
+        // Single region, single district → zero splits, one piece.
+        let graph = graph_with_region_column(vec![Some(0), Some(0), Some(0)], 1);
+        let assignment = vec![5u16, 5, 5];
+
+        assert_eq!(
+            region_metric_for_key(&graph, &assignment, 0, RegionMetric::Splits),
+            0
+        );
+        assert_eq!(
+            region_metric_for_key(&graph, &assignment, 0, RegionMetric::Pieces),
+            1
+        );
+    }
+
+    #[test]
     fn region_metric_returns_zero_when_no_regions_are_present() {
         let graph = graph_with_region_column(vec![None, None], 0);
         assert_eq!(

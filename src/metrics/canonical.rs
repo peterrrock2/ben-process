@@ -67,6 +67,33 @@ mod tests {
     }
 
     #[test]
+    fn canonical_hash_handles_empty_assignment() {
+        // `max().unwrap_or(0)` on an empty slice yields 0 → remap of length 1
+        // with no labels ever inserted. The loop runs zero times, so the digest
+        // is the empty xxh3 hash. Pin that the call doesn't panic and that two
+        // empty assignments collide (label-invariance trivially holds).
+        let h1 = canonical_hash(&[]);
+        let h2 = canonical_hash(&[]);
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn canonical_hash_handles_label_at_u16_max() {
+        // u16::MAX is used internally as the "not yet remapped" sentinel, but
+        // since `remap` is initialized to that sentinel everywhere, a label
+        // value of u16::MAX is correctly detected as first-seen on its first
+        // appearance. Pin both the no-panic path and label-invariance with a
+        // u16::MAX label present.
+        let plan = vec![u16::MAX, 0, u16::MAX, 0];
+        let relabeled = vec![7u16, 9, 7, 9];
+        assert_eq!(canonical_hash(&plan), canonical_hash(&relabeled));
+        assert_ne!(
+            canonical_hash(&plan),
+            canonical_hash(&[u16::MAX, u16::MAX, 0, 0])
+        );
+    }
+
+    #[test]
     fn canonical_hash_distinguishes_different_partitions() {
         assert_ne!(canonical_hash(&[1, 1, 2, 2]), canonical_hash(&[1, 2, 1, 2]));
         assert_ne!(canonical_hash(&[1, 1, 2, 2]), canonical_hash(&[1, 2, 2, 1]));

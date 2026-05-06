@@ -150,6 +150,41 @@ mod tests {
         assert_eq!(cut_edges(&graph, &[4, 4, 4, 4]), 0.0);
     }
 
+    fn graph_with_explicit_edges(edges: Vec<(u32, u32)>, edge_weights: Option<Vec<f64>>) -> Graph {
+        Graph {
+            attr_columns: vec![],
+            attr_index: HashMap::new(),
+            region_columns: vec![],
+            region_index: HashMap::new(),
+            region_id_counts: vec![],
+            edges,
+            edge_weights,
+        }
+    }
+
+    #[test]
+    fn cut_edges_returns_zero_for_empty_edge_list() {
+        // No edges → no crossings, regardless of assignment. Both the weighted
+        // and unweighted code paths must return 0.0 cleanly (no panic on the
+        // zip with weights, no negative-length iter issues).
+        let unweighted = graph_with_explicit_edges(vec![], None);
+        let weighted = graph_with_explicit_edges(vec![], Some(vec![]));
+        assert_eq!(cut_edges(&unweighted, &[1, 2, 3]), 0.0);
+        assert_eq!(cut_edges(&weighted, &[1, 2, 3]), 0.0);
+    }
+
+    #[test]
+    fn cut_edges_handles_zero_and_negative_weights() {
+        // The weighted path is a straight sum; there's no clamp on the inputs.
+        // Zero-weight cut edges contribute 0; negative weights subtract. Pin
+        // the behavior so a future "saturate at zero" change would be caught.
+        let graph = graph_with_edges(Some(vec![0.0, -2.5, 4.0]));
+        // Assignment [1,2,1,2] cuts every edge: 0.0 + (-2.5) + 4.0 = 1.5.
+        assert_eq!(cut_edges(&graph, &[1, 2, 1, 2]), 1.5);
+        // Assignment [1,1,2,2] cuts only edge (1,2) which has weight -2.5.
+        assert_eq!(cut_edges(&graph, &[1, 1, 2, 2]), -2.5);
+    }
+
     #[test]
     fn cut_edges_batched_writer_appends_multiple_batches() {
         let file = NamedTempFile::new().unwrap();

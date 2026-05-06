@@ -853,6 +853,130 @@ fn extract_unique_plans_fails_on_corrupted_ben_input() {
     );
 }
 
+/// When both `--perim-key` and `--boundary-perim-key` are passed, `perim-key`
+/// must take precedence (main.rs uses the direct perimeter and ignores the
+/// boundary derivation in that case). Build a graph where `boundary_perim` is
+/// deliberately wrong (would derive `total_perim = 1002` per node and push the
+/// score toward zero); the only way to get the canonical
+/// `2 * PI / 9` score is for the perim-key path to win.
+#[test]
+fn polsby_popper_perim_key_wins_when_both_keys_are_passed() {
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let graph = dir.join("graph.json");
+    let ben = dir.join("plans.jsonl.ben");
+
+    // Same area / shared_perim / perim as the standard polsby fixture, but
+    // boundary_perim is set to 999.0 — derivation would yield ~1001 per node
+    // and a near-zero score. perim=4 yields 2*PI/9 for plan [1,1,2,2].
+    let graph_json = serde_json::json!({
+        "directed": false,
+        "multigraph": false,
+        "graph": [],
+        "nodes": [
+            { "area": 1.0, "perim": 4.0, "boundary_perim": 999.0 },
+            { "area": 1.0, "perim": 4.0, "boundary_perim": 999.0 },
+            { "area": 1.0, "perim": 4.0, "boundary_perim": 999.0 },
+            { "area": 1.0, "perim": 4.0, "boundary_perim": 999.0 }
+        ],
+        "adjacency": [
+            [{ "id": 1, "shared_perim": 1.0 }],
+            [{ "id": 0, "shared_perim": 1.0 }, { "id": 2, "shared_perim": 1.0 }],
+            [{ "id": 1, "shared_perim": 1.0 }, { "id": 3, "shared_perim": 1.0 }],
+            [{ "id": 2, "shared_perim": 1.0 }]
+        ]
+    });
+    std::fs::write(&graph, graph_json.to_string()).unwrap();
+    write_fixture_ben(&ben, &[vec![1u16, 1, 2, 2]]);
+
+    run(&[
+        "--mode", "polsby-popper",
+        "--graph-file", graph.to_str().unwrap(),
+        "--ben-file", ben.to_str().unwrap(),
+        "--output-dir", dir.to_str().unwrap(),
+        "--area-key", "area",
+        "--perim-key", "perim",
+        "--boundary-perim-key", "boundary_perim",
+        "--shared-perim-key", "shared_perim",
+        "--no-progress",
+    ]);
+
+    let df = read_parquet(&dir.join("plans_polsby_popper.parquet"));
+    let expected = [2.0 * std::f64::consts::PI / 9.0];
+    assert_f64_vec_close(&f64_col(&df, "district_1"), &expected);
+    assert_f64_vec_close(&f64_col(&df, "district_2"), &expected);
+}
+
+/// `--randomize-reassignments` uses a thread-local OS-seeded RNG, so we can't
+/// pin exact dif counts. This is a smoke test: confirm the binary completes
+/// successfully, the output file uses the expected frame count, and the
+/// per-unit values are within the valid range. With two label-permuted frames,
+/// each per-unit count is either 0 (RNG fired and labels were swapped before
+/// counting) or 1 (RNG didn't fire; pure diff).
+#[test]
+fn changed_assignments_with_randomize_reassignments_runs_and_writes_valid_output() {
+    let plans = vec![vec![1u16, 1, 2, 2], vec![2u16, 2, 1, 1]];
+    let f = fixture(&plans);
+    run(&[
+        "--mode", "changed-assignments",
+        "--ben-file", f.ben.to_str().unwrap(),
+        "--output-dir", f.dir.to_str().unwrap(),
+        "--randomize-reassignments",
+        "--no-progress",
+    ]);
+
+    let body = std::fs::read_to_string(
+        f.dir.join("plans_accept_2_changed_assignments.txt"),
+    )
+    .unwrap();
+    let (counts_line, total_line) = body
+        .split_once('\n')
+        .expect("output should have two lines");
+    assert_eq!(total_line, "Total Accepted: 2");
+
+    let parsed: Vec<f64> = counts_line
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(", ")
+        .map(|s| s.parse::<f64>().unwrap())
+        .collect();
+    assert_eq!(parsed.len(), 4);
+    for v in parsed {
+        assert!(
+            v == 0.0 || v == 1.0,
+            "per-unit count under --randomize-reassignments must be 0 or 1, got {v}"
+        );
+    }
+}
+
+/// `--output-dir` pointing at an existing *file* (not a directory) cannot host
+/// the output parquet. `File::create` will fail; the binary must surface a
+/// non-zero exit rather than silently producing nothing.
+#[test]
+fn cut_edges_fails_when_output_dir_is_an_existing_file() {
+    let f = fixture(&tri_plans());
+    let bogus_dir = f.dir.join("not_a_dir");
+    std::fs::write(&bogus_dir, b"i am a regular file").unwrap();
+
+    let output = Command::new(bin())
+        .args([
+            "--mode", "cut-edges",
+            "--graph-file", f.graph.to_str().unwrap(),
+            "--ben-file", f.ben.to_str().unwrap(),
+            "--output-dir", bogus_dir.to_str().unwrap(),
+            "--no-progress",
+        ])
+        .output()
+        .expect("failed to spawn ben-process");
+
+    assert!(
+        !output.status.success(),
+        "cut-edges should fail when --output-dir is an existing file; stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
 #[test]
 fn unique_plans_writes_distinct_partition_count_and_total_frames() {
     // Same fixture as extract_unique_plans: 3 distinct partitions among 5 frames
