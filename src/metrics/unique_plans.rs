@@ -5,34 +5,11 @@
 //! only by a permutation of district labels collide on the same digest and
 //! thus count as the same partition.
 
+use crate::metrics::canonical::canonical_hash;
 use crate::pipeline::{count_samples, run_pipeline};
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write;
-use xxhash_rust::xxh3::Xxh3;
-
-fn canonical_hash(assignment: &[u16]) -> u128 {
-    let max_label = assignment.iter().copied().max().unwrap_or(0) as usize;
-    // u16::MAX is the "not yet seen" sentinel — assignments using all u16
-    // labels would already overflow the canonical id space.
-    let mut remap: Vec<u16> = vec![u16::MAX; max_label + 1];
-    let mut next_id: u16 = 0;
-
-    let mut hasher = Xxh3::new();
-    for &label in assignment {
-        let idx = label as usize;
-        let canonical = if remap[idx] == u16::MAX {
-            let id = next_id;
-            remap[idx] = id;
-            next_id += 1;
-            id
-        } else {
-            remap[idx]
-        };
-        hasher.update(&canonical.to_le_bytes());
-    }
-    hasher.digest128()
-}
 
 pub fn count_and_save_unique_plans(
     in_file_name: &str,
@@ -67,75 +44,4 @@ pub fn count_and_save_unique_plans(
 
     eprintln!("Wrote {}", out_file_name);
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::canonical_hash;
-    use rand::rngs::StdRng;
-    use rand::seq::SliceRandom;
-    use rand::{RngExt, SeedableRng};
-
-    fn random_binary_plan_with_both_labels(rng: &mut StdRng, len: usize) -> Vec<u16> {
-        let mut plan: Vec<u16> = (0..len)
-            .map(|_| if rng.random_bool(0.5) { 1 } else { 2 })
-            .collect();
-        if !plan.contains(&1) {
-            plan[0] = 1;
-        }
-        if !plan.contains(&2) {
-            plan[0] = 2;
-        }
-        if !plan.contains(&1) {
-            plan[1] = 1;
-        }
-        plan
-    }
-
-    #[test]
-    fn canonical_hash_is_invariant_to_label_permutations() {
-        assert_eq!(
-            canonical_hash(&[1, 1, 2, 2, 3, 3]),
-            canonical_hash(&[7, 7, 9, 9, 4, 4])
-        );
-    }
-
-    #[test]
-    fn canonical_hash_distinguishes_different_partitions() {
-        assert_ne!(canonical_hash(&[1, 1, 2, 2]), canonical_hash(&[1, 2, 1, 2]));
-    }
-
-    #[test]
-    fn canonical_hash_matches_for_random_relabelings() {
-        let mut rng = StdRng::seed_from_u64(0xC0FFEE);
-
-        for _ in 0..200 {
-            let plan_len = rng.random_range(8..32);
-            let label_count = rng.random_range(2..8);
-            let plan: Vec<u16> = (0..plan_len)
-                .map(|_| rng.random_range(0..label_count) as u16)
-                .collect();
-
-            let mut labels: Vec<u16> = (0..label_count as u16).collect();
-            labels.shuffle(&mut rng);
-            let relabeled: Vec<u16> = plan.iter().map(|&label| labels[label as usize]).collect();
-
-            assert_eq!(canonical_hash(&plan), canonical_hash(&relabeled));
-        }
-    }
-
-    #[test]
-    fn canonical_hash_differs_for_random_distinct_binary_partitions() {
-        let mut rng = StdRng::seed_from_u64(0xBAD5EED);
-
-        for _ in 0..200 {
-            let plan = random_binary_plan_with_both_labels(&mut rng, 24);
-            let mut changed = plan.clone();
-            let idx = rng.random_range(0..changed.len());
-            changed[idx] = if changed[idx] == 1 { 2 } else { 1 };
-
-            assert_ne!(plan, changed);
-            assert_ne!(canonical_hash(&plan), canonical_hash(&changed));
-        }
-    }
 }
