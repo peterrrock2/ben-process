@@ -55,6 +55,46 @@ fn update_changed_assignment_state(
     }
 }
 
+/// Pure driver loop over an iterator of assignments. Takes `first_assignment`
+/// as the seed and consumes `rest` to produce the raw `dif_count`. The
+/// `should_randomize` closure is invoked once per non-seed frame to decide
+/// whether that step's update applies a label-swap reassignment — separating
+/// the RNG (or the test's fake RNG) from this loop so callers can drive it
+/// deterministically.
+///
+/// Returns `(dif_count, full_count)` where `full_count` includes the seed
+/// frame plus everything yielded by `rest`.
+fn compute_changed_counts<I, F>(
+    first_assignment: &[u16],
+    rest: I,
+    mut should_randomize: F,
+) -> (Vec<u32>, usize)
+where
+    I: IntoIterator<Item = Vec<u16>>,
+    F: FnMut() -> bool,
+{
+    let n = first_assignment.len();
+    let mut dif_count = vec![0u32; n];
+    let max_assignment = *first_assignment.iter().max().unwrap_or(&0);
+    let mut current_permutation: Vec<u16> = (0..=max_assignment).collect();
+    let mut curr_assignment = first_assignment.to_vec();
+    let mut full_count: usize = 1;
+
+    for mut assignment in rest {
+        full_count += 1;
+        update_changed_assignment_state(
+            &curr_assignment,
+            &mut assignment,
+            &mut current_permutation,
+            &mut dif_count,
+            should_randomize(),
+        );
+        curr_assignment = assignment;
+    }
+
+    (dif_count, full_count)
+}
+
 fn finalize_changed_counts(dif_count: &[u32], line_count: usize, normalize: bool) -> Vec<f64> {
     if !normalize {
         return dif_count.iter().map(|&x| x as f64).collect();
@@ -140,12 +180,9 @@ pub fn tally_and_save_changed_assignments(
     let mut out = File::create(&out_file_name)
         .expect("Could not create output file. The file may already exist.");
 
-    // First plan seeds curr_assignment and the zero dif_count.
-    let (mut curr_assignment, mut dif_count) = match decoder.next() {
-        Some(Ok((assignment, _))) => {
-            let n = assignment.len();
-            (assignment, vec![0u32; n])
-        }
+    // First plan seeds the loop.
+    let first_assignment: Vec<u16> = match decoder.next() {
+        Some(Ok((assignment, _))) => assignment,
         Some(Err(e)) => return Err(Box::new(e)),
         None => {
             return Err(Box::new(io::Error::new(
@@ -158,37 +195,29 @@ pub fn tally_and_save_changed_assignments(
         pb.inc(1);
     }
 
-    let max_assignment = *curr_assignment.iter().max().unwrap_or(&0);
-    let mut current_permutation: Vec<u16> = (0..=max_assignment).collect();
-
-    let mut full_count: usize = 1;
-    for result in decoder {
-        full_count += 1;
-        match result {
-            Ok((mut assignment, _)) => {
-                let randomize_reassignment =
-                    with_random_reassignments && rng.random_bool(0.5);
-                update_changed_assignment_state(
-                    &curr_assignment,
-                    &mut assignment,
-                    &mut current_permutation,
-                    &mut dif_count,
-                    randomize_reassignment,
-                );
-                curr_assignment = assignment;
-            }
+    // Adapter: take the cap, drop on first decode error (matches prior break),
+    // tick the progress bar per consumed frame, hand assignments to the inner
+    // pure loop.
+    let pb_ref = pb.as_ref();
+    let max_remaining = line_count.saturating_sub(1);
+    let rest = decoder
+        .take(max_remaining)
+        .map_while(|res| match res {
+            Ok((a, _)) => Some(a),
             Err(e) => {
                 eprintln!("Error decoding sample: {:?}", e);
-                break;
+                None
             }
-        }
-        if let Some(pb) = &pb {
-            pb.inc(1);
-        }
-        if full_count >= line_count {
-            break;
-        }
-    }
+        })
+        .inspect(|_| {
+            if let Some(pb) = pb_ref {
+                pb.inc(1);
+            }
+        });
+
+    let (dif_count, full_count) = compute_changed_counts(&first_assignment, rest, || {
+        with_random_reassignments && rng.random_bool(0.5)
+    });
 
     let final_count = finalize_changed_counts(&dif_count, line_count, normalize);
 
@@ -208,8 +237,8 @@ pub fn tally_and_save_changed_assignments(
 #[cfg(test)]
 mod tests {
     use super::{
-        finalize_changed_counts, find_first_disagreement_index, swap_labels,
-        update_changed_assignment_state,
+        compute_changed_counts, finalize_changed_counts, find_first_disagreement_index,
+        swap_labels, update_changed_assignment_state,
     };
 
     #[test]
@@ -266,6 +295,57 @@ mod tests {
         assert_eq!(next_assignment, vec![2, 1, 2, 1]);
         assert_eq!(current_permutation, vec![0, 2, 1]);
         assert_eq!(dif_count, vec![1, 0, 0, 1]);
+    }
+
+    #[test]
+    fn compute_changed_counts_with_no_randomization_matches_pure_diff() {
+        // Three accepted plans; randomization disabled, so dif_count is just
+        // the elementwise count of how many transitions changed each unit.
+        let first = vec![1u16, 1, 2, 2];
+        let rest = vec![vec![1u16, 2, 1, 2], vec![2u16, 2, 1, 1]];
+
+        let (dif_count, full_count) = compute_changed_counts(&first, rest, || false);
+
+        // p0 -> p1: differ at idx 1, 2 -> [0, 1, 1, 0]
+        // p1 -> p2: differ at idx 0, 3 -> [1, 1, 1, 1]
+        assert_eq!(dif_count, vec![1, 1, 1, 1]);
+        assert_eq!(full_count, 3);
+    }
+
+    #[test]
+    fn compute_changed_counts_randomize_always_swaps_first_disagreement() {
+        // With should_randomize() == true on every step, the inner state
+        // updater swaps labels at the first disagreement before counting,
+        // which collapses pure label permutations to zero diffs.
+        let first = vec![1u16, 1, 2, 2];
+        // Pure relabeling of `first`: permuting 1<->2 should produce zero
+        // diffs once the swap is applied.
+        let rest = vec![vec![2u16, 2, 1, 1]];
+
+        let (dif_count, full_count) = compute_changed_counts(&first, rest, || true);
+
+        assert_eq!(dif_count, vec![0, 0, 0, 0]);
+        assert_eq!(full_count, 2);
+    }
+
+    #[test]
+    fn compute_changed_counts_invokes_randomize_callback_per_step() {
+        // The closure must be called exactly once per non-seed frame, and
+        // the per-step decision must be honoured. Program a sequence and
+        // assert it's fully consumed in order.
+        let first = vec![1u16, 1, 2, 2];
+        let rest = vec![
+            vec![1u16, 2, 1, 2],
+            vec![2u16, 2, 1, 1],
+            vec![1u16, 1, 1, 2],
+        ];
+
+        let mut decisions = vec![false, true, false].into_iter();
+        let (_dif_count, full_count) =
+            compute_changed_counts(&first, rest, || decisions.next().unwrap());
+
+        assert_eq!(full_count, 4);
+        assert!(decisions.next().is_none(), "callback called too few times");
     }
 
     #[test]
