@@ -346,9 +346,13 @@ pub fn tally_and_save_from_key_list(
 
 #[cfg(test)]
 mod tests {
-    use super::{save_single_key_tallies_to_parquet, sorted_district_ids, tally_keys, TallyRow};
+    use super::{
+        empty_key_df, key_batch_to_df, save_single_key_tallies_to_parquet, sorted_district_ids,
+        tally_keys, TallyRow,
+    };
     use crate::graph::Graph;
-    use polars::prelude::{ParquetReader, SerReader};
+    use crate::pipeline::parquet_compression;
+    use polars::prelude::{ParquetReader, ParquetWriter, SerReader};
     use std::collections::HashMap;
     use std::fs::File;
     use tempfile::NamedTempFile;
@@ -437,5 +441,76 @@ mod tests {
         assert_eq!(district_1.get(1), None);
         assert_eq!(district_3.get(0), None);
         assert_eq!(district_3.get(1), Some(20.0));
+    }
+
+    #[test]
+    fn key_batched_writer_appends_multiple_batches() {
+        let file = NamedTempFile::new().unwrap();
+        let district_ids = vec![1, 2];
+        let empty_df = empty_key_df(&district_ids).unwrap();
+        let mut writer = ParquetWriter::new(File::create(file.path()).unwrap())
+            .with_compression(parquet_compression(false))
+            .batched(empty_df.schema())
+            .unwrap();
+
+        let mut batch1_steps = vec![1, 2];
+        let mut batch1_reps = vec![1, 1];
+        let mut batch1_accepted = vec![1, 2];
+        let mut batch1_cols = vec![vec![Some(10.0), Some(20.0)], vec![Some(30.0), Some(40.0)]];
+        let batch1 = key_batch_to_df(
+            &district_ids,
+            &mut batch1_steps,
+            &mut batch1_reps,
+            &mut batch1_accepted,
+            &mut batch1_cols,
+        )
+        .unwrap();
+        writer.write_batch(&batch1).unwrap();
+
+        let mut batch2_steps = vec![3];
+        let mut batch2_reps = vec![2];
+        let mut batch2_accepted = vec![3];
+        let mut batch2_cols = vec![vec![Some(50.0)], vec![None]];
+        let batch2 = key_batch_to_df(
+            &district_ids,
+            &mut batch2_steps,
+            &mut batch2_reps,
+            &mut batch2_accepted,
+            &mut batch2_cols,
+        )
+        .unwrap();
+        writer.write_batch(&batch2).unwrap();
+        writer.finish().unwrap();
+
+        let df = ParquetReader::new(&mut File::open(file.path()).unwrap())
+            .finish()
+            .unwrap();
+        assert_eq!(
+            df.column("step")
+                .unwrap()
+                .u64()
+                .unwrap()
+                .into_no_null_iter()
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert_eq!(
+            df.column("district_1")
+                .unwrap()
+                .f64()
+                .unwrap()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![Some(10.0), Some(20.0), Some(50.0)]
+        );
+        assert_eq!(
+            df.column("district_2")
+                .unwrap()
+                .f64()
+                .unwrap()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![Some(30.0), Some(40.0), None]
+        );
     }
 }

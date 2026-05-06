@@ -114,9 +114,13 @@ pub fn tally_and_save_cut_edges(
 
 #[cfg(test)]
 mod tests {
-    use super::cut_edges;
+    use super::{cut_edges, cut_edges_batch_to_df};
     use crate::graph::Graph;
+    use crate::pipeline::parquet_compression;
+    use polars::prelude::{ParquetReader, ParquetWriter, SerReader};
     use std::collections::HashMap;
+    use std::fs::File;
+    use tempfile::NamedTempFile;
 
     fn graph_with_edges(edge_weights: Option<Vec<f64>>) -> Graph {
         Graph {
@@ -144,5 +148,74 @@ mod tests {
         assert_eq!(cut_edges(&graph, &[1, 1, 2, 2]), 5.5);
         assert_eq!(cut_edges(&graph, &[1, 2, 1, 2]), 10.5);
         assert_eq!(cut_edges(&graph, &[4, 4, 4, 4]), 0.0);
+    }
+
+    #[test]
+    fn cut_edges_batched_writer_appends_multiple_batches() {
+        let file = NamedTempFile::new().unwrap();
+        let mut empty_steps = vec![];
+        let mut empty_reps = vec![];
+        let mut empty_accepted = vec![];
+        let mut empty_counts = vec![];
+        let empty_df = cut_edges_batch_to_df(
+            &mut empty_steps,
+            &mut empty_reps,
+            &mut empty_accepted,
+            &mut empty_counts,
+        )
+        .unwrap();
+        let mut writer = ParquetWriter::new(File::create(file.path()).unwrap())
+            .with_compression(parquet_compression(false))
+            .batched(empty_df.schema())
+            .unwrap();
+
+        let mut batch1_steps = vec![1, 2];
+        let mut batch1_reps = vec![1, 1];
+        let mut batch1_accepted = vec![1, 2];
+        let mut batch1_counts = vec![3.0, 4.0];
+        let batch1 = cut_edges_batch_to_df(
+            &mut batch1_steps,
+            &mut batch1_reps,
+            &mut batch1_accepted,
+            &mut batch1_counts,
+        )
+        .unwrap();
+        writer.write_batch(&batch1).unwrap();
+
+        let mut batch2_steps = vec![3];
+        let mut batch2_reps = vec![2];
+        let mut batch2_accepted = vec![3];
+        let mut batch2_counts = vec![9.5];
+        let batch2 = cut_edges_batch_to_df(
+            &mut batch2_steps,
+            &mut batch2_reps,
+            &mut batch2_accepted,
+            &mut batch2_counts,
+        )
+        .unwrap();
+        writer.write_batch(&batch2).unwrap();
+        writer.finish().unwrap();
+
+        let df = ParquetReader::new(&mut File::open(file.path()).unwrap())
+            .finish()
+            .unwrap();
+        assert_eq!(
+            df.column("step")
+                .unwrap()
+                .u64()
+                .unwrap()
+                .into_no_null_iter()
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert_eq!(
+            df.column("cut_edges")
+                .unwrap()
+                .f64()
+                .unwrap()
+                .into_no_null_iter()
+                .collect::<Vec<_>>(),
+            vec![3.0, 4.0, 9.5]
+        );
     }
 }

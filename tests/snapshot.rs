@@ -23,7 +23,7 @@ fn bin() -> &'static str {
 
 // Six-node ring:
 //     0 - 1 - 2 - 3 - 4 - 5 - 0
-// with "pop" = 10 * (idx + 1) and "region" = A/A/B/B/A/A.
+// with "pop" = 10 * (idx + 1), "area" = idx + 1, and "region" = A/A/B/B/A/A.
 // Edge "weight" varies per edge so we can exercise --edge-weight-key.
 fn write_fixture_graph(path: &Path) {
     let graph_json = serde_json::json!({
@@ -31,12 +31,12 @@ fn write_fixture_graph(path: &Path) {
         "multigraph": false,
         "graph": [],
         "nodes": [
-            { "pop": 10.0, "region": "A" },
-            { "pop": 20.0, "region": "A" },
-            { "pop": 30.0, "region": "B" },
-            { "pop": 40.0, "region": "B" },
-            { "pop": 50.0, "region": "A" },
-            { "pop": 60.0, "region": "A" },
+            { "pop": 10.0, "area": 1.0, "region": "A" },
+            { "pop": 20.0, "area": 2.0, "region": "A" },
+            { "pop": 30.0, "area": 3.0, "region": "B" },
+            { "pop": 40.0, "area": 4.0, "region": "B" },
+            { "pop": 50.0, "area": 5.0, "region": "A" },
+            { "pop": 60.0, "area": 6.0, "region": "A" },
         ],
         "adjacency": [
             [ { "id": 1, "weight": 2.0 }, { "id": 5, "weight": 3.0 } ],
@@ -223,6 +223,52 @@ fn tally_keys_pop_per_district() {
             "district_1".to_string(),
             "district_2".to_string(),
         ]
+    );
+}
+
+#[test]
+fn tally_keys_multiple_keys_write_separate_files() {
+    let f = fixture(&tri_plans());
+    run(&[
+        "--mode", "tally-keys",
+        "--graph-file", f.graph.to_str().unwrap(),
+        "--ben-file", f.ben.to_str().unwrap(),
+        "--output-dir", f.dir.to_str().unwrap(),
+        "--keys", "pop", "area",
+        "--no-progress",
+    ]);
+
+    let pop_df = read_parquet(&f.dir.join("graph_tallies").join("pop_tally_graph.parquet"));
+    let area_df = read_parquet(&f.dir.join("graph_tallies").join("area_tally_graph.parquet"));
+
+    assert_eq!(f64_col(&pop_df, "district_1"), vec![60.0, 90.0, 140.0]);
+    assert_eq!(f64_col(&pop_df, "district_2"), vec![150.0, 120.0, 70.0]);
+    assert_eq!(f64_col(&area_df, "district_1"), vec![6.0, 9.0, 14.0]);
+    assert_eq!(f64_col(&area_df, "district_2"), vec![15.0, 12.0, 7.0]);
+    assert_eq!(u64_col(&area_df, "step"), vec![1, 2, 3]);
+    assert_eq!(u32_col(&area_df, "accepted_count"), vec![1, 2, 3]);
+}
+
+#[test]
+fn tally_keys_output_dir_nests_files_under_graph_stem_directory() {
+    let f = fixture(&tri_plans());
+    let output_dir = f.dir.join("custom_out");
+    run(&[
+        "--mode", "tally-keys",
+        "--graph-file", f.graph.to_str().unwrap(),
+        "--ben-file", f.ben.to_str().unwrap(),
+        "--output-dir", output_dir.to_str().unwrap(),
+        "--keys", "pop",
+        "--no-progress",
+    ]);
+
+    let expected = output_dir
+        .join("graph_tallies")
+        .join("pop_tally_graph.parquet");
+    assert!(expected.exists(), "expected tally file at {:?}", expected);
+    assert!(
+        !f.dir.join("graph_tallies").join("pop_tally_graph.parquet").exists(),
+        "tally file should respect --output-dir rather than defaulting to fixture dir"
     );
 }
 
@@ -431,6 +477,23 @@ fn changed_assignments_tri_plans_normalized() {
     )
     .unwrap();
     assert_eq!(body, "[0.0, 1.0, 0.5, 0.0, 0.5, 0.5]\nTotal Accepted: 3");
+}
+
+#[test]
+fn changed_assignments_respects_max_accepted() {
+    let f = fixture(&tri_plans());
+    run(&[
+        "--mode", "changed-assignments",
+        "--ben-file", f.ben.to_str().unwrap(),
+        "--output-dir", f.dir.to_str().unwrap(),
+        "--max-accepted", "2",
+        "--no-progress",
+    ]);
+    let body = std::fs::read_to_string(
+        f.dir.join("plans_accept_2_changed_assignments.txt"),
+    )
+    .unwrap();
+    assert_eq!(body, "[0.0, 1.0, 0.0, 0.0, 1.0, 0.0]\nTotal Accepted: 2");
 }
 
 /// Five input frames with three label-invariant partitions:

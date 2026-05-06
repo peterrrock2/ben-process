@@ -196,9 +196,13 @@ pub fn tally_and_save_region_metric(
 
 #[cfg(test)]
 mod tests {
-    use super::{region_metric_for_key, RegionMetric};
+    use super::{region_batch_to_df, region_metric_for_key, region_metric_col_name, RegionMetric};
     use crate::graph::Graph;
+    use crate::pipeline::parquet_compression;
+    use polars::prelude::{ParquetReader, ParquetWriter, SerReader};
     use std::collections::HashMap;
+    use std::fs::File;
+    use tempfile::NamedTempFile;
 
     fn graph_with_region_column(region_column: Vec<Option<u32>>, region_count: u32) -> Graph {
         Graph {
@@ -252,6 +256,85 @@ mod tests {
         assert_eq!(
             region_metric_for_key(&graph, &[1, 2], 0, RegionMetric::Pieces),
             0
+        );
+    }
+
+    #[test]
+    fn region_batched_writer_appends_multiple_batches() {
+        let file = NamedTempFile::new().unwrap();
+        let metric_col_name = region_metric_col_name(RegionMetric::Splits);
+        let mut empty_steps = vec![];
+        let mut empty_reps = vec![];
+        let mut empty_accepted = vec![];
+        let mut empty_keys = vec![];
+        let mut empty_vals = vec![];
+        let empty_df = region_batch_to_df(
+            metric_col_name,
+            &mut empty_steps,
+            &mut empty_reps,
+            &mut empty_accepted,
+            &mut empty_keys,
+            &mut empty_vals,
+        )
+        .unwrap();
+        let mut writer = ParquetWriter::new(File::create(file.path()).unwrap())
+            .with_compression(parquet_compression(false))
+            .batched(empty_df.schema())
+            .unwrap();
+
+        let mut batch1_steps = vec![1, 2];
+        let mut batch1_reps = vec![1, 1];
+        let mut batch1_accepted = vec![1, 2];
+        let mut batch1_keys = vec!["county".to_string(), "county".to_string()];
+        let mut batch1_vals = vec![2, 3];
+        let batch1 = region_batch_to_df(
+            metric_col_name,
+            &mut batch1_steps,
+            &mut batch1_reps,
+            &mut batch1_accepted,
+            &mut batch1_keys,
+            &mut batch1_vals,
+        )
+        .unwrap();
+        writer.write_batch(&batch1).unwrap();
+
+        let mut batch2_steps = vec![3];
+        let mut batch2_reps = vec![2];
+        let mut batch2_accepted = vec![3];
+        let mut batch2_keys = vec!["county".to_string()];
+        let mut batch2_vals = vec![4];
+        let batch2 = region_batch_to_df(
+            metric_col_name,
+            &mut batch2_steps,
+            &mut batch2_reps,
+            &mut batch2_accepted,
+            &mut batch2_keys,
+            &mut batch2_vals,
+        )
+        .unwrap();
+        writer.write_batch(&batch2).unwrap();
+        writer.finish().unwrap();
+
+        let df = ParquetReader::new(&mut File::open(file.path()).unwrap())
+            .finish()
+            .unwrap();
+        assert_eq!(
+            df.column("step")
+                .unwrap()
+                .u64()
+                .unwrap()
+                .into_no_null_iter()
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert_eq!(
+            df.column(metric_col_name)
+                .unwrap()
+                .u32()
+                .unwrap()
+                .into_no_null_iter()
+                .collect::<Vec<_>>(),
+            vec![2, 3, 4]
         );
     }
 }
