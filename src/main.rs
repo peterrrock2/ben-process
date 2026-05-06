@@ -29,16 +29,13 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         Mode::TallyKeys => {
             let graph = load_graph(graph_file_or_die(&args), &args.keys, &[], None)
                 .expect("Could not load graph");
-            let output_file = build_output_path(
-                &args.ben_file,
-                "_tallies.parquet",
-                args.output_dir.as_deref(),
-            );
-
+            let graph_file = graph_file_or_die(&args).to_string();
+            let output_dir = args.output_dir.as_deref();
             metrics::tally_keys::tally_and_save_from_key_list(
                 graph,
                 &args.ben_file,
-                output_file.as_str(),
+                graph_file.as_str(),
+                output_dir,
                 args.keys,
                 !args.no_progress,
                 args.high_compression,

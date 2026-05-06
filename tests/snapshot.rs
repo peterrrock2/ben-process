@@ -205,13 +205,12 @@ fn tally_keys_pop_per_district() {
         "--keys", "pop",
         "--no-progress",
     ]);
-    let df = read_parquet(&f.dir.join("plans_tallies.parquet"));
+    let df = read_parquet(&f.dir.join("graph_tallies").join("pop_tally_graph.parquet"));
     assert_eq!(f64_col(&df, "district_1"), vec![60.0, 90.0, 140.0]);
     assert_eq!(f64_col(&df, "district_2"), vec![150.0, 120.0, 70.0]);
-    assert_eq!(str_col(&df, "sum_columns"), vec!["pop", "pop", "pop"]);
     assert_eq!(u64_col(&df, "step"), vec![1, 2, 3]);
-    // Stable column order after the BTreeMap fix: step / n_reps / accepted_count
-    // / sum_columns / district_1 / district_2.
+    assert_eq!(u32_col(&df, "n_reps"), vec![1, 1, 1]);
+    assert_eq!(u32_col(&df, "accepted_count"), vec![1, 2, 3]);
     assert_eq!(
         df.get_column_names()
             .iter()
@@ -221,10 +220,36 @@ fn tally_keys_pop_per_district() {
             "step".to_string(),
             "n_reps".to_string(),
             "accepted_count".to_string(),
-            "sum_columns".to_string(),
             "district_1".to_string(),
             "district_2".to_string(),
         ]
+    );
+}
+
+#[test]
+fn tally_keys_fails_when_later_frames_introduce_unseen_district_ids() {
+    let plans = vec![
+        vec![1u16, 1, 1, 1, 1, 1],
+        vec![1u16, 2, 1, 2, 1, 2],
+    ];
+    let f = fixture(&plans);
+    let output = Command::new(bin())
+        .args([
+            "--mode", "tally-keys",
+            "--graph-file", f.graph.to_str().unwrap(),
+            "--ben-file", f.ben.to_str().unwrap(),
+            "--output-dir", f.dir.to_str().unwrap(),
+            "--keys", "pop",
+            "--no-progress",
+        ])
+        .output()
+        .expect("failed to spawn ben-process");
+
+    assert!(!output.status.success(), "tally-keys should fail on unseen district ids");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not present in first assignment"),
+        "stderr should explain the streaming-schema failure, got: {stderr}"
     );
 }
 

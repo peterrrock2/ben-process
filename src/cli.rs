@@ -63,9 +63,37 @@ pub fn build_output_path(in_ben_file: &str, suffix: &str, output_dir: Option<&st
     }
 }
 
+pub fn build_tally_output_dir(graph_file: &str, output_dir: Option<&str>) -> PathBuf {
+    let graph_path = Path::new(graph_file);
+    let graph_stem = graph_path
+        .file_stem()
+        .expect("Failed to extract graph stem")
+        .to_string_lossy();
+    let dir_name = format!("{}_tallies", graph_stem);
+
+    match output_dir {
+        Some(dir) => PathBuf::from(dir).join(dir_name),
+        None => graph_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(dir_name),
+    }
+}
+
+pub fn build_tally_output_path(graph_file: &str, key: &str, output_dir: Option<&str>) -> PathBuf {
+    let graph_path = Path::new(graph_file);
+    let graph_stem = graph_path
+        .file_stem()
+        .expect("Failed to extract graph stem")
+        .to_string_lossy();
+    build_tally_output_dir(graph_file, output_dir)
+        .join(format!("{}_tally_{}.parquet", key, graph_stem))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::build_output_path;
+    use super::{build_output_path, build_tally_output_dir, build_tally_output_path};
+    use std::path::PathBuf;
 
     #[test]
     fn build_output_path_replaces_suffix_in_place_without_output_dir() {
@@ -84,6 +112,22 @@ mod tests {
                 Some("/tmp/out"),
             ),
             "/tmp/out/plans_unique_plans.txt"
+        );
+    }
+
+    #[test]
+    fn build_tally_output_dir_uses_graph_stem() {
+        assert_eq!(
+            build_tally_output_dir("/tmp/runs/graph.json", Some("/tmp/out")),
+            PathBuf::from("/tmp/out/graph_tallies")
+        );
+    }
+
+    #[test]
+    fn build_tally_output_path_uses_key_and_graph_stem() {
+        assert_eq!(
+            build_tally_output_path("/tmp/runs/graph.json", "pop", Some("/tmp/out")),
+            PathBuf::from("/tmp/out/graph_tallies/pop_tally_graph.parquet")
         );
     }
 }
