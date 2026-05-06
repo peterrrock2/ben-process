@@ -47,20 +47,48 @@ pub struct Args {
     pub high_compression: bool,
 }
 
+/// Build an output path next to (or alongside) `in_ben_file` by stripping the
+/// BEN extension and appending `suffix`.
+///
+/// The previous implementation used `String::replace(".jsonl.ben", suffix)`,
+/// which silently returned the input unchanged when the input did not end in
+/// `.jsonl.ben` — meaning a downstream `File::create` could overwrite the
+/// input BEN. This version guarantees the output path differs from the input
+/// path: it strips a trailing `.jsonl.ben` (or just `.ben`) before appending,
+/// and asserts distinctness as a safety net.
 pub fn build_output_path(in_ben_file: &str, suffix: &str, output_dir: Option<&str>) -> String {
-    let base_name = Path::new(in_ben_file)
+    let in_path = Path::new(in_ben_file);
+    let base_name = in_path
         .file_name()
         .expect("Failed to extract basename")
         .to_string_lossy()
-        .replace(".jsonl.ben", suffix);
+        .into_owned();
+    let stem = base_name
+        .strip_suffix(".jsonl.ben")
+        .or_else(|| base_name.strip_suffix(".ben"))
+        .unwrap_or(&base_name);
+    let new_name = format!("{}{}", stem, suffix);
 
-    match output_dir {
+    let out = match output_dir {
         Some(dir) => PathBuf::from(dir)
-            .join(base_name)
+            .join(new_name)
             .to_string_lossy()
             .into_owned(),
-        _ => in_ben_file.replace(".jsonl.ben", suffix),
-    }
+        None => match in_path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent
+                .join(new_name)
+                .to_string_lossy()
+                .into_owned(),
+            _ => new_name,
+        },
+    };
+
+    assert!(
+        out != in_ben_file,
+        "refusing to overwrite input BEN file {:?}: derived output path is identical",
+        in_ben_file
+    );
+    out
 }
 
 pub fn build_tally_output_dir(graph_file: &str, output_dir: Option<&str>) -> PathBuf {
@@ -113,6 +141,40 @@ mod tests {
             ),
             "/tmp/out/plans_unique_plans.txt"
         );
+    }
+
+    #[test]
+    fn build_output_path_strips_plain_ben_extension() {
+        assert_eq!(
+            build_output_path("/tmp/runs/plans.ben", "_cut_edges.parquet", None),
+            "/tmp/runs/plans_cut_edges.parquet"
+        );
+    }
+
+    #[test]
+    fn build_output_path_appends_suffix_when_input_has_no_known_extension() {
+        // Old behavior silently returned the input unchanged here, which would
+        // cause File::create to overwrite the input BEN. New behavior appends.
+        assert_eq!(
+            build_output_path("/tmp/runs/plans", "_cut_edges.parquet", None),
+            "/tmp/runs/plans_cut_edges.parquet"
+        );
+    }
+
+    #[test]
+    fn build_output_path_handles_bare_filename_without_parent_dir() {
+        assert_eq!(
+            build_output_path("plans.jsonl.ben", "_cut_edges.parquet", None),
+            "plans_cut_edges.parquet"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "refusing to overwrite input BEN file")]
+    fn build_output_path_panics_if_output_would_equal_input() {
+        // An empty suffix combined with a no-extension input would yield the
+        // same path; the assertion must catch this before File::create runs.
+        let _ = build_output_path("/tmp/runs/plans", "", None);
     }
 
     #[test]
