@@ -1,8 +1,9 @@
 //! Entry point for `ben-process`. Dispatches CLI mode → per-mode runner.
 //!
 //! Each mode asks `load_graph` to pre-parse only the columns it needs:
-//! tally-keys wants numeric node attrs, region-* want interned region ids,
-//! cut-edges wants an edge-weight vector (or none).
+//! tally-keys and polsby-popper want numeric node attrs, region-* want
+//! interned region ids, and cut-edges / polsby-popper want an edge-weight
+//! vector (or none).
 
 use clap::Parser;
 
@@ -59,6 +60,54 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 graph,
                 &args.ben_file,
                 output_file.as_str(),
+                !args.no_progress,
+                args.high_compression,
+            )?;
+        }
+        Mode::PolsbyPopper => {
+            let area_key = args
+                .area_key
+                .clone()
+                .unwrap_or_else(|| panic!("--area-key is required for polsby-popper mode"));
+            let shared_perim_key = args.shared_perim_key.clone().unwrap_or_else(|| {
+                panic!("--shared-perim-key is required for polsby-popper mode")
+            });
+            let perim_key = args.perim_key.clone();
+            let boundary_perim_key = args.boundary_perim_key.clone();
+            if perim_key.is_none() && boundary_perim_key.is_none() {
+                panic!(
+                    "polsby-popper mode requires --perim-key or --boundary-perim-key"
+                );
+            }
+
+            let mut numeric_keys = vec![area_key.clone()];
+            if let Some(perim_key) = &perim_key {
+                numeric_keys.push(perim_key.clone());
+            } else if let Some(boundary_perim_key) = &boundary_perim_key {
+                numeric_keys.push(boundary_perim_key.clone());
+            }
+
+            let graph = load_graph(
+                graph_file_or_die(&args),
+                &numeric_keys,
+                &[],
+                Some(shared_perim_key.as_str()),
+            )
+            .expect("Could not load graph");
+            let output_file = build_output_path(
+                &args.ben_file,
+                "_polsby_popper.parquet",
+                args.output_dir.as_deref(),
+            );
+
+            metrics::polsby_popper::tally_and_save_polsby_popper(
+                graph,
+                &args.ben_file,
+                output_file.as_str(),
+                area_key.as_str(),
+                perim_key.as_deref(),
+                boundary_perim_key.as_deref(),
+                shared_perim_key.as_str(),
                 !args.no_progress,
                 args.high_compression,
             )?;

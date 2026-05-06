@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 pub enum Mode {
     TallyKeys,
     CutEdges,
+    PolsbyPopper,
     ChangedAssignments,
     RegionSplits,
     RegionPieces,
@@ -37,6 +38,14 @@ pub struct Args {
     pub keys: Vec<String>,
     #[arg(long)]
     pub edge_weight_key: Option<String>,
+    #[arg(long)]
+    pub area_key: Option<String>,
+    #[arg(long)]
+    pub perim_key: Option<String>,
+    #[arg(long)]
+    pub boundary_perim_key: Option<String>,
+    #[arg(long)]
+    pub shared_perim_key: Option<String>,
     #[arg(long, default_value_t = false)]
     pub no_progress: bool,
     #[arg(long)]

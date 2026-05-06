@@ -6,6 +6,7 @@
 It currently supports:
 - per-key district tallies
 - cut-edge counts
+- district-level Polsby-Popper scores
 - changed-assignment counts
 - region split and piece metrics
 - unique-plan counting
@@ -40,6 +41,7 @@ Common options:
 Available modes:
 - `tally-keys`
 - `cut-edges`
+- `polsby-popper`
 - `changed-assignments`
 - `region-splits`
 - `region-pieces`
@@ -118,6 +120,54 @@ ben-process \
   --graph-file data/graph.json \
   --ben-file runs/plans.jsonl.ben \
   --edge-weight-key weight \
+  --output-dir out
+```
+
+### `polsby-popper`
+
+Computes district-level Polsby-Popper scores for each accepted plan.
+
+Required:
+- `--graph-file`
+- `--area-key <AREA_KEY>`
+- `--shared-perim-key <SHARED_PERIM_KEY>`
+- one of:
+  `--perim-key <PERIM_KEY>`
+  `--boundary-perim-key <BOUNDARY_PERIM_KEY>`
+
+Output:
+- `<ben_stem>_polsby_popper.parquet`
+- columns:
+  `step`, `n_reps`, `accepted_count`, `district_*`
+
+Notes:
+- if `--perim-key` is provided, node total perimeter comes directly from that column
+- otherwise node total perimeter is derived once from
+  `boundary_perim + sum(shared perimeter on incident edges)`
+- the first assignment fixes the output district columns; if later plans
+  introduce unseen district ids, the run fails fast
+
+Examples:
+
+```bash
+ben-process \
+  --mode polsby-popper \
+  --graph-file data/dual_graph.json \
+  --ben-file runs/plans.jsonl.ben \
+  --area-key area \
+  --perim-key perim \
+  --shared-perim-key shared_perim \
+  --output-dir out
+```
+
+```bash
+ben-process \
+  --mode polsby-popper \
+  --graph-file data/dual_graph.json \
+  --ben-file runs/plans.jsonl.ben \
+  --area-key area \
+  --boundary-perim-key boundary_perim \
+  --shared-perim-key shared_perim \
   --output-dir out
 ```
 
@@ -276,6 +326,19 @@ ben-process \
   --graph-file data/graph.json \
   --ben-file runs/plans.jsonl.ben \
   --edge-weight-key weight
+```
+
+District-level Polsby-Popper with direct node perimeter:
+
+```bash
+ben-process \
+  --mode polsby-popper \
+  --graph-file data/dual_graph.json \
+  --ben-file runs/plans.jsonl.ben \
+  --area-key area \
+  --perim-key perim \
+  --shared-perim-key shared_perim \
+  --output-dir out
 ```
 
 Changed assignments on the first 100,000 accepted plans:

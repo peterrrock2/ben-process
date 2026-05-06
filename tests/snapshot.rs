@@ -51,6 +51,39 @@ fn write_fixture_graph(path: &Path) {
     f.write_all(graph_json.to_string().as_bytes()).unwrap();
 }
 
+// Four-node path:
+//     0 - 1 - 2 - 3
+// with:
+//   area = 1 for every node
+//   perim = 4 for every node
+//   boundary_perim = [3, 2, 2, 3]
+//   shared_perim = 1 for every edge
+//
+// This gives a simple Polsby-Popper fixture where total node perimeter can be
+// supplied directly (`perim`) or derived exactly from
+// `boundary_perim + shared_perim`.
+fn write_polsby_fixture_graph(path: &Path) {
+    let graph_json = serde_json::json!({
+        "directed": false,
+        "multigraph": false,
+        "graph": [],
+        "nodes": [
+            { "area": 1.0, "perim": 4.0, "boundary_perim": 3.0 },
+            { "area": 1.0, "perim": 4.0, "boundary_perim": 2.0 },
+            { "area": 1.0, "perim": 4.0, "boundary_perim": 2.0 },
+            { "area": 1.0, "perim": 4.0, "boundary_perim": 3.0 }
+        ],
+        "adjacency": [
+            [{ "id": 1, "shared_perim": 1.0 }],
+            [{ "id": 0, "shared_perim": 1.0 }, { "id": 2, "shared_perim": 1.0 }],
+            [{ "id": 1, "shared_perim": 1.0 }, { "id": 3, "shared_perim": 1.0 }],
+            [{ "id": 2, "shared_perim": 1.0 }]
+        ]
+    });
+    let mut f = File::create(path).unwrap();
+    f.write_all(graph_json.to_string().as_bytes()).unwrap();
+}
+
 fn write_fixture_ben(path: &Path, plans: &[Vec<u16>]) {
     let f = File::create(path).unwrap();
     let mut enc = BenEncoder::new(f, BenVariant::Standard);
@@ -85,6 +118,16 @@ fn fixture(plans: &[Vec<u16>]) -> Fixture {
     let graph = dir.join("graph.json");
     let ben = dir.join("plans.jsonl.ben");
     write_fixture_graph(&graph);
+    write_fixture_ben(&ben, plans);
+    Fixture { _tmp: tmp, dir, graph, ben }
+}
+
+fn polsby_fixture(plans: &[Vec<u16>]) -> Fixture {
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let graph = dir.join("graph.json");
+    let ben = dir.join("plans.jsonl.ben");
+    write_polsby_fixture_graph(&graph);
     write_fixture_ben(&ben, plans);
     Fixture { _tmp: tmp, dir, graph, ben }
 }
@@ -138,6 +181,20 @@ fn str_col(df: &DataFrame, name: &str) -> Vec<String> {
         .into_no_null_iter()
         .map(|s| s.to_string())
         .collect()
+}
+
+fn assert_f64_vec_close(actual: &[f64], expected: &[f64]) {
+    assert_eq!(
+        actual.len(),
+        expected.len(),
+        "length mismatch: actual={actual:?} expected={expected:?}"
+    );
+    for (i, (&a, &e)) in actual.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (a - e).abs() < 1e-12,
+            "value mismatch at index {i}: actual={a} expected={e}"
+        );
+    }
 }
 
 /// Three plans used by the main per-mode tests. Manually verified values:
@@ -296,6 +353,72 @@ fn tally_keys_fails_when_later_frames_introduce_unseen_district_ids() {
     assert!(
         stderr.contains("not present in first assignment"),
         "stderr should explain the streaming-schema failure, got: {stderr}"
+    );
+}
+
+#[test]
+fn polsby_popper_with_explicit_perimeter_key() {
+    let plans = vec![vec![1u16, 1, 2, 2], vec![1u16, 2, 2, 2]];
+    let f = polsby_fixture(&plans);
+    run(&[
+        "--mode", "polsby-popper",
+        "--graph-file", f.graph.to_str().unwrap(),
+        "--ben-file", f.ben.to_str().unwrap(),
+        "--output-dir", f.dir.to_str().unwrap(),
+        "--area-key", "area",
+        "--perim-key", "perim",
+        "--shared-perim-key", "shared_perim",
+        "--no-progress",
+    ]);
+
+    let df = read_parquet(&f.dir.join("plans_polsby_popper.parquet"));
+    let expected_d1 = [2.0 * std::f64::consts::PI / 9.0, std::f64::consts::PI / 4.0];
+    let expected_d2 = [
+        2.0 * std::f64::consts::PI / 9.0,
+        3.0 * std::f64::consts::PI / 16.0,
+    ];
+    assert_f64_vec_close(&f64_col(&df, "district_1"), &expected_d1);
+    assert_f64_vec_close(&f64_col(&df, "district_2"), &expected_d2);
+    assert_eq!(u64_col(&df, "step"), vec![1, 2]);
+    assert_eq!(u32_col(&df, "n_reps"), vec![1, 1]);
+    assert_eq!(u32_col(&df, "accepted_count"), vec![1, 2]);
+}
+
+#[test]
+fn polsby_popper_with_boundary_and_shared_perimeter_matches_direct_perimeter() {
+    let plans = vec![vec![1u16, 1, 2, 2], vec![1u16, 2, 2, 2]];
+    let f = polsby_fixture(&plans);
+    run(&[
+        "--mode", "polsby-popper",
+        "--graph-file", f.graph.to_str().unwrap(),
+        "--ben-file", f.ben.to_str().unwrap(),
+        "--output-dir", f.dir.to_str().unwrap(),
+        "--area-key", "area",
+        "--boundary-perim-key", "boundary_perim",
+        "--shared-perim-key", "shared_perim",
+        "--no-progress",
+    ]);
+
+    let df = read_parquet(&f.dir.join("plans_polsby_popper.parquet"));
+    let expected_d1 = [2.0 * std::f64::consts::PI / 9.0, std::f64::consts::PI / 4.0];
+    let expected_d2 = [
+        2.0 * std::f64::consts::PI / 9.0,
+        3.0 * std::f64::consts::PI / 16.0,
+    ];
+    assert_f64_vec_close(&f64_col(&df, "district_1"), &expected_d1);
+    assert_f64_vec_close(&f64_col(&df, "district_2"), &expected_d2);
+    assert_eq!(
+        df.get_column_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>(),
+        vec![
+            "step".to_string(),
+            "n_reps".to_string(),
+            "accepted_count".to_string(),
+            "district_1".to_string(),
+            "district_2".to_string(),
+        ]
     );
 }
 
