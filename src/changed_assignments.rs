@@ -38,8 +38,8 @@ fn update_changed_assignment_state(
     }
 
     if randomize_reassignment {
-        let (_idx, (a, b)) = find_first_disagreement_index(curr_assignment, assignment)
-            .unwrap_or((0, (1, 1)));
+        let (_idx, (a, b)) =
+            find_first_disagreement_index(curr_assignment, assignment).unwrap_or((0, (1, 1)));
         swap_labels(assignment, a, b);
         swap_labels(current_permutation, a, b);
     }
@@ -170,12 +170,8 @@ pub fn tally_and_save_changed_assignments(
     };
 
     let ben_reader = BufReader::new(ben_file);
-    let mut decoder = BenDecoder::new(ben_reader).map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("Failed to initialize BenDecoder: {:?}", e),
-        )
-    })?;
+    let mut decoder = BenDecoder::new(ben_reader)
+        .map_err(|e| io::Error::other(format!("Failed to initialize BenDecoder: {:?}", e)))?;
 
     let mut out = File::create(&out_file_name)
         .expect("Could not create output file. The file may already exist.");
@@ -184,12 +180,7 @@ pub fn tally_and_save_changed_assignments(
     let first_assignment: Vec<u16> = match decoder.next() {
         Some(Ok((assignment, _))) => assignment,
         Some(Err(e)) => return Err(Box::new(e)),
-        None => {
-            return Err(Box::new(io::Error::new(
-                io::ErrorKind::Other,
-                "No data found",
-            )))
-        }
+        None => return Err(Box::new(io::Error::other("No data found"))),
     };
     if let Some(pb) = &pb {
         pb.inc(1);

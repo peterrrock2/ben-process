@@ -40,7 +40,11 @@ fn sorted_district_ids(mut mask: u128) -> Vec<u16> {
     out
 }
 
-fn derive_total_perimeters(boundary_perims: &[f64], edges: &[(u32, u32)], shared_perims: &[f64]) -> Vec<f64> {
+fn derive_total_perimeters(
+    boundary_perims: &[f64],
+    edges: &[(u32, u32)],
+    shared_perims: &[f64],
+) -> Vec<f64> {
     let mut total_perims = boundary_perims.to_vec();
     for (i, &(u, v)) in edges.iter().enumerate() {
         total_perims[u as usize] += shared_perims[i];
@@ -116,7 +120,7 @@ fn polsby_batch_to_df(
     sample_numbers: &mut Vec<u64>,
     n_reps_numbers: &mut Vec<u32>,
     accepted_numbers: &mut Vec<u32>,
-    district_cols: &mut Vec<Vec<Option<f64>>>,
+    district_cols: &mut [Vec<Option<f64>>],
 ) -> PolarsResult<DataFrame> {
     let mut df = DataFrame::new_infer_height(vec![
         Series::new("step".into(), std::mem::take(sample_numbers)).into(),
@@ -156,6 +160,7 @@ fn flush_writer(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn tally_and_save_polsby_popper(
     graph: Graph,
     in_file_name: &str,
@@ -185,16 +190,19 @@ pub fn tally_and_save_polsby_popper(
             .unwrap_or_else(|| panic!("perimeter key {:?} not pre-loaded on graph", perim_key));
         graph.attr_columns[perim_idx].clone()
     } else {
-        let boundary_key = boundary_perim_key.expect(
-            "boundary perimeter key should exist when direct perimeter key is absent",
-        );
+        let boundary_key = boundary_perim_key
+            .expect("boundary perimeter key should exist when direct perimeter key is absent");
         let boundary_idx = *graph.attr_index.get(boundary_key).unwrap_or_else(|| {
             panic!(
                 "boundary perimeter key {:?} not pre-loaded on graph",
                 boundary_key
             )
         });
-        derive_total_perimeters(&graph.attr_columns[boundary_idx], &graph.edges, shared_perims)
+        derive_total_perimeters(
+            &graph.attr_columns[boundary_idx],
+            &graph.edges,
+            shared_perims,
+        )
     };
 
     let total = count_samples(in_file_name)?;
@@ -270,16 +278,11 @@ pub fn tally_and_save_polsby_popper(
             for (ci, &d) in district_ids.iter().enumerate() {
                 let di = d as usize;
                 let present = di < n_d && (row.observed & (1u128 << d)) != 0;
-                state.district_cols[ci].push(if present {
-                    Some(row.scores[di])
-                } else {
-                    None
-                });
+                state.district_cols[ci].push(if present { Some(row.scores[di]) } else { None });
             }
 
             if state.sample_numbers.len() >= PARQUET_BATCH_ROWS {
-                flush_writer(&district_ids, state)
-                    .expect("Unable to flush polsby-popper batch");
+                flush_writer(&district_ids, state).expect("Unable to flush polsby-popper batch");
             }
         },
         show_progress,
@@ -313,7 +316,9 @@ pub fn tally_and_save_polsby_popper(
 
 #[cfg(test)]
 mod tests {
-    use super::{derive_total_perimeters, polsby_popper_rows, polsby_popper_score, polsby_batch_to_df};
+    use super::{
+        derive_total_perimeters, polsby_batch_to_df, polsby_popper_rows, polsby_popper_score,
+    };
     use crate::pipeline::parquet_compression;
     use polars::prelude::{ParquetReader, ParquetWriter, SerReader};
     use std::fs::File;
@@ -358,13 +363,7 @@ mod tests {
     fn polsby_popper_rows_panics_when_assignment_exceeds_supported_district_limit() {
         // Mirrors the tally_keys MAX_DISTRICTS guard: any district id >= 128
         // must trip the bitmask-width panic before it silently overflows.
-        let _ = polsby_popper_rows(
-            &[128],
-            &[1.0],
-            &[1.0],
-            &[],
-            &[],
-        );
+        let _ = polsby_popper_rows(&[128], &[1.0], &[1.0], &[], &[]);
     }
 
     #[test]

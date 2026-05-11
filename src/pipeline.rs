@@ -194,11 +194,7 @@ mod tests {
     fn count_samples_and_frames_diverge_for_mkvchain_repetitions() {
         let ben_file = write_ben_file(
             BenVariant::MkvChain,
-            &[
-                vec![1, 1, 2, 2],
-                vec![1, 1, 2, 2],
-                vec![2, 2, 1, 1],
-            ],
+            &[vec![1, 1, 2, 2], vec![1, 1, 2, 2], vec![2, 2, 1, 1]],
         );
 
         assert_eq!(count_samples(ben_file.path().to_str().unwrap()).unwrap(), 3);
@@ -209,11 +205,7 @@ mod tests {
     fn run_pipeline_reports_steps_repetitions_and_acceptance_order() {
         let ben_file = write_ben_file(
             BenVariant::MkvChain,
-            &[
-                vec![1, 1, 2, 2],
-                vec![1, 1, 2, 2],
-                vec![2, 2, 1, 1],
-            ],
+            &[vec![1, 1, 2, 2], vec![1, 1, 2, 2], vec![2, 2, 1, 1]],
         );
 
         let mut rows = Vec::new();
@@ -226,12 +218,6 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            rows,
-            vec![
-                (1, 2, 1, (1, 2)),
-                (3, 1, 2, (2, 1)),
-            ]
-        );
+        assert_eq!(rows, vec![(1, 2, 1, (1, 2)), (3, 1, 2, (2, 1)),]);
     }
 }

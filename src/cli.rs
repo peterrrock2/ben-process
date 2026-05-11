@@ -76,10 +76,9 @@ pub fn build_output_path(in_ben_file: &str, suffix: &str, output_dir: Option<&st
             .to_string_lossy()
             .into_owned(),
         None => match in_path.parent() {
-            Some(parent) if !parent.as_os_str().is_empty() => parent
-                .join(new_name)
-                .to_string_lossy()
-                .into_owned(),
+            Some(parent) if !parent.as_os_str().is_empty() => {
+                parent.join(new_name).to_string_lossy().into_owned()
+            }
             _ => new_name,
         },
     };

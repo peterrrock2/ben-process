@@ -196,7 +196,7 @@ pub fn tally_and_save_region_metric(
 
 #[cfg(test)]
 mod tests {
-    use super::{region_batch_to_df, region_metric_for_key, region_metric_col_name, RegionMetric};
+    use super::{region_batch_to_df, region_metric_col_name, region_metric_for_key, RegionMetric};
     use crate::graph::Graph;
     use crate::pipeline::parquet_compression;
     use polars::prelude::{ParquetReader, ParquetWriter, SerReader};

@@ -1,0 +1,60 @@
+version: "3"
+
+tasks:
+  build:
+    desc: Build the project
+    cmds:
+      - cargo build
+
+  build-release:
+    desc: Build in release mode
+    cmds:
+      - cargo build --release
+
+  test:
+    desc: Run all tests
+    cmds:
+      - cargo test
+
+  format:
+    desc: Format code with rustfmt
+    cmds:
+      - cargo fmt
+
+  format-check:
+    desc: Check formatting without modifying files
+    cmds:
+      - cargo fmt -- --check
+
+  lint:
+    desc: Run clippy linter
+    cmds:
+      - cargo clippy -- -D warnings
+
+  fix:
+    desc: Apply clippy suggestions automatically
+    cmds:
+      - cargo clippy --fix --allow-dirty
+
+  check:
+    desc: Type-check without building
+    cmds:
+      - cargo check
+
+  clean:
+    desc: Remove build artifacts
+    cmds:
+      - cargo clean
+
+  ci:
+    desc: Run all checks (fmt-check + lint + test)
+    cmds:
+      - task: format-check
+      - task: lint
+      - task: test
+
+  publish:
+    desc: Publish the crate to crates.io
+    cmds:
+      - task: ci
+      - cargo publish

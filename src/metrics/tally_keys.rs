@@ -98,7 +98,7 @@ fn key_batch_to_df(
     sample_numbers: &mut Vec<u64>,
     n_reps_numbers: &mut Vec<u32>,
     accepted_numbers: &mut Vec<u32>,
-    district_cols: &mut Vec<Vec<Option<f64>>>,
+    district_cols: &mut [Vec<Option<f64>>],
 ) -> PolarsResult<DataFrame> {
     let mut df = DataFrame::new_infer_height(vec![
         Series::new("step".into(), std::mem::take(sample_numbers)).into(),

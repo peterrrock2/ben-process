@@ -2,6 +2,12 @@
 name = "ben_process"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+repository = "https://github.com/peterrrock2/ben-process"
+keywords = ["redistricting", "gerrychain", "binary-ensemble"]
+categories = ["command-line-utilities"]
+description = "A command-line utility for processing redistricting ensembles compressed in the binary-ensemble format."
+
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
