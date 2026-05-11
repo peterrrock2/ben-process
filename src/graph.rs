@@ -122,11 +122,9 @@ pub fn load_graph(
     edge_weight_key: Option<&str>,
     edge_default_value: f64,
 ) -> Result<Graph> {
-    let file =
-        File::open(file_path).unwrap_or_else(|_| panic!("File {} not found", file_path));
+    let file = File::open(file_path).unwrap_or_else(|_| panic!("File {} not found", file_path));
     let reader = BufReader::new(file);
-    let graph_data: JsonGraphData =
-        serde_json::from_reader(reader).expect("Unable to parse JSON");
+    let graph_data: JsonGraphData = serde_json::from_reader(reader).expect("Unable to parse JSON");
 
     // --- numeric node attributes ---
     let mut attr_columns: Vec<Vec<f64>> =
@@ -187,8 +185,7 @@ pub fn load_graph(
     //     edges fall back to 1.0 at lookup time.
     //   - `.insert()` (not `.or_insert()`) — last valid weight wins, matching
     //     the old nested-HashMap `.insert(key, weight)` behavior.
-    let mut edge_set: std::collections::HashSet<(u32, u32)> =
-        std::collections::HashSet::new();
+    let mut edge_set: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
     let mut edge_weights_map: HashMap<(u32, u32), f64> = HashMap::new();
     for (source_idx, adjacency_val) in graph_data.adjacency.iter().enumerate() {
         let src = source_idx as u32;
@@ -196,9 +193,7 @@ pub fn load_graph(
             .as_array()
             .expect("Failed to unwrap adjacency");
         for target_data in adj {
-            let tgt = target_data["id"]
-                .as_u64()
-                .expect("Failed to unwrap id") as u32;
+            let tgt = target_data["id"].as_u64().expect("Failed to unwrap id") as u32;
             let edge = (src.min(tgt), src.max(tgt));
             edge_set.insert(edge);
 
@@ -216,7 +211,12 @@ pub fn load_graph(
     let edge_weights: Option<Vec<f64>> = edge_weight_key.map(|_| {
         edges
             .iter()
-            .map(|e| edge_weights_map.get(e).copied().unwrap_or(edge_default_value))
+            .map(|e| {
+                edge_weights_map
+                    .get(e)
+                    .copied()
+                    .unwrap_or(edge_default_value)
+            })
             .collect()
     });
 
@@ -416,7 +416,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(graph.attr_columns[graph.attr_index["area"]], vec![1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(
+            graph.attr_columns[graph.attr_index["area"]],
+            vec![1.0, 2.0, 3.0, 4.0]
+        );
         assert_eq!(
             graph.attr_columns[graph.attr_index["boundary_perim"]],
             vec![3.0, 0.0, 0.0, 0.0]

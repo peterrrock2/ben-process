@@ -168,7 +168,12 @@ fn fixture(plans: &[Vec<u16>]) -> Fixture {
     let ben = dir.join("plans.jsonl.ben");
     write_fixture_graph(&graph);
     write_fixture_ben(&ben, plans);
-    Fixture { _tmp: tmp, dir, graph, ben }
+    Fixture {
+        _tmp: tmp,
+        dir,
+        graph,
+        ben,
+    }
 }
 
 fn polsby_fixture(plans: &[Vec<u16>]) -> Fixture {
@@ -178,7 +183,12 @@ fn polsby_fixture(plans: &[Vec<u16>]) -> Fixture {
     let ben = dir.join("plans.jsonl.ben");
     write_polsby_fixture_graph(&graph);
     write_fixture_ben(&ben, plans);
-    Fixture { _tmp: tmp, dir, graph, ben }
+    Fixture {
+        _tmp: tmp,
+        dir,
+        graph,
+        ben,
+    }
 }
 
 fn polsby_partial_boundary_fixture(plans: &[Vec<u16>]) -> Fixture {
@@ -188,7 +198,12 @@ fn polsby_partial_boundary_fixture(plans: &[Vec<u16>]) -> Fixture {
     let ben = dir.join("plans.jsonl.ben");
     write_polsby_partial_boundary_graph(&graph);
     write_fixture_ben(&ben, plans);
-    Fixture { _tmp: tmp, dir, graph, ben }
+    Fixture {
+        _tmp: tmp,
+        dir,
+        graph,
+        ben,
+    }
 }
 
 fn polsby_missing_shared_perim_fixture(plans: &[Vec<u16>]) -> Fixture {
@@ -198,7 +213,12 @@ fn polsby_missing_shared_perim_fixture(plans: &[Vec<u16>]) -> Fixture {
     let ben = dir.join("plans.jsonl.ben");
     write_polsby_missing_shared_perim_graph(&graph);
     write_fixture_ben(&ben, plans);
-    Fixture { _tmp: tmp, dir, graph, ben }
+    Fixture {
+        _tmp: tmp,
+        dir,
+        graph,
+        ben,
+    }
 }
 
 fn run(args: &[&str]) {
@@ -292,10 +312,14 @@ fn tri_plans() -> Vec<Vec<u16>> {
 fn cut_edges_unweighted() {
     let f = fixture(&tri_plans());
     run(&[
-        "--mode", "cut-edges",
-        "--graph-file", f.graph.to_str().unwrap(),
-        "--ben-file", f.ben.to_str().unwrap(),
-        "--output-dir", f.dir.to_str().unwrap(),
+        "--mode",
+        "cut-edges",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
         "--no-progress",
     ]);
     let df = read_parquet(&f.dir.join("plans_cut_edges.parquet"));
@@ -309,11 +333,16 @@ fn cut_edges_unweighted() {
 fn cut_edges_weighted_by_edge_key() {
     let f = fixture(&tri_plans());
     run(&[
-        "--mode", "cut-edges",
-        "--graph-file", f.graph.to_str().unwrap(),
-        "--ben-file", f.ben.to_str().unwrap(),
-        "--output-dir", f.dir.to_str().unwrap(),
-        "--edge-weight-key", "weight",
+        "--mode",
+        "cut-edges",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--edge-weight-key",
+        "weight",
         "--no-progress",
     ]);
     let df = read_parquet(&f.dir.join("plans_cut_edges.parquet"));
@@ -324,11 +353,16 @@ fn cut_edges_weighted_by_edge_key() {
 fn tally_keys_pop_per_district() {
     let f = fixture(&tri_plans());
     run(&[
-        "--mode", "tally-keys",
-        "--graph-file", f.graph.to_str().unwrap(),
-        "--ben-file", f.ben.to_str().unwrap(),
-        "--output-dir", f.dir.to_str().unwrap(),
-        "--keys", "pop",
+        "--mode",
+        "tally-keys",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--keys",
+        "pop",
         "--no-progress",
     ]);
     let df = read_parquet(&f.dir.join("plans_tallies").join("pop_tally_plans.parquet"));
@@ -356,11 +390,17 @@ fn tally_keys_pop_per_district() {
 fn tally_keys_multiple_keys_write_separate_files() {
     let f = fixture(&tri_plans());
     run(&[
-        "--mode", "tally-keys",
-        "--graph-file", f.graph.to_str().unwrap(),
-        "--ben-file", f.ben.to_str().unwrap(),
-        "--output-dir", f.dir.to_str().unwrap(),
-        "--keys", "pop", "area",
+        "--mode",
+        "tally-keys",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--keys",
+        "pop",
+        "area",
         "--no-progress",
     ]);
 
@@ -380,11 +420,16 @@ fn tally_keys_output_dir_nests_files_under_graph_stem_directory() {
     let f = fixture(&tri_plans());
     let output_dir = f.dir.join("custom_out");
     run(&[
-        "--mode", "tally-keys",
-        "--graph-file", f.graph.to_str().unwrap(),
-        "--ben-file", f.ben.to_str().unwrap(),
-        "--output-dir", output_dir.to_str().unwrap(),
-        "--keys", "pop",
+        "--mode",
+        "tally-keys",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        output_dir.to_str().unwrap(),
+        "--keys",
+        "pop",
         "--no-progress",
     ]);
 
@@ -393,31 +438,39 @@ fn tally_keys_output_dir_nests_files_under_graph_stem_directory() {
         .join("pop_tally_plans.parquet");
     assert!(expected.exists(), "expected tally file at {:?}", expected);
     assert!(
-        !f.dir.join("plans_tallies").join("pop_tally_plans.parquet").exists(),
+        !f.dir
+            .join("plans_tallies")
+            .join("pop_tally_plans.parquet")
+            .exists(),
         "tally file should respect --output-dir rather than defaulting to fixture dir"
     );
 }
 
 #[test]
 fn tally_keys_fails_when_later_frames_introduce_unseen_district_ids() {
-    let plans = vec![
-        vec![1u16, 1, 1, 1, 1, 1],
-        vec![1u16, 2, 1, 2, 1, 2],
-    ];
+    let plans = vec![vec![1u16, 1, 1, 1, 1, 1], vec![1u16, 2, 1, 2, 1, 2]];
     let f = fixture(&plans);
     let output = Command::new(bin())
         .args([
-            "--mode", "tally-keys",
-            "--graph-file", f.graph.to_str().unwrap(),
-            "--ben-file", f.ben.to_str().unwrap(),
-            "--output-dir", f.dir.to_str().unwrap(),
-            "--keys", "pop",
+            "--mode",
+            "tally-keys",
+            "--graph-file",
+            f.graph.to_str().unwrap(),
+            "--ben-file",
+            f.ben.to_str().unwrap(),
+            "--output-dir",
+            f.dir.to_str().unwrap(),
+            "--keys",
+            "pop",
             "--no-progress",
         ])
         .output()
         .expect("failed to spawn ben-process");
 
-    assert!(!output.status.success(), "tally-keys should fail on unseen district ids");
+    assert!(
+        !output.status.success(),
+        "tally-keys should fail on unseen district ids"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("not present in first assignment"),
@@ -430,13 +483,20 @@ fn polsby_popper_with_explicit_perimeter_key() {
     let plans = vec![vec![1u16, 1, 2, 2], vec![1u16, 2, 2, 2]];
     let f = polsby_fixture(&plans);
     run(&[
-        "--mode", "polsby-popper",
-        "--graph-file", f.graph.to_str().unwrap(),
-        "--ben-file", f.ben.to_str().unwrap(),
-        "--output-dir", f.dir.to_str().unwrap(),
-        "--area-key", "area",
-        "--perim-key", "perim",
-        "--shared-perim-key", "shared_perim",
+        "--mode",
+        "polsby-popper",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--area-key",
+        "area",
+        "--perim-key",
+        "perim",
+        "--shared-perim-key",
+        "shared_perim",
         "--no-progress",
     ]);
 
@@ -458,13 +518,20 @@ fn polsby_popper_with_boundary_and_shared_perimeter_matches_direct_perimeter() {
     let plans = vec![vec![1u16, 1, 2, 2], vec![1u16, 2, 2, 2]];
     let f = polsby_fixture(&plans);
     run(&[
-        "--mode", "polsby-popper",
-        "--graph-file", f.graph.to_str().unwrap(),
-        "--ben-file", f.ben.to_str().unwrap(),
-        "--output-dir", f.dir.to_str().unwrap(),
-        "--area-key", "area",
-        "--boundary-perim-key", "boundary_perim",
-        "--shared-perim-key", "shared_perim",
+        "--mode",
+        "polsby-popper",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--area-key",
+        "area",
+        "--boundary-perim-key",
+        "boundary_perim",
+        "--shared-perim-key",
+        "shared_perim",
         "--no-progress",
     ]);
 
@@ -496,10 +563,14 @@ fn polsby_popper_uses_gerrychain_default_geometry_keys() {
     let plans = vec![vec![1u16, 1, 2, 2]];
     let f = polsby_fixture(&plans);
     run(&[
-        "--mode", "polsby-popper",
-        "--graph-file", f.graph.to_str().unwrap(),
-        "--ben-file", f.ben.to_str().unwrap(),
-        "--output-dir", f.dir.to_str().unwrap(),
+        "--mode",
+        "polsby-popper",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
         "--no-progress",
     ]);
 
@@ -514,10 +585,14 @@ fn polsby_popper_treats_missing_boundary_perimeter_as_zero() {
     let plans = vec![vec![1u16, 1, 2, 2]];
     let f = polsby_partial_boundary_fixture(&plans);
     run(&[
-        "--mode", "polsby-popper",
-        "--graph-file", f.graph.to_str().unwrap(),
-        "--ben-file", f.ben.to_str().unwrap(),
-        "--output-dir", f.dir.to_str().unwrap(),
+        "--mode",
+        "polsby-popper",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
         "--no-progress",
     ]);
 
@@ -532,10 +607,14 @@ fn polsby_popper_treats_missing_shared_perimeter_as_zero() {
     let plans = vec![vec![1u16, 1, 2, 2]];
     let f = polsby_missing_shared_perim_fixture(&plans);
     run(&[
-        "--mode", "polsby-popper",
-        "--graph-file", f.graph.to_str().unwrap(),
-        "--ben-file", f.ben.to_str().unwrap(),
-        "--output-dir", f.dir.to_str().unwrap(),
+        "--mode",
+        "polsby-popper",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
         "--no-progress",
     ]);
 
@@ -550,11 +629,16 @@ fn polsby_popper_uses_default_area_and_shared_keys_with_explicit_boundary_perime
     let plans = vec![vec![1u16, 1, 2, 2]];
     let f = polsby_fixture(&plans);
     run(&[
-        "--mode", "polsby-popper",
-        "--graph-file", f.graph.to_str().unwrap(),
-        "--ben-file", f.ben.to_str().unwrap(),
-        "--output-dir", f.dir.to_str().unwrap(),
-        "--boundary-perim-key", "boundary_perim",
+        "--mode",
+        "polsby-popper",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--boundary-perim-key",
+        "boundary_perim",
         "--no-progress",
     ]);
 
@@ -568,27 +652,40 @@ fn polsby_popper_uses_default_area_and_shared_keys_with_explicit_boundary_perime
 fn region_splits_for_region_key() {
     let f = fixture(&tri_plans());
     run(&[
-        "--mode", "region-splits",
-        "--graph-file", f.graph.to_str().unwrap(),
-        "--ben-file", f.ben.to_str().unwrap(),
-        "--output-dir", f.dir.to_str().unwrap(),
-        "--keys", "region",
+        "--mode",
+        "region-splits",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--keys",
+        "region",
         "--no-progress",
     ]);
     let df = read_parquet(&f.dir.join("plans_region_splits.parquet"));
     assert_eq!(u32_col(&df, "region_splits"), vec![2, 2, 0]);
-    assert_eq!(str_col(&df, "region_key"), vec!["region", "region", "region"]);
+    assert_eq!(
+        str_col(&df, "region_key"),
+        vec!["region", "region", "region"]
+    );
 }
 
 #[test]
 fn region_pieces_for_region_key() {
     let f = fixture(&tri_plans());
     run(&[
-        "--mode", "region-pieces",
-        "--graph-file", f.graph.to_str().unwrap(),
-        "--ben-file", f.ben.to_str().unwrap(),
-        "--output-dir", f.dir.to_str().unwrap(),
-        "--keys", "region",
+        "--mode",
+        "region-pieces",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--keys",
+        "region",
         "--no-progress",
     ]);
     let df = read_parquet(&f.dir.join("plans_region_pieces.parquet"));
@@ -600,15 +697,16 @@ fn changed_assignments_single_plan_smoke() {
     let plans = vec![vec![1u16, 1, 1, 2, 2, 2]];
     let f = fixture(&plans);
     run(&[
-        "--mode", "changed-assignments",
-        "--ben-file", f.ben.to_str().unwrap(),
-        "--output-dir", f.dir.to_str().unwrap(),
+        "--mode",
+        "changed-assignments",
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
         "--no-progress",
     ]);
-    let body = std::fs::read_to_string(
-        f.dir.join("plans_accept_1_changed_assignments.txt"),
-    )
-    .unwrap();
+    let body =
+        std::fs::read_to_string(f.dir.join("plans_accept_1_changed_assignments.txt")).unwrap();
     assert_eq!(body, "[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]\nTotal Accepted: 1");
 }
 
@@ -622,15 +720,16 @@ fn changed_assignments_single_plan_smoke() {
 fn changed_assignments_tri_plans_deterministic() {
     let f = fixture(&tri_plans());
     run(&[
-        "--mode", "changed-assignments",
-        "--ben-file", f.ben.to_str().unwrap(),
-        "--output-dir", f.dir.to_str().unwrap(),
+        "--mode",
+        "changed-assignments",
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
         "--no-progress",
     ]);
-    let body = std::fs::read_to_string(
-        f.dir.join("plans_accept_3_changed_assignments.txt"),
-    )
-    .unwrap();
+    let body =
+        std::fs::read_to_string(f.dir.join("plans_accept_3_changed_assignments.txt")).unwrap();
     assert_eq!(body, "[0.0, 2.0, 1.0, 0.0, 1.0, 1.0]\nTotal Accepted: 3");
 }
 
@@ -662,9 +761,12 @@ fn changed_assignments_mkvchain_uses_frame_count() {
         ],
     );
     run(&[
-        "--mode", "changed-assignments",
-        "--ben-file", ben.to_str().unwrap(),
-        "--output-dir", dir.to_str().unwrap(),
+        "--mode",
+        "changed-assignments",
+        "--ben-file",
+        ben.to_str().unwrap(),
+        "--output-dir",
+        dir.to_str().unwrap(),
         "--no-progress",
     ]);
     let body = std::fs::read_to_string(dir.join("plans_accept_2_changed_assignments.txt"))
@@ -715,11 +817,16 @@ fn cut_edges_weighted_tolerates_asymmetric_missing_weight() {
     std::fs::write(&graph, graph_json.to_string()).unwrap();
     write_fixture_ben(&ben, &[vec![1u16, 1, 1, 2, 2, 2]]);
     run(&[
-        "--mode", "cut-edges",
-        "--graph-file", graph.to_str().unwrap(),
-        "--ben-file", ben.to_str().unwrap(),
-        "--output-dir", dir.to_str().unwrap(),
-        "--edge-weight-key", "weight",
+        "--mode",
+        "cut-edges",
+        "--graph-file",
+        graph.to_str().unwrap(),
+        "--ben-file",
+        ben.to_str().unwrap(),
+        "--output-dir",
+        dir.to_str().unwrap(),
+        "--edge-weight-key",
+        "weight",
         "--no-progress",
     ]);
     let df = read_parquet(&dir.join("plans_cut_edges.parquet"));
@@ -731,16 +838,17 @@ fn cut_edges_weighted_tolerates_asymmetric_missing_weight() {
 fn changed_assignments_tri_plans_normalized() {
     let f = fixture(&tri_plans());
     run(&[
-        "--mode", "changed-assignments",
-        "--ben-file", f.ben.to_str().unwrap(),
-        "--output-dir", f.dir.to_str().unwrap(),
+        "--mode",
+        "changed-assignments",
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
         "--normalize",
         "--no-progress",
     ]);
-    let body = std::fs::read_to_string(
-        f.dir.join("plans_accept_3_changed_assignments.txt"),
-    )
-    .unwrap();
+    let body =
+        std::fs::read_to_string(f.dir.join("plans_accept_3_changed_assignments.txt")).unwrap();
     assert_eq!(body, "[0.0, 1.0, 0.5, 0.0, 0.5, 0.5]\nTotal Accepted: 3");
 }
 
@@ -748,16 +856,18 @@ fn changed_assignments_tri_plans_normalized() {
 fn changed_assignments_respects_max_accepted() {
     let f = fixture(&tri_plans());
     run(&[
-        "--mode", "changed-assignments",
-        "--ben-file", f.ben.to_str().unwrap(),
-        "--output-dir", f.dir.to_str().unwrap(),
-        "--max-accepted", "2",
+        "--mode",
+        "changed-assignments",
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--max-accepted",
+        "2",
         "--no-progress",
     ]);
-    let body = std::fs::read_to_string(
-        f.dir.join("plans_accept_2_changed_assignments.txt"),
-    )
-    .unwrap();
+    let body =
+        std::fs::read_to_string(f.dir.join("plans_accept_2_changed_assignments.txt")).unwrap();
     assert_eq!(body, "[0.0, 1.0, 0.0, 0.0, 1.0, 0.0]\nTotal Accepted: 2");
 }
 
@@ -778,17 +888,18 @@ fn extract_unique_plans_dedups_label_permutations() {
     ];
     let f = fixture(&plans);
     run(&[
-        "--mode", "extract-unique-plans",
-        "--ben-file", f.ben.to_str().unwrap(),
-        "--output-dir", f.dir.to_str().unwrap(),
+        "--mode",
+        "extract-unique-plans",
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
         "--no-progress",
     ]);
 
     let out = f.dir.join("plans_unique.jsonl.ben");
     let decoder = BenDecoder::new(File::open(&out).unwrap()).unwrap();
-    let extracted: Vec<Vec<u16>> = decoder
-        .map(|r| r.unwrap().0)
-        .collect();
+    let extracted: Vec<Vec<u16>> = decoder.map(|r| r.unwrap().0).collect();
 
     assert_eq!(
         extracted,
@@ -809,10 +920,14 @@ fn extract_unique_plans_dedups_label_permutations() {
 fn cut_edges_with_high_compression_round_trips() {
     let f = fixture(&tri_plans());
     run(&[
-        "--mode", "cut-edges",
-        "--graph-file", f.graph.to_str().unwrap(),
-        "--ben-file", f.ben.to_str().unwrap(),
-        "--output-dir", f.dir.to_str().unwrap(),
+        "--mode",
+        "cut-edges",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
         "--high-compression",
         "--no-progress",
     ]);
@@ -837,9 +952,12 @@ fn extract_unique_plans_fails_on_corrupted_ben_input() {
 
     let output = Command::new(bin())
         .args([
-            "--mode", "extract-unique-plans",
-            "--ben-file", bogus.to_str().unwrap(),
-            "--output-dir", dir.to_str().unwrap(),
+            "--mode",
+            "extract-unique-plans",
+            "--ben-file",
+            bogus.to_str().unwrap(),
+            "--output-dir",
+            dir.to_str().unwrap(),
             "--no-progress",
         ])
         .output()
@@ -890,14 +1008,22 @@ fn polsby_popper_perim_key_wins_when_both_keys_are_passed() {
     write_fixture_ben(&ben, &[vec![1u16, 1, 2, 2]]);
 
     run(&[
-        "--mode", "polsby-popper",
-        "--graph-file", graph.to_str().unwrap(),
-        "--ben-file", ben.to_str().unwrap(),
-        "--output-dir", dir.to_str().unwrap(),
-        "--area-key", "area",
-        "--perim-key", "perim",
-        "--boundary-perim-key", "boundary_perim",
-        "--shared-perim-key", "shared_perim",
+        "--mode",
+        "polsby-popper",
+        "--graph-file",
+        graph.to_str().unwrap(),
+        "--ben-file",
+        ben.to_str().unwrap(),
+        "--output-dir",
+        dir.to_str().unwrap(),
+        "--area-key",
+        "area",
+        "--perim-key",
+        "perim",
+        "--boundary-perim-key",
+        "boundary_perim",
+        "--shared-perim-key",
+        "shared_perim",
         "--no-progress",
     ]);
 
@@ -918,20 +1044,19 @@ fn changed_assignments_with_randomize_reassignments_runs_and_writes_valid_output
     let plans = vec![vec![1u16, 1, 2, 2], vec![2u16, 2, 1, 1]];
     let f = fixture(&plans);
     run(&[
-        "--mode", "changed-assignments",
-        "--ben-file", f.ben.to_str().unwrap(),
-        "--output-dir", f.dir.to_str().unwrap(),
+        "--mode",
+        "changed-assignments",
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
         "--randomize-reassignments",
         "--no-progress",
     ]);
 
-    let body = std::fs::read_to_string(
-        f.dir.join("plans_accept_2_changed_assignments.txt"),
-    )
-    .unwrap();
-    let (counts_line, total_line) = body
-        .split_once('\n')
-        .expect("output should have two lines");
+    let body =
+        std::fs::read_to_string(f.dir.join("plans_accept_2_changed_assignments.txt")).unwrap();
+    let (counts_line, total_line) = body.split_once('\n').expect("output should have two lines");
     assert_eq!(total_line, "Total Accepted: 2");
 
     let parsed: Vec<f64> = counts_line
@@ -960,10 +1085,14 @@ fn cut_edges_fails_when_output_dir_is_an_existing_file() {
 
     let output = Command::new(bin())
         .args([
-            "--mode", "cut-edges",
-            "--graph-file", f.graph.to_str().unwrap(),
-            "--ben-file", f.ben.to_str().unwrap(),
-            "--output-dir", bogus_dir.to_str().unwrap(),
+            "--mode",
+            "cut-edges",
+            "--graph-file",
+            f.graph.to_str().unwrap(),
+            "--ben-file",
+            f.ben.to_str().unwrap(),
+            "--output-dir",
+            bogus_dir.to_str().unwrap(),
             "--no-progress",
         ])
         .output()
@@ -975,6 +1104,124 @@ fn cut_edges_fails_when_output_dir_is_an_existing_file() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+}
+
+/// `polsby-popper` has an explicit "no rows seen" branch that builds an empty
+/// schema-less DataFrame and finishes the parquet writer without ever calling
+/// `sorted_district_ids`. Drive that branch with a BEN file containing zero
+/// frames and verify the binary exits cleanly and produces a readable parquet.
+#[test]
+fn polsby_popper_handles_empty_ben_input() {
+    let plans: Vec<Vec<u16>> = vec![];
+    let f = polsby_fixture(&plans);
+    run(&[
+        "--mode",
+        "polsby-popper",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--no-progress",
+    ]);
+    let df = read_parquet(&f.dir.join("plans_polsby_popper.parquet"));
+    assert_eq!(df.height(), 0);
+    // The empty branch builds the schema with no district columns.
+    assert_eq!(
+        df.get_column_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>(),
+        vec![
+            "step".to_string(),
+            "n_reps".to_string(),
+            "accepted_count".to_string()
+        ]
+    );
+}
+
+/// `cut-edges` and `tally-keys` both go through `run_pipeline`; on a zero-frame
+/// BEN they must finish the parquet writer without ever invoking the per-row
+/// callback. Smoke-test both modes — the existence of a readable empty parquet
+/// is enough to catch a regression that panics on the empty-iterator path.
+#[test]
+fn cut_edges_and_tally_keys_handle_empty_ben_input() {
+    let plans: Vec<Vec<u16>> = vec![];
+    let f = fixture(&plans);
+
+    run(&[
+        "--mode",
+        "cut-edges",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--no-progress",
+    ]);
+    let cut_df = read_parquet(&f.dir.join("plans_cut_edges.parquet"));
+    assert_eq!(cut_df.height(), 0);
+
+    run(&[
+        "--mode",
+        "tally-keys",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--keys",
+        "pop",
+        "--no-progress",
+    ]);
+    let tally_df = read_parquet(&f.dir.join("plans_tallies").join("pop_tally_plans.parquet"));
+    assert_eq!(tally_df.height(), 0);
+}
+
+/// All five frames are byte-identical → exactly one canonical partition.
+#[test]
+fn unique_plans_reports_one_when_every_frame_is_identical() {
+    let plans: Vec<Vec<u16>> = vec![vec![1, 1, 1, 2, 2, 2]; 5];
+    let f = fixture(&plans);
+    run(&[
+        "--mode",
+        "unique-plans",
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--no-progress",
+    ]);
+    let contents = std::fs::read_to_string(f.dir.join("plans_unique_plans.txt")).unwrap();
+    assert_eq!(contents, "unique_plans: 1\ntotal_accepted_frames: 5\n");
+}
+
+/// Five frames, every one a distinct partition (not just a label permutation
+/// of any other) → unique count equals frame count.
+#[test]
+fn unique_plans_reports_n_when_every_frame_is_distinct() {
+    let plans: Vec<Vec<u16>> = vec![
+        vec![1, 1, 1, 2, 2, 2], // d1 = first three
+        vec![1, 1, 2, 2, 1, 1], // d2 = middle two
+        vec![1, 2, 1, 2, 1, 2], // alternating
+        vec![1, 1, 1, 1, 2, 2], // d2 = last two
+        vec![1, 2, 2, 1, 1, 2], // mixed
+    ];
+    let f = fixture(&plans);
+    run(&[
+        "--mode",
+        "unique-plans",
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--no-progress",
+    ]);
+    let contents = std::fs::read_to_string(f.dir.join("plans_unique_plans.txt")).unwrap();
+    assert_eq!(contents, "unique_plans: 5\ntotal_accepted_frames: 5\n");
 }
 
 #[test]
@@ -990,9 +1237,12 @@ fn unique_plans_writes_distinct_partition_count_and_total_frames() {
     ];
     let f = fixture(&plans);
     run(&[
-        "--mode", "unique-plans",
-        "--ben-file", f.ben.to_str().unwrap(),
-        "--output-dir", f.dir.to_str().unwrap(),
+        "--mode",
+        "unique-plans",
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
         "--no-progress",
     ]);
 
