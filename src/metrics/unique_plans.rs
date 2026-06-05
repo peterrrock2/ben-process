@@ -24,6 +24,9 @@ pub fn count_and_save_unique_plans(
     run_pipeline(
         in_file_name,
         total,
+        // No graph is loaded for this mode — it only hashes the raw assignment,
+        // so there is no node count to validate against.
+        None,
         |assignment, _n_reps| canonical_hash(assignment),
         |_step, _n_reps, _accepted, hash| {
             unique.insert(hash);

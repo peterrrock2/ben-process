@@ -74,6 +74,7 @@ pub fn tally_and_save_cut_edges(
     run_pipeline(
         in_file_name,
         total,
+        Some(graph.node_count),
         |assignment, _n_reps| cut_edges(&graph, assignment),
         |step, n_reps, accepted, cuts| {
             sample_nums.push(step);
@@ -124,6 +125,7 @@ mod tests {
 
     fn graph_with_edges(edge_weights: Option<Vec<f64>>) -> Graph {
         Graph {
+            node_count: 4,
             attr_columns: vec![],
             attr_index: HashMap::new(),
             region_columns: vec![],
@@ -151,7 +153,13 @@ mod tests {
     }
 
     fn graph_with_explicit_edges(edges: Vec<(u32, u32)>, edge_weights: Option<Vec<f64>>) -> Graph {
+        let node_count = edges
+            .iter()
+            .map(|&(a, b)| a.max(b))
+            .max()
+            .map_or(0, |m| m as usize + 1);
         Graph {
+            node_count,
             attr_columns: vec![],
             attr_index: HashMap::new(),
             region_columns: vec![],

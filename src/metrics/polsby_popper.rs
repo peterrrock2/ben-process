@@ -214,6 +214,7 @@ pub fn tally_and_save_polsby_popper(
     run_pipeline(
         in_file_name,
         total,
+        Some(graph.node_count),
         |assignment, _n_reps| {
             polsby_popper_rows(
                 assignment,

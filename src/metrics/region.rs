@@ -138,6 +138,7 @@ pub fn tally_and_save_region_metric(
     run_pipeline(
         in_file_name,
         total,
+        Some(graph.node_count),
         |assignment, _n_reps| {
             key_list
                 .iter()
@@ -206,6 +207,7 @@ mod tests {
 
     fn graph_with_region_column(region_column: Vec<Option<u32>>, region_count: u32) -> Graph {
         Graph {
+            node_count: region_column.len(),
             attr_columns: vec![],
             attr_index: HashMap::new(),
             region_columns: vec![region_column],

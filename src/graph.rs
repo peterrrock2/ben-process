@@ -25,6 +25,10 @@ pub struct JsonGraphData {
 /// Pre-parsed graph ready for the hot loop.
 #[derive(Debug)]
 pub struct Graph {
+    /// Number of nodes in the source graph. Held independently of
+    /// `attr_columns` so the node count is known even when no numeric keys
+    /// were requested; used to validate assignment-vector lengths.
+    pub node_count: usize,
     /// Numeric node attributes the caller asked for, one column per key.
     /// `attr_columns[col_idx][node_idx]` is the parsed f64 value.
     pub attr_columns: Vec<Vec<f64>>,
@@ -76,19 +80,21 @@ fn parse_region_id(node: &Value, key: &str) -> Option<String> {
 }
 
 fn parse_numeric(value: &Value, key: &str) -> f64 {
-    match value {
+    let extracted_val = &value[key];
+    match extracted_val {
         Value::Number(n) => n
             .as_f64()
-            .unwrap_or_else(|| panic!("Non-f64 number for key {:?}: {:?}", key, value)),
+            .unwrap_or_else(|| panic!("Non-f64 parsable number for key {:?}. Found {:?}", key, extracted_val)),
         Value::String(s) => s.parse::<f64>().unwrap_or_else(|_| {
             panic!(
-                "Invalid value type in JSON file. Failed to parse {:?} as f64 for key {:?}",
-                value, key
+                "Invalid value type in JSON file. Failed to parse value {:?} from \n\n{:?}\n\n as \
+                f64 for key {:?}",
+                &value[key], value, key
             )
         }),
         _ => panic!(
-            "Invalid value type in JSON file. Failed to parse {:?} as f64 for key {:?}",
-            value, key
+            "Invalid value type in JSON file. Failed to parse {:?} in \n\n{:?}\n\n as f64 for key {:?}",
+            extracted_val, value, key
         ),
     }
 }
@@ -135,7 +141,7 @@ pub fn load_graph(
         let col: Vec<f64> = graph_data
             .nodes
             .iter()
-            .map(|node| parse_numeric(&node[key], key))
+            .map(|node| parse_numeric(node, key))
             .collect();
         attr_index.insert(key.clone(), attr_columns.len());
         attr_columns.push(col);
@@ -221,6 +227,7 @@ pub fn load_graph(
     });
 
     Ok(Graph {
+        node_count: graph_data.nodes.len(),
         attr_columns,
         attr_index,
         region_columns,
@@ -264,14 +271,14 @@ mod tests {
 
     #[test]
     fn parse_numeric_accepts_numbers_and_numeric_strings() {
-        assert_eq!(parse_numeric(&json!(3.5), "pop"), 3.5);
-        assert_eq!(parse_numeric(&json!("4.25"), "pop"), 4.25);
+        assert_eq!(parse_numeric(&json!({ "pop": 3.5 }), "pop"), 3.5);
+        assert_eq!(parse_numeric(&json!({ "pop": "4.25" }), "pop"), 4.25);
     }
 
     #[test]
     #[should_panic(expected = "Failed to parse")]
     fn parse_numeric_panics_on_invalid_string() {
-        let _ = parse_numeric(&json!("not-a-number"), "pop");
+        let _ = parse_numeric(&json!({ "pop": "not-a-number" }), "pop");
     }
 
     #[test]

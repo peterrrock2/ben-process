@@ -40,6 +40,9 @@ fn tally_keys(
     assignment: &[u16],
     attr_col_indices: &[usize],
 ) -> (Vec<f64>, u16, u128) {
+    // The assignment is guaranteed to have one entry per graph node by
+    // `run_pipeline`'s length check; this hot loop relies on that invariant when
+    // indexing `assignment[node_idx]` below.
     let mut observed: u128 = 0;
     let mut max_d: u16 = 0;
     for &d in assignment {
@@ -243,6 +246,7 @@ pub fn tally_and_save_from_key_list(
     run_pipeline(
         in_file_name,
         total,
+        Some(graph.node_count),
         |assignment, _n_reps| tally_keys(&graph, assignment, &attr_col_indices),
         |step, n_reps, accepted, row| {
             let (totals, n_districts, observed) = row;
@@ -358,6 +362,7 @@ mod tests {
 
     fn graph_with_attr_columns(attr_columns: Vec<Vec<f64>>) -> Graph {
         Graph {
+            node_count: attr_columns.first().map_or(0, |c| c.len()),
             attr_columns,
             attr_index: HashMap::new(),
             region_columns: vec![],

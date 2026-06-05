@@ -62,7 +62,11 @@ fn decode_frame(frame: &BenFrame) -> Vec<u16> {
     .expect("Failed to decode BEN frame")
 }
 
-fn process_batch<Row, P>(process: &P, frames: &[BenFrame]) -> Vec<(u16, Row)>
+fn process_batch<Row, P>(
+    process: &P,
+    expected_assignment_len: Option<usize>,
+    frames: &[BenFrame],
+) -> Vec<(u16, Row)>
 where
     Row: Send,
     P: Fn(&[u16], u16) -> Row + Sync,
@@ -71,6 +75,22 @@ where
         .par_iter()
         .map(|frame| {
             let assignment = decode_frame(frame);
+            if let Some(expected) = expected_assignment_len {
+                // Every graph-driven metric indexes `assignment[node_idx]` while
+                // iterating a graph-length container. A too-long assignment would
+                // otherwise be silently truncated to the first `expected` entries
+                // (wrong-but-quiet tallies); a too-short one would panic deep in a
+                // metric with an opaque out-of-bounds index. Checking here, at the
+                // single point every assignment is decoded, fixes both directions
+                // for all modes at once.
+                assert_eq!(
+                    assignment.len(),
+                    expected,
+                    "BEN assignment has {} entries but graph has {} nodes",
+                    assignment.len(),
+                    expected,
+                );
+            }
             let row = process(&assignment, frame.count);
             (frame.count, row)
         })
@@ -110,9 +130,16 @@ pub fn count_frames(in_file: &str) -> io::Result<usize> {
 ///
 /// `process` takes `(&[u16], u16)` = `(assignment, n_reps)` and is
 /// invoked inside the rayon pool; it must be `Sync` and produce `Send` rows.
+///
+/// `expected_assignment_len` is the graph's node count for graph-driven modes;
+/// every decoded assignment is asserted to match it before `process` runs, so a
+/// BEN file that disagrees with the graph fails loudly instead of mistallying.
+/// Pass `None` for modes that don't tie assignments to a graph (e.g. unique
+/// plans, which only hashes the raw assignment).
 pub fn run_pipeline<Row, P, F>(
     in_file: &str,
     total_samples: usize,
+    expected_assignment_len: Option<usize>,
     process: P,
     mut on_row: F,
     show_progress: bool,
@@ -143,7 +170,7 @@ where
         if frame_batch.len() < BATCH {
             continue;
         }
-        for (n_reps, row) in process_batch(&process, &frame_batch) {
+        for (n_reps, row) in process_batch(&process, expected_assignment_len, &frame_batch) {
             on_row(sample_count, n_reps as u32, accepted_count, row);
             sample_count += n_reps as u64;
             accepted_count += 1;
@@ -156,7 +183,7 @@ where
     }
 
     if !frame_batch.is_empty() {
-        for (n_reps, row) in process_batch(&process, &frame_batch) {
+        for (n_reps, row) in process_batch(&process, expected_assignment_len, &frame_batch) {
             on_row(sample_count, n_reps as u32, accepted_count, row);
             sample_count += n_reps as u64;
             accepted_count += 1;
@@ -212,6 +239,7 @@ mod tests {
         run_pipeline(
             ben_file.path().to_str().unwrap(),
             3,
+            Some(4),
             |assignment, n_reps| (assignment[0], n_reps),
             |step, n_reps, accepted, row| rows.push((step, n_reps, accepted, row)),
             false,
@@ -219,5 +247,38 @@ mod tests {
         .unwrap();
 
         assert_eq!(rows, vec![(1, 2, 1, (1, 2)), (3, 1, 2, (2, 1)),]);
+    }
+
+    #[test]
+    #[should_panic(expected = "BEN assignment has 4 entries but graph has 3 nodes")]
+    fn run_pipeline_panics_when_assignment_longer_than_graph() {
+        // A BEN file whose assignments are longer than the graph used to be
+        // silently truncated by every graph-driven metric. The pipeline now
+        // rejects the mismatch up front for all modes at once.
+        let ben_file = write_ben_file(BenVariant::Standard, &[vec![0, 1, 2, 1]]);
+        run_pipeline(
+            ben_file.path().to_str().unwrap(),
+            1,
+            Some(3),
+            |assignment, _n_reps| assignment.len(),
+            |_step, _n_reps, _accepted, _row| {},
+            false,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "BEN assignment has 4 entries but graph has 5 nodes")]
+    fn run_pipeline_panics_when_assignment_shorter_than_graph() {
+        let ben_file = write_ben_file(BenVariant::Standard, &[vec![0, 1, 2, 1]]);
+        run_pipeline(
+            ben_file.path().to_str().unwrap(),
+            1,
+            Some(5),
+            |assignment, _n_reps| assignment.len(),
+            |_step, _n_reps, _accepted, _row| {},
+            false,
+        )
+        .unwrap();
     }
 }
