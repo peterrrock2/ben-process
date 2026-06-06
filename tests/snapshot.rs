@@ -875,6 +875,7 @@ fn changed_assignments_respects_max_accepted() {
 ///   * P_A appears as itself and again with districts {1,2} swapped (label-perm)
 ///   * P_B appears as itself and again byte-identical
 ///   * P_C appears once
+///
 /// Expected: extract-unique-plans writes exactly the 3 first-occurrences,
 /// preserving original labels of the first time each partition was seen.
 #[test]
