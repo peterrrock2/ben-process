@@ -24,7 +24,10 @@ fn swap_labels(v: &mut [u16], a: u16, b: u16) {
     }
 }
 
-fn assert_labels_within_first_assignment_range(assignment: &[u16], current_permutation: &[u16]) {
+fn validate_labels_within_first_assignment_range(
+    assignment: &[u16],
+    current_permutation: &[u16],
+) -> io::Result<()> {
     let max_label = current_permutation
         .len()
         .checked_sub(1)
@@ -32,13 +35,18 @@ fn assert_labels_within_first_assignment_range(assignment: &[u16], current_permu
 
     for (index, &label) in assignment.iter().enumerate() {
         if label as usize > max_label {
-            panic!(
-                "encountered assignment label {} at index {} outside first assignment label \
-                range 0..={}; changed-assignments cannot apply the current label permutation",
-                label, index, max_label
-            );
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "encountered assignment label {} at index {} outside first assignment label \
+                    range 0..={}; changed-assignments cannot apply the current label permutation",
+                    label, index, max_label
+                ),
+            ));
         }
     }
+
+    Ok(())
 }
 
 fn update_changed_assignment_state(
@@ -47,8 +55,8 @@ fn update_changed_assignment_state(
     current_permutation: &mut [u16],
     dif_count: &mut [u32],
     randomize_reassignment: bool,
-) {
-    assert_labels_within_first_assignment_range(assignment, current_permutation);
+) -> io::Result<()> {
+    validate_labels_within_first_assignment_range(assignment, current_permutation)?;
 
     for v in assignment.iter_mut() {
         *v = current_permutation[*v as usize];
@@ -70,6 +78,8 @@ fn update_changed_assignment_state(
             *d += 1;
         }
     }
+
+    Ok(())
 }
 
 /// Pure driver loop over an iterator of assignments. Takes `first_assignment` as the seed and
@@ -105,7 +115,8 @@ where
             &mut current_permutation,
             &mut dif_count,
             should_randomize(),
-        );
+        )
+        .expect("test assignments should stay within the first assignment label range");
         curr_assignment = assignment;
     }
 
@@ -151,9 +162,8 @@ pub fn tally_and_save_changed_assignments(
 
     let basename = Path::new(in_ben_file)
         .file_name()
-        .expect("Failed to extract basename")
-        .to_string_lossy()
-        .into_owned();
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
     eprintln!("Reading {:?}...", basename);
 
     // Changed-assignments works per *accepted record* (frame), not per repeated sample. For
@@ -170,8 +180,12 @@ pub fn tally_and_save_changed_assignments(
         output_dir,
     );
 
-    let mut out = File::create(&out_file_name)
-        .expect("Could not create output file. The file may already exist.");
+    let mut out = File::create(&out_file_name).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("could not create changed-assignments output file {out_file_name:?}: {e}"),
+        )
+    })?;
 
     let mut curr_assignment: Option<Vec<u16>> = None;
     let mut current_permutation: Vec<u16> = Vec::new();
@@ -200,7 +214,7 @@ pub fn tally_and_save_changed_assignments(
                 &mut current_permutation,
                 &mut dif_count,
                 with_random_reassignments && rng.random_bool(0.5),
-            );
+            )?;
             curr_assignment = Some(assignment);
             Ok(())
         },
@@ -224,9 +238,9 @@ pub fn tally_and_save_changed_assignments(
 #[cfg(test)]
 mod tests {
     use super::{
-        assert_labels_within_first_assignment_range, compute_changed_counts,
-        finalize_changed_counts, find_first_disagreement_index, swap_labels,
-        update_changed_assignment_state,
+        compute_changed_counts, finalize_changed_counts, find_first_disagreement_index,
+        swap_labels, update_changed_assignment_state,
+        validate_labels_within_first_assignment_range,
     };
 
     #[test]
@@ -258,7 +272,8 @@ mod tests {
             &mut current_permutation,
             &mut dif_count,
             false,
-        );
+        )
+        .unwrap();
 
         assert_eq!(next_assignment, curr_assignment);
         assert_eq!(dif_count, vec![0, 0, 0, 0]);
@@ -278,7 +293,8 @@ mod tests {
             &mut current_permutation,
             &mut dif_count,
             true,
-        );
+        )
+        .unwrap();
 
         assert_eq!(next_assignment, vec![2, 1, 2, 1]);
         assert_eq!(current_permutation, vec![0, 2, 1]);
@@ -286,11 +302,14 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(
-        expected = "encountered assignment label 3 at index 1 outside first assignment label range 0..=2"
-    )]
     fn validates_later_assignment_labels_before_permutation_indexing() {
-        assert_labels_within_first_assignment_range(&[1, 3], &[0, 1, 2]);
+        let err = validate_labels_within_first_assignment_range(&[1, 3], &[0, 1, 2]).unwrap_err();
+        assert!(
+            err.to_string().contains(
+                "encountered assignment label 3 at index 1 outside first assignment label range 0..=2"
+            ),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

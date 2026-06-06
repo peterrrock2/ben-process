@@ -1,10 +1,11 @@
 use crate::district::{
-    assert_no_unseen_districts, observed_assignment_districts, sorted_district_ids,
+    observed_assignment_districts, sorted_district_ids, validate_no_unseen_districts,
 };
 use crate::graph::Graph;
 use crate::output::parquet::DistrictMetricWriter;
 use crate::pipeline::{count_samples, parquet_compression, run_pipeline, PARQUET_BATCH_ROWS};
 use std::fs::File;
+use std::io;
 
 struct PolsbyRow {
     sample_num: u64,
@@ -116,13 +117,13 @@ pub fn tally_and_save_polsby_popper(
         total,
         Some(graph.node_count),
         |assignment, _n_reps| {
-            polsby_popper_rows(
+            Ok(polsby_popper_rows(
                 assignment,
                 area_vals,
                 &total_perims,
                 &graph.edges,
                 shared_perims,
-            )
+            ))
         },
         |step, n_reps, accepted, row| {
             let (scores, n_districts, observed) = row;
@@ -146,12 +147,12 @@ pub fn tally_and_save_polsby_popper(
                         parquet_compression(high_compression),
                         PARQUET_BATCH_ROWS,
                     )
-                    .expect("Unable to initialize polsby-popper parquet writer"),
+                    .map_err(|e| io::Error::other(e.to_string()))?,
                 );
             }
 
             let expected = expected_observed.expect("writer should initialize on first row");
-            assert_no_unseen_districts(row.observed, expected, "polsby-popper");
+            validate_no_unseen_districts(row.observed, expected, "polsby-popper")?;
 
             let state = writer_state
                 .as_mut()
@@ -167,7 +168,8 @@ pub fn tally_and_save_polsby_popper(
                         None
                     }
                 })
-                .expect("Unable to write polsby-popper row");
+                .map_err(|e| io::Error::other(e.to_string()))?;
+            Ok(())
         },
         show_progress,
     )?;

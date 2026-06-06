@@ -1,4 +1,5 @@
 use crate::cli::{Args, Mode};
+use std::io;
 
 mod changed_assignments;
 mod cut_edges;
@@ -21,8 +22,25 @@ pub fn run(args: Args) -> std::result::Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-pub(super) fn graph_file_or_die(args: &Args) -> &str {
-    args.graph_file
-        .as_deref()
-        .unwrap_or_else(|| panic!("graph file required"))
+pub(super) fn graph_file(args: &Args) -> std::result::Result<&str, Box<dyn std::error::Error>> {
+    args.graph_file.as_deref().ok_or_else(|| {
+        Box::new(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "graph file required; pass --graph-file <PATH>",
+        )) as Box<dyn std::error::Error>
+    })
+}
+
+pub(super) fn require_keys(
+    args: &Args,
+    mode_name: &str,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    if args.keys.is_empty() {
+        return Err(Box::new(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("at least one key is required for {} mode", mode_name),
+        )));
+    }
+
+    Ok(())
 }

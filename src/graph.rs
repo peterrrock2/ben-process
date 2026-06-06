@@ -7,10 +7,11 @@
 //! in `Graph` after [`load_graph`] returns.
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Result, Value};
+use serde_json::Value;
 use std::collections::HashMap;
+use std::error::Error;
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{self, BufReader};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct JsonGraphData {
@@ -111,23 +112,39 @@ fn parse_region_id(node: &Value, key: &str) -> Option<String> {
     }
 }
 
-fn parse_numeric(node: &Value, key: &str) -> f64 {
-    let extracted_val = &node[key];
+fn parse_numeric(node: &Value, key: &str) -> io::Result<f64> {
+    let extracted_val = node.get(key).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("missing numeric graph key {:?} on node {:?}", key, node),
+        )
+    })?;
     match extracted_val {
-        Value::Number(n) => n
-            .as_f64()
-            .unwrap_or_else(|| panic!("Non-f64 parsable number for key {:?}. Found {:?}", key, extracted_val)),
-        Value::String(s) => s.parse::<f64>().unwrap_or_else(|_| {
-            panic!(
-                "Invalid value type in JSON file. Failed to parse value {:?} from \n\n{:?}\n\n as \
-                f64 for key {:?}",
-                extracted_val, node, key
+        Value::Number(n) => n.as_f64().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "non-f64 numeric graph value for key {:?}: {:?}",
+                    key, extracted_val
+                ),
             )
         }),
-        _ => panic!(
-            "Invalid value type in JSON file. Failed to parse {:?} in \n\n{:?}\n\n as f64 for key {:?}",
-            extracted_val, node, key
-        ),
+        Value::String(s) => s.parse::<f64>().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "invalid numeric graph value for key {:?}: {:?} on node {:?}",
+                    key, extracted_val, node
+                ),
+            )
+        }),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "invalid numeric graph value for key {:?}: {:?} on node {:?}",
+                key, extracted_val, node
+            ),
+        )),
     }
 }
 
@@ -149,10 +166,23 @@ fn parse_numeric_opt(value: &Value) -> Option<f64> {
 /// `GraphLoadRequest` deliberately supports at most one edge-weight column per load because every
 /// current mode needs at most one. Widen the representation only when a mode genuinely needs
 /// multiple edge columns at the same time.
-pub fn load_graph(file_path: &str, request: GraphLoadRequest) -> Result<Graph> {
-    let file = File::open(file_path).unwrap_or_else(|_| panic!("File {} not found", file_path));
+pub fn load_graph(
+    file_path: &str,
+    request: GraphLoadRequest,
+) -> std::result::Result<Graph, Box<dyn Error>> {
+    let file = File::open(file_path).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("failed to open graph file {:?}: {}", file_path, e),
+        )
+    })?;
     let reader = BufReader::new(file);
-    let graph_data: JsonGraphData = serde_json::from_reader(reader).expect("Unable to parse JSON");
+    let graph_data: JsonGraphData = serde_json::from_reader(reader).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to parse graph JSON {:?}: {}", file_path, e),
+        )
+    })?;
 
     // --- numeric node attributes ---
     let mut attr_columns: Vec<Vec<f64>> =
@@ -163,8 +193,19 @@ pub fn load_graph(file_path: &str, request: GraphLoadRequest) -> Result<Graph> {
         let col: Vec<f64> = graph_data
             .nodes
             .iter()
-            .map(|node| parse_numeric(node, key))
-            .collect();
+            .enumerate()
+            .map(|(idx, node)| {
+                parse_numeric(node, key).map_err(|e| {
+                    io::Error::new(
+                        e.kind(),
+                        format!(
+                            "failed to load numeric graph key {:?} at node {}: {}",
+                            key, idx, e
+                        ),
+                    )
+                })
+            })
+            .collect::<io::Result<Vec<_>>>()?;
         attr_index.insert(key.clone(), attr_columns.len());
         attr_columns.push(col);
     }
@@ -218,11 +259,25 @@ pub fn load_graph(file_path: &str, request: GraphLoadRequest) -> Result<Graph> {
     let edge_weight_key = request.edge_weight.as_ref().map(|edge| edge.key.as_str());
     for (source_idx, adjacency_val) in graph_data.adjacency.iter().enumerate() {
         let src = source_idx as u32;
-        let adj = adjacency_val
-            .as_array()
-            .expect("Failed to unwrap adjacency");
+        let adj = adjacency_val.as_array().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("graph adjacency entry {} is not an array", source_idx),
+            )
+        })?;
         for target_data in adj {
-            let tgt = target_data["id"].as_u64().expect("Failed to unwrap id") as u32;
+            let tgt = target_data
+                .get("id")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "graph adjacency entry {} has edge without numeric id: {:?}",
+                            source_idx, target_data
+                        ),
+                    )
+                })? as u32;
             let edge = (src.min(tgt), src.max(tgt));
             edge_set.insert(edge);
 
@@ -297,14 +352,21 @@ mod tests {
 
     #[test]
     fn parse_numeric_accepts_numbers_and_numeric_strings() {
-        assert_eq!(parse_numeric(&json!({ "pop": 3.5 }), "pop"), 3.5);
-        assert_eq!(parse_numeric(&json!({ "pop": "4.25" }), "pop"), 4.25);
+        assert_eq!(parse_numeric(&json!({ "pop": 3.5 }), "pop").unwrap(), 3.5);
+        assert_eq!(
+            parse_numeric(&json!({ "pop": "4.25" }), "pop").unwrap(),
+            4.25
+        );
     }
 
     #[test]
-    #[should_panic(expected = "Failed to parse")]
-    fn parse_numeric_panics_on_invalid_string() {
-        let _ = parse_numeric(&json!({ "pop": "not-a-number" }), "pop");
+    fn parse_numeric_errors_on_invalid_string() {
+        let err = parse_numeric(&json!({ "pop": "not-a-number" }), "pop").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("invalid numeric graph value for key \"pop\""),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -362,14 +424,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Failed to parse")]
-    fn load_graph_panics_when_strict_numeric_key_is_missing_from_nodes() {
-        // Indexing a JSON object with an absent key yields `Value::Null`, which falls through
-        // `parse_numeric`'s catch-all and panics. This is the failure mode users hit when --keys
-        // references an attribute that doesn't exist on the graph nodes; pin it so a regression
-        // that silently fills 0.0 (or NaN) on the strict path would be caught. (The lenient
-        // `partial_numeric_keys` path is covered separately by
-        // load_graph_partial_numeric_defaults_missing_values_to_zero.)
+    fn load_graph_errors_when_strict_numeric_key_is_missing_from_nodes() {
         let graph_json = json!({
             "directed": false,
             "multigraph": false,
@@ -385,12 +440,18 @@ mod tests {
         });
         let graph_file = write_graph(graph_json);
 
-        let _ = load_graph(
+        let err = load_graph(
             graph_file.path().to_str().unwrap(),
             GraphLoadRequest {
                 numeric_keys: vec!["does_not_exist".to_string()],
                 ..Default::default()
             },
+        )
+        .unwrap_err();
+        let err = err.to_string();
+        assert!(
+            err.contains("failed to load numeric graph key \"does_not_exist\" at node 0"),
+            "unexpected error: {err}"
         );
     }
 

@@ -1,3 +1,5 @@
+use std::io;
+
 /// Upper bound on district ids supported by the dense bitmask path.
 ///
 /// `u128` stores one observed bit per district id, so district labels must stay below 128 until
@@ -37,15 +39,30 @@ pub(crate) fn sorted_district_ids(mut mask: u128) -> Vec<u16> {
     out
 }
 
+#[cfg(test)]
 pub(crate) fn assert_no_unseen_districts(observed: u128, expected: u128, output_name: &str) {
+    validate_no_unseen_districts(observed, expected, output_name)
+        .expect("unexpected district ids should panic in assertion wrapper");
+}
+
+pub(crate) fn validate_no_unseen_districts(
+    observed: u128,
+    expected: u128,
+    output_name: &str,
+) -> io::Result<()> {
     let unseen = observed & !expected;
     if unseen != 0 {
-        panic!(
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
             "encountered districts {:?} not present in first assignment; cannot stream {} output with a fixed schema",
             sorted_district_ids(unseen),
             output_name
-        );
+            ),
+        ));
     }
+
+    Ok(())
 }
 
 #[cfg(test)]

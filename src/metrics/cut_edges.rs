@@ -2,6 +2,7 @@ use crate::graph::Graph;
 use crate::output::parquet::F64MetricWriter;
 use crate::pipeline::{count_samples, parquet_compression, run_pipeline, PARQUET_BATCH_ROWS};
 use std::fs::File;
+use std::io;
 
 /// Count cut edges for a single assignment.
 ///
@@ -52,11 +53,11 @@ pub fn tally_and_save_cut_edges(
         in_file_name,
         total,
         Some(graph.node_count),
-        |assignment, _n_reps| cut_edges(&graph, assignment),
+        |assignment, _n_reps| Ok(cut_edges(&graph, assignment)),
         |step, n_reps, accepted, cuts| {
             writer
                 .push(step, n_reps, accepted, cuts)
-                .expect("Unable to write cut-edges batch");
+                .map_err(|e| io::Error::other(e.to_string()))
         },
         show_progress,
     )?;

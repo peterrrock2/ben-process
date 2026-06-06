@@ -1,11 +1,12 @@
 use crate::cli::{build_tally_output_dir, build_tally_output_path};
 use crate::district::{
-    assert_no_unseen_districts, observed_assignment_districts, sorted_district_ids,
+    observed_assignment_districts, sorted_district_ids, validate_no_unseen_districts,
 };
 use crate::graph::Graph;
 use crate::output::parquet::DistrictMetricWriter;
 use crate::pipeline::{count_samples, parquet_compression, run_pipeline, PARQUET_BATCH_ROWS};
 use std::fs::{create_dir_all, File};
+use std::io;
 
 /// Per-sample tally result.
 ///
@@ -125,7 +126,7 @@ pub fn tally_and_save_from_key_list(
         in_file_name,
         total,
         Some(graph.node_count),
-        |assignment, _n_reps| tally_keys(&graph, assignment, &attr_col_indices),
+        |assignment, _n_reps| Ok(tally_keys(&graph, assignment, &attr_col_indices)),
         |step, n_reps, accepted, row| {
             let (totals, n_districts, observed) = row;
             let row = TallyRow {
@@ -153,12 +154,12 @@ pub fn tally_and_save_from_key_list(
                             )
                         })
                         .collect::<Result<Vec<_>, _>>()
-                        .expect("Unable to initialize per-key tally parquet writers"),
+                        .map_err(|e| io::Error::other(e.to_string()))?,
                 );
             }
 
             let expected = expected_observed.expect("writers should initialize on first row");
-            assert_no_unseen_districts(row.observed, expected, "tally");
+            validate_no_unseen_districts(row.observed, expected, "tally")?;
 
             for (key_idx, state) in key_states
                 .as_mut()
@@ -178,8 +179,9 @@ pub fn tally_and_save_from_key_list(
                             None
                         }
                     })
-                    .expect("Unable to write per-key tally row");
+                    .map_err(|e| io::Error::other(e.to_string()))?;
             }
+            Ok(())
         },
         show_progress,
     )?;

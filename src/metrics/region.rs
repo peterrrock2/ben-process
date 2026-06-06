@@ -2,6 +2,7 @@ use crate::graph::Graph;
 use crate::output::parquet::U32KeyedMetricWriter;
 use crate::pipeline::{count_samples, parquet_compression, run_pipeline, PARQUET_BATCH_ROWS};
 use std::fs::File;
+use std::io;
 
 #[derive(Clone, Copy)]
 pub enum RegionMetric {
@@ -91,12 +92,12 @@ pub fn tally_and_save_region_metric(
 
     let total = count_samples(in_file_name)?;
     let metric_col_name = region_metric_col_name(metric);
-    let file = File::create(out_file_name).unwrap_or_else(|_| {
-        panic!(
-            "Failed to create output file {:?}. The file may already exist.",
-            out_file_name
+    let file = File::create(out_file_name).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("failed to create region output file {out_file_name:?}: {e}"),
         )
-    });
+    })?;
 
     let cap = PARQUET_BATCH_ROWS * key_list.len();
     let mut writer = U32KeyedMetricWriter::new(
@@ -112,7 +113,7 @@ pub fn tally_and_save_region_metric(
         total,
         Some(graph.node_count),
         |assignment, _n_reps| {
-            key_list
+            let rows = key_list
                 .iter()
                 .zip(region_col_indices.iter())
                 .map(|(key, &col_idx)| {
@@ -121,14 +122,16 @@ pub fn tally_and_save_region_metric(
                         region_metric_for_key(&graph, assignment, col_idx, metric),
                     )
                 })
-                .collect::<Vec<(String, u32)>>()
+                .collect::<Vec<(String, u32)>>();
+            Ok(rows)
         },
         |step, n_reps, accepted, counts| {
             for (key, count_val) in counts {
                 writer
                     .push(step, n_reps, accepted, key, count_val)
-                    .expect("Unable to write region-metric batch");
+                    .map_err(|e| io::Error::other(e.to_string()))?;
             }
+            Ok(())
         },
         show_progress,
     )?;

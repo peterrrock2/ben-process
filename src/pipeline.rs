@@ -56,7 +56,7 @@ fn make_progress_bar(total_samples: usize) -> ProgressBar {
     pb
 }
 
-fn decode_frame(frame: &BenFrame) -> Vec<u16> {
+fn decode_frame(frame: &BenFrame) -> io::Result<Vec<u16>> {
     decode_ben_line(
         Cursor::new(&frame.raw_data),
         frame.max_val_bits,
@@ -64,22 +64,27 @@ fn decode_frame(frame: &BenFrame) -> Vec<u16> {
         frame.n_bytes,
     )
     .map(rle_to_vec)
-    .expect("Failed to decode BEN frame")
+    .map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to decode BEN frame: {e:?}"),
+        )
+    })
 }
 
 fn process_batch<Row, P>(
     process: &P,
     expected_assignment_len: Option<usize>,
     frames: &[BenFrame],
-) -> Vec<(u16, Row)>
+) -> io::Result<Vec<(u16, Row)>>
 where
     Row: Send,
-    P: Fn(&[u16], u16) -> Row + Sync,
+    P: Fn(&[u16], u16) -> io::Result<Row> + Sync,
 {
     frames
         .par_iter()
-        .map(|frame| {
-            let assignment = decode_frame(frame);
+        .map(|frame| -> io::Result<(u16, Row)> {
+            let assignment = decode_frame(frame)?;
             if let Some(expected) = expected_assignment_len {
                 // Every graph-driven metric indexes `assignment[node_idx]` while iterating a
                 // graph-length container. A too-long assignment would otherwise be silently
@@ -87,17 +92,22 @@ where
                 // one would panic deep in a metric with an opaque out-of-bounds index. Checking
                 // here, at the single point every assignment is decoded, fixes both directions for
                 // all modes at once.
-                assert_eq!(
-                    assignment.len(),
-                    expected,
-                    "BEN assignment has {} entries but graph has {} nodes",
-                    assignment.len(),
-                    expected,
-                );
+                if assignment.len() != expected {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "BEN assignment has {} entries but graph has {} nodes",
+                            assignment.len(),
+                            expected
+                        ),
+                    ));
+                }
             }
-            let row = process(&assignment, frame.count);
-            (frame.count, row)
+            let row = process(&assignment, frame.count)?;
+            Ok((frame.count, row))
         })
+        .collect::<Vec<_>>()
+        .into_iter()
         .collect()
 }
 
@@ -183,8 +193,8 @@ pub fn run_pipeline<Row, P, F>(
 ) -> io::Result<()>
 where
     Row: Send,
-    P: Fn(&[u16], u16) -> Row + Sync,
-    F: FnMut(u64, u32, u32, Row),
+    P: Fn(&[u16], u16) -> io::Result<Row> + Sync,
+    F: FnMut(u64, u32, u32, Row) -> io::Result<()>,
 {
     let ben_file = File::open(in_file)?;
 
@@ -207,8 +217,8 @@ where
         if frame_batch.len() < BATCH {
             continue;
         }
-        for (n_reps, row) in process_batch(&process, expected_assignment_len, &frame_batch) {
-            on_row(sample_count, n_reps as u32, accepted_count, row);
+        for (n_reps, row) in process_batch(&process, expected_assignment_len, &frame_batch)? {
+            on_row(sample_count, n_reps as u32, accepted_count, row)?;
             sample_count += n_reps as u64;
             accepted_count += 1;
             // Advance by n_reps so MkvChain repetitions tick the bar correctly.
@@ -220,8 +230,8 @@ where
     }
 
     if !frame_batch.is_empty() {
-        for (n_reps, row) in process_batch(&process, expected_assignment_len, &frame_batch) {
-            on_row(sample_count, n_reps as u32, accepted_count, row);
+        for (n_reps, row) in process_batch(&process, expected_assignment_len, &frame_batch)? {
+            on_row(sample_count, n_reps as u32, accepted_count, row)?;
             sample_count += n_reps as u64;
             accepted_count += 1;
             if let Some(pb) = &pb {
@@ -242,6 +252,7 @@ mod tests {
     use ben::encode::BenEncoder;
     use ben::BenVariant;
     use std::error::Error;
+    use std::io;
     use tempfile::NamedTempFile;
 
     fn write_ben_file(variant: BenVariant, assignments: &[Vec<u16>]) -> NamedTempFile {
@@ -278,8 +289,11 @@ mod tests {
             ben_file.path().to_str().unwrap(),
             3,
             Some(4),
-            |assignment, n_reps| (assignment[0], n_reps),
-            |step, n_reps, accepted, row| rows.push((step, n_reps, accepted, row)),
+            |assignment, n_reps| Ok((assignment[0], n_reps)),
+            |step, n_reps, accepted, row| {
+                rows.push((step, n_reps, accepted, row));
+                Ok(())
+            },
             false,
         )
         .unwrap();
@@ -314,31 +328,36 @@ mod tests {
     /// Run the pipeline over a single length-4 assignment, declaring a graph of `expected_len`
     /// nodes. Used by the mismatch tests below; both directions are kept as separate cases to pin
     /// that the contract is exact equality, not "at least this long".
-    fn run_pipeline_with_expected_len(expected_len: usize) {
+    fn run_pipeline_with_expected_len(expected_len: usize) -> io::Result<()> {
         let ben_file = write_ben_file(BenVariant::Standard, &[vec![0, 1, 2, 1]]);
         run_pipeline(
             ben_file.path().to_str().unwrap(),
             1,
             Some(expected_len),
-            |assignment, _n_reps| assignment.len(),
-            |_step, _n_reps, _accepted, _row| {},
+            |assignment, _n_reps| Ok(assignment.len()),
+            |_step, _n_reps, _accepted, _row| Ok(()),
             false,
         )
-        .unwrap();
     }
 
     #[test]
-    #[should_panic(expected = "BEN assignment has 4 entries but graph has 3 nodes")]
-    fn run_pipeline_panics_when_assignment_longer_than_graph() {
+    fn run_pipeline_errors_when_assignment_longer_than_graph() {
         // A BEN file whose assignments are longer than the graph used to be silently truncated by
         // every graph-driven metric. The pipeline now rejects the mismatch up front for all modes
         // at once.
-        run_pipeline_with_expected_len(3);
+        let err = run_pipeline_with_expected_len(3).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "BEN assignment has 4 entries but graph has 3 nodes"
+        );
     }
 
     #[test]
-    #[should_panic(expected = "BEN assignment has 4 entries but graph has 5 nodes")]
-    fn run_pipeline_panics_when_assignment_shorter_than_graph() {
-        run_pipeline_with_expected_len(5);
+    fn run_pipeline_errors_when_assignment_shorter_than_graph() {
+        let err = run_pipeline_with_expected_len(5).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "BEN assignment has 4 entries but graph has 5 nodes"
+        );
     }
 }

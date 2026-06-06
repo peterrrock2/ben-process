@@ -1,5 +1,5 @@
 use crate::cli::{build_output_path, Args};
-use crate::commands::graph_file_or_die;
+use crate::commands::graph_file;
 use crate::graph::{load_graph, EdgeWeightRequest, GraphLoadRequest};
 use crate::metrics;
 
@@ -36,7 +36,7 @@ pub fn run(args: Args) -> std::result::Result<(), Box<dyn std::error::Error>> {
     }
 
     let graph = load_graph(
-        graph_file_or_die(&args),
+        graph_file(&args)?,
         GraphLoadRequest {
             numeric_keys,
             partial_numeric_keys,
@@ -46,8 +46,7 @@ pub fn run(args: Args) -> std::result::Result<(), Box<dyn std::error::Error>> {
             }),
             ..Default::default()
         },
-    )
-    .expect("Could not load graph");
+    )?;
     let output_file = build_output_path(
         &args.ben_file,
         "_polsby_popper.parquet",

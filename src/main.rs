@@ -1,6 +1,9 @@
 use ben_process::cli::Args;
 use clap::Parser;
 
-fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    ben_process::run(Args::parse())
+fn main() {
+    if let Err(err) = ben_process::run(Args::parse()) {
+        eprintln!("Error: {err}");
+        std::process::exit(1);
+    }
 }

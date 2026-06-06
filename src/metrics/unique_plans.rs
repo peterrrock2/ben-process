@@ -26,10 +26,11 @@ pub fn count_and_save_unique_plans(
         // No graph is loaded for this mode — it only hashes the raw assignment, so there is no
         // node count to validate against.
         None,
-        |assignment, _n_reps| canonical_hash(assignment),
+        |assignment, _n_reps| Ok(canonical_hash(assignment)),
         |_step, _n_reps, _accepted, hash| {
             unique.insert(hash);
             total_frames += 1;
+            Ok(())
         },
         show_progress,
     )?;
