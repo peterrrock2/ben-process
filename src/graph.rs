@@ -1,11 +1,10 @@
 //! Graph representation used by every tally mode.
 //!
 //! The old representation held `Vec<serde_json::Value>` for nodes and a
-//! `HashMap<(u64,u64), HashMap<String,f64>>` for edge weights, forcing every
-//! per-sample metric to re-walk JSON and re-parse strings on every call. This
-//! module pre-parses everything the metrics need at load time into flat,
-//! integer-indexed columns. `serde_json::Value` is not held anywhere in `Graph`
-//! after [`load_graph`] returns.
+//! `HashMap<(u64,u64), HashMap<String,f64>>` for edge weights, forcing every per-sample metric to
+//! re-walk JSON and re-parse strings on every call. This module pre-parses everything the metrics
+//! need at load time into flat, integer-indexed columns. `serde_json::Value` is not held anywhere
+//! in `Graph` after [`load_graph`] returns.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Result, Value};
@@ -39,9 +38,9 @@ pub struct GraphLoadRequest {
 /// Pre-parsed graph ready for the hot loop.
 #[derive(Debug)]
 pub struct Graph {
-    /// Number of nodes in the source graph. Held independently of
-    /// `attr_columns` so the node count is known even when no numeric keys
-    /// were requested; used to validate assignment-vector lengths.
+    /// Number of nodes in the source graph. Held independently of `attr_columns` so the node count
+    /// is known even when no numeric keys were requested; used to validate assignment-vector
+    /// lengths.
     pub node_count: usize,
     /// Numeric node attributes the caller asked for, one column per key.
     /// `attr_columns[col_idx][node_idx]` is the parsed f64 value.
@@ -49,9 +48,9 @@ pub struct Graph {
     /// Key → column index into `attr_columns`.
     pub attr_index: HashMap<String, usize>,
 
-    /// Region keys the caller asked for, one column per key. Each entry is
-    /// `Some(u32)` where the u32 is the interned region id (dense, starting
-    /// at 0), or `None` when the node's region value was missing / NaN.
+    /// Region keys the caller asked for, one column per key. Each entry is `Some(u32)` where the
+    /// u32 is the interned region id (dense, starting at 0), or `None` when the node's region
+    /// value was missing / NaN.
     pub region_columns: Vec<Vec<Option<u32>>>,
     pub region_index: HashMap<String, usize>,
     /// Number of distinct region ids in each column of `region_columns`.
@@ -59,9 +58,9 @@ pub struct Graph {
 
     /// Deduplicated, sorted (min, max) edges. u32 is plenty for block graphs.
     pub edges: Vec<(u32, u32)>,
-    /// When `Some`, aligned with `edges`: `edge_weights[i]` is the weight of
-    /// `edges[i]` under the single weight key the caller asked for. Edges
-    /// missing the key default to 1.0 (matching the old HashMap lookup fallback).
+    /// When `Some`, aligned with `edges`: `edge_weights[i]` is the weight of `edges[i]` under the
+    /// single weight key the caller asked for. Edges missing the key default to 1.0 (matching the
+    /// old HashMap lookup fallback).
     pub edge_weights: Option<Vec<f64>>,
 }
 
@@ -84,9 +83,9 @@ impl Graph {
     }
 }
 
-/// Decide whether a node's value for a region key is meaningful (e.g. a real
-/// county id) or missing. Extracted from the old `parse_region_id` — same
-/// semantics (Null / empty / "nan" / NaN-number → `None`).
+/// Decide whether a node's value for a region key is meaningful (e.g. a real county id) or missing.
+/// Extracted from the old `parse_region_id` — same semantics (Null / empty / "nan" / NaN-number →
+/// `None`).
 fn parse_region_id(node: &Value, key: &str) -> Option<String> {
     let value = &node[key];
     match value {
@@ -144,12 +143,12 @@ fn parse_numeric_opt(value: &Value) -> Option<f64> {
     }
 }
 
-/// Load a graph and pre-compute exactly the columns / edge weights the caller
-/// will need. Anything not asked for is not parsed.
+/// Load a graph and pre-compute exactly the columns / edge weights the caller will need. Anything
+/// not asked for is not parsed.
 ///
-/// `GraphLoadRequest` deliberately supports at most one edge-weight column per
-/// load because every current mode needs at most one. Widen the representation
-/// only when a mode genuinely needs multiple edge columns at the same time.
+/// `GraphLoadRequest` deliberately supports at most one edge-weight column per load because every
+/// current mode needs at most one. Widen the representation only when a mode genuinely needs
+/// multiple edge columns at the same time.
 pub fn load_graph(file_path: &str, request: GraphLoadRequest) -> Result<Graph> {
     let file = File::open(file_path).unwrap_or_else(|_| panic!("File {} not found", file_path));
     let reader = BufReader::new(file);
@@ -209,12 +208,11 @@ pub fn load_graph(file_path: &str, request: GraphLoadRequest) -> Result<Graph> {
     //
     // Semantics match the pre-refactor code exactly:
     //   - `edge_set` tracks which (min, max) pairs exist.
-    //   - `edge_weights_map` only holds entries for edges that carry at least
-    //     one *numerically parseable* value for `edge_weight_key` on at least
-    //     one endpoint. Missing or non-numeric values are not stored; those
-    //     edges fall back to 1.0 at lookup time.
-    //   - `.insert()` (not `.or_insert()`) — last valid weight wins, matching
-    //     the old nested-HashMap `.insert(key, weight)` behavior.
+    //   - `edge_weights_map` only holds entries for edges that carry at least one *numerically
+    //     parseable* value for `edge_weight_key` on at least one endpoint. Missing or non-numeric
+    //     values are not stored; those edges fall back to 1.0 at lookup time.
+    //   - `.insert()` (not `.or_insert()`) — last valid weight wins, matching the old
+    //     nested-HashMap `.insert(key, weight)` behavior.
     let mut edge_set: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
     let mut edge_weights_map: HashMap<(u32, u32), f64> = HashMap::new();
     let edge_weight_key = request.edge_weight.as_ref().map(|edge| edge.key.as_str());
@@ -366,12 +364,11 @@ mod tests {
     #[test]
     #[should_panic(expected = "Failed to parse")]
     fn load_graph_panics_when_strict_numeric_key_is_missing_from_nodes() {
-        // Indexing a JSON object with an absent key yields `Value::Null`,
-        // which falls through `parse_numeric`'s catch-all and panics. This
-        // is the failure mode users hit when --keys references an attribute
-        // that doesn't exist on the graph nodes; pin it so a regression that
-        // silently fills 0.0 (or NaN) on the strict path would be caught.
-        // (The lenient `partial_numeric_keys` path is covered separately by
+        // Indexing a JSON object with an absent key yields `Value::Null`, which falls through
+        // `parse_numeric`'s catch-all and panics. This is the failure mode users hit when --keys
+        // references an attribute that doesn't exist on the graph nodes; pin it so a regression
+        // that silently fills 0.0 (or NaN) on the strict path would be caught. (The lenient
+        // `partial_numeric_keys` path is covered separately by
         // load_graph_partial_numeric_defaults_missing_values_to_zero.)
         let graph_json = json!({
             "directed": false,

@@ -30,8 +30,8 @@ pub struct Args {
     pub normalize: bool,
     #[arg(long)]
     pub max_accepted: Option<usize>,
-    /// Randomize merge-split label reassignments (changed-assignments mode only).
-    /// Only set this for MCMC merge-split ensembles. Default: off.
+    /// Randomize merge-split label reassignments (changed-assignments mode only). Only set this
+    /// for MCMC merge-split ensembles. Default: off.
     #[arg(long, default_value_t = false)]
     pub randomize_reassignments: bool,
     #[arg(short, long, num_args(1..))]
@@ -50,21 +50,20 @@ pub struct Args {
     pub no_progress: bool,
     #[arg(long)]
     pub output_dir: Option<String>,
-    /// Use Brotli compression for Parquet output (default: Snappy).
-    /// Brotli is CPU-heavy and rarely worth it unless you're storage-bound.
+    /// Use Brotli compression for Parquet output (default: Snappy). Brotli is CPU-heavy and rarely
+    /// worth it unless you're storage-bound.
     #[arg(long, default_value_t = false)]
     pub high_compression: bool,
 }
 
-/// Build an output path next to (or alongside) `in_ben_file` by stripping the
-/// BEN extension and appending `suffix`.
+/// Build an output path next to (or alongside) `in_ben_file` by stripping the BEN extension and
+/// appending `suffix`.
 ///
-/// The previous implementation used `String::replace(".jsonl.ben", suffix)`,
-/// which silently returned the input unchanged when the input did not end in
-/// `.jsonl.ben` — meaning a downstream `File::create` could overwrite the
-/// input BEN. This version guarantees the output path differs from the input
-/// path: it strips a trailing `.jsonl.ben` (or just `.ben`) before appending,
-/// and asserts distinctness as a safety net.
+/// The previous implementation used `String::replace(".jsonl.ben", suffix)`, which silently
+/// returned the input unchanged when the input did not end in `.jsonl.ben` — meaning a downstream
+/// `File::create` could overwrite the input BEN. This version guarantees the output path differs
+/// from the input path: it strips a trailing `.jsonl.ben` (or just `.ben`) before appending, and
+/// asserts distinctness as a safety net.
 pub fn build_output_path(in_ben_file: &str, suffix: &str, output_dir: Option<&str>) -> String {
     let in_path = Path::new(in_ben_file);
     let stem = ben_stem(in_ben_file);
@@ -160,8 +159,8 @@ mod tests {
 
     #[test]
     fn build_output_path_appends_suffix_when_input_has_no_known_extension() {
-        // Old behavior silently returned the input unchanged here, which would
-        // cause File::create to overwrite the input BEN. New behavior appends.
+        // Old behavior silently returned the input unchanged here, which would cause File::create
+        // to overwrite the input BEN. New behavior appends.
         assert_eq!(
             build_output_path("/tmp/runs/plans", "_cut_edges.parquet", None),
             "/tmp/runs/plans_cut_edges.parquet"
@@ -179,8 +178,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "refusing to overwrite input BEN file")]
     fn build_output_path_panics_if_output_would_equal_input() {
-        // An empty suffix combined with a no-extension input would yield the
-        // same path; the assertion must catch this before File::create runs.
+        // An empty suffix combined with a no-extension input would yield the same path; the
+        // assertion must catch this before File::create runs.
         let _ = build_output_path("/tmp/runs/plans", "", None);
     }
 

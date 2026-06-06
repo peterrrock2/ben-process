@@ -1,14 +1,15 @@
 //! Library entry point for `ben-process`.
 //!
-//! The binary parses CLI args and delegates here; mode setup and dispatch live
-//! behind this seam so they can be tested and refactored without growing
-//! `main.rs`.
+//! The binary parses CLI args and delegates here; mode setup and dispatch live behind this seam so
+//! they can be tested and refactored without growing `main.rs`.
 
 pub mod changed_assignments;
 pub mod cli;
 mod commands;
+mod district;
 pub mod graph;
 pub mod metrics;
+mod output;
 pub mod pipeline;
 
 use cli::Args;

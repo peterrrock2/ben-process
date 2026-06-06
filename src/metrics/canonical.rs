@@ -1,17 +1,17 @@
 //! Label-canonical hashing for assignment vectors.
 //!
-//! Two assignments that differ only by a permutation of district labels
-//! describe the same partition. [`canonical_hash`] relabels districts in
-//! order of first appearance and hashes the canonicalized sequence with
-//! xxh3-128, so equivalent partitions collide on a single 128-bit digest.
+//! Two assignments that differ only by a permutation of district labels describe the same
+//! partition. [`canonical_hash`] relabels districts in order of first appearance and hashes the
+//! canonicalized sequence with xxh3-128, so equivalent partitions collide on a single 128-bit
+//! digest.
 
 use xxhash_rust::xxh3::Xxh3;
 
 /// Hash an assignment vector by its partition (label-invariant).
 pub fn canonical_hash(assignment: &[u16]) -> u128 {
     let max_label = assignment.iter().copied().max().unwrap_or(0) as usize;
-    // u16::MAX is the "not yet seen" sentinel — assignments using all u16
-    // labels would already overflow the canonical id space.
+    // u16::MAX is the "not yet seen" sentinel — assignments using all u16 labels would already
+    // overflow the canonical id space.
     let mut remap: Vec<u16> = vec![u16::MAX; max_label + 1];
     let mut next_id: u16 = 0;
 
@@ -68,10 +68,10 @@ mod tests {
 
     #[test]
     fn canonical_hash_handles_empty_assignment() {
-        // `max().unwrap_or(0)` on an empty slice yields 0 → remap of length 1
-        // with no labels ever inserted. The loop runs zero times, so the digest
-        // is the empty xxh3 hash. Pin that the call doesn't panic and that two
-        // empty assignments collide (label-invariance trivially holds).
+        // `max().unwrap_or(0)` on an empty slice yields 0 → remap of length 1 with no labels ever
+        // inserted. The loop runs zero times, so the digest is the empty xxh3 hash. Pin that the
+        // call doesn't panic and that two empty assignments collide (label-invariance trivially
+        // holds).
         let h1 = canonical_hash(&[]);
         let h2 = canonical_hash(&[]);
         assert_eq!(h1, h2);
@@ -79,11 +79,10 @@ mod tests {
 
     #[test]
     fn canonical_hash_handles_label_at_u16_max() {
-        // u16::MAX is used internally as the "not yet remapped" sentinel, but
-        // since `remap` is initialized to that sentinel everywhere, a label
-        // value of u16::MAX is correctly detected as first-seen on its first
-        // appearance. Pin both the no-panic path and label-invariance with a
-        // u16::MAX label present.
+        // u16::MAX is used internally as the "not yet remapped" sentinel, but since `remap` is
+        // initialized to that sentinel everywhere, a label value of u16::MAX is correctly detected
+        // as first-seen on its first appearance. Pin both the no-panic path and label-invariance
+        // with a u16::MAX label present.
         let plan = vec![u16::MAX, 0, u16::MAX, 0];
         let relabeled = vec![7u16, 9, 7, 9];
         assert_eq!(canonical_hash(&plan), canonical_hash(&relabeled));

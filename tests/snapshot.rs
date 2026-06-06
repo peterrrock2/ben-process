@@ -1,10 +1,9 @@
 //! End-to-end regression tests for ben-process.
 //!
-//! Each test builds a tiny 6-node ring fixture + a handful of assignment vectors,
-//! invokes the compiled `ben-process` binary via `env!("CARGO_BIN_EXE_ben-process")`,
-//! and asserts the produced Parquet / text output against manually-computed
-//! expected values. The fixture is intentionally small enough that a reader can
-//! verify every expected value on paper.
+//! Each test builds a tiny 6-node ring fixture + a handful of assignment vectors, invokes the
+//! compiled `ben-process` binary via `env!("CARGO_BIN_EXE_ben-process")`, and asserts the produced
+//! Parquet / text output against manually-computed expected values. The fixture is intentionally
+//! small enough that a reader can verify every expected value on paper.
 
 use std::fs::File;
 use std::io::Write;
@@ -23,8 +22,8 @@ fn bin() -> &'static str {
 
 // Six-node ring:
 //     0 - 1 - 2 - 3 - 4 - 5 - 0
-// with "pop" = 10 * (idx + 1), "area" = idx + 1, and "region" = A/A/B/B/A/A.
-// Edge "weight" varies per edge so we can exercise --edge-weight-key.
+// with "pop" = 10 * (idx + 1), "area" = idx + 1, and "region" = A/A/B/B/A/A. Edge "weight" varies
+// per edge so we can exercise --edge-weight-key.
 fn write_fixture_graph(path: &Path) {
     let graph_json = serde_json::json!({
         "directed": false,
@@ -59,9 +58,8 @@ fn write_fixture_graph(path: &Path) {
 //   boundary_perim = [3, 2, 2, 3]
 //   shared_perim = 1 for every edge
 //
-// This gives a simple Polsby-Popper fixture where total node perimeter can be
-// supplied directly (`perim`) or derived exactly from
-// `boundary_perim + shared_perim`.
+// This gives a simple Polsby-Popper fixture where total node perimeter can be supplied directly
+// (`perim`) or derived exactly from `boundary_perim + shared_perim`.
 fn write_polsby_fixture_graph(path: &Path) {
     let graph_json = serde_json::json!({
         "directed": false,
@@ -84,9 +82,9 @@ fn write_polsby_fixture_graph(path: &Path) {
     f.write_all(graph_json.to_string().as_bytes()).unwrap();
 }
 
-// Same four-node path as `write_polsby_fixture_graph`, but with GerryChain-like
-// partial boundary perimeter data: only boundary nodes carry `boundary_perim`.
-// The middle nodes omit the key entirely.
+// Same four-node path as `write_polsby_fixture_graph`, but with GerryChain-like partial boundary
+// perimeter data: only boundary nodes carry `boundary_perim`. The middle nodes omit the key
+// entirely.
 fn write_polsby_partial_boundary_graph(path: &Path) {
     let graph_json = serde_json::json!({
         "directed": false,
@@ -109,8 +107,8 @@ fn write_polsby_partial_boundary_graph(path: &Path) {
     f.write_all(graph_json.to_string().as_bytes()).unwrap();
 }
 
-// Four-node path with one internal shared-perimeter edge omitted entirely.
-// `frcw` treats missing shared_perim as 0.0 during derivation.
+// Four-node path with one internal shared-perimeter edge omitted entirely. `frcw` treats missing
+// shared_perim as 0.0 during derivation.
 fn write_polsby_missing_shared_perim_graph(path: &Path) {
     let graph_json = serde_json::json!({
         "directed": false,
@@ -142,9 +140,9 @@ fn write_fixture_ben(path: &Path, plans: &[Vec<u16>]) {
     enc.finish().unwrap();
 }
 
-/// Encode with `BenVariant::MkvChain` so consecutive identical assignments
-/// collapse into a single frame with `count > 1`. Used by the MkvChain
-/// regression test for changed-assignments frame counting.
+/// Encode with `BenVariant::MkvChain` so consecutive identical assignments collapse into a single
+/// frame with `count > 1`. Used by the MkvChain regression test for changed-assignments frame
+/// counting.
 fn write_fixture_ben_mkv(path: &Path, plans: &[Vec<u16>]) {
     let f = File::create(path).unwrap();
     let mut enc = BenEncoder::new(f, BenVariant::MkvChain);
@@ -710,8 +708,8 @@ fn changed_assignments_single_plan_smoke() {
     assert_eq!(body, "[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]\nTotal Accepted: 1");
 }
 
-/// Multi-plan changed-assignments: with `--randomize-reassignments` default
-/// `false`, output is deterministic.
+/// Multi-plan changed-assignments: with `--randomize-reassignments` default `false`, output is
+/// deterministic.
 ///
 /// Manual trace for `tri_plans()`:
 ///  - curr=[1,1,1,2,2,2] vs p1=[1,2,1,2,1,2] → diffs at i=1,4  → dif=[0,1,0,0,1,0]
@@ -733,9 +731,9 @@ fn changed_assignments_tri_plans_deterministic() {
     assert_eq!(body, "[0.0, 2.0, 1.0, 0.0, 1.0, 1.0]\nTotal Accepted: 3");
 }
 
-/// MkvChain BEN with a repeated assignment collapses into a frame with
-/// `count > 1`. `changed-assignments` semantics are per-accepted-record
-/// (per-frame), so a 3-sample / 2-frame ensemble should report 2 accepted.
+/// MkvChain BEN with a repeated assignment collapses into a frame with `count > 1`.
+/// `changed-assignments` semantics are per-accepted-record (per-frame), so a 3-sample / 2-frame
+/// ensemble should report 2 accepted.
 ///
 /// Fixture frames (after MkvChain run-length):
 ///   frame 1: assignment=[1,1,1,2,2,2], count=2 (two repeated samples)
@@ -774,25 +772,22 @@ fn changed_assignments_mkvchain_uses_frame_count() {
     assert_eq!(body, "[0.0, 1.0, 0.0, 0.0, 1.0, 0.0]\nTotal Accepted: 2");
 }
 
-/// Asymmetric edge-weight fixture: the same edge carries a valid weight from
-/// one endpoint and a missing/non-numeric value from the other. The
-/// pre-refactor code's semantics were "last valid weight wins" (and don't
-/// store anything when the parsed value isn't numeric). Must still give 8.0
-/// for cut_edges on p0=[1,1,1,2,2,2] regardless of which endpoint's JSON
-/// entry is seen first.
+/// Asymmetric edge-weight fixture: the same edge carries a valid weight from one endpoint and a
+/// missing/non-numeric value from the other. The pre-refactor code's semantics were "last valid
+/// weight wins" (and don't store anything when the parsed value isn't numeric). Must still give 8.0
+/// for cut_edges on p0=[1,1,1,2,2,2] regardless of which endpoint's JSON entry is seen first.
 ///
-/// Edge (0,5): node 0 says weight missing; node 5 says weight=3.0 → must pick 3.0.
-/// Edge (2,3): node 2 says weight=5.0; node 3 says weight missing → must pick 5.0.
-/// p0 cuts (2,3) and (0,5), so cut_edges = 5.0 + 3.0 = 8.0.
+/// Edge (0,5): node 0 says weight missing; node 5 says weight=3.0 → must pick 3.0. Edge (2,3): node
+/// 2 says weight=5.0; node 3 says weight missing → must pick 5.0. p0 cuts (2,3) and (0,5), so
+/// cut_edges = 5.0 + 3.0 = 8.0.
 #[test]
 fn cut_edges_weighted_tolerates_asymmetric_missing_weight() {
     let tmp = tempdir().unwrap();
     let dir = tmp.path().to_path_buf();
     let graph = dir.join("graph.json");
     let ben = dir.join("plans.jsonl.ben");
-    // Edge (0,5): weight only on node 5's side.
-    // Edge (2,3): weight only on node 2's side.
-    // All others symmetric with weight 1.0.
+    // Edge (0,5): weight only on node 5's side. Edge (2,3): weight only on node 2's side. All
+    // others symmetric with weight 1.0.
     let graph_json = serde_json::json!({
         "directed": false,
         "multigraph": false,
@@ -876,8 +871,8 @@ fn changed_assignments_respects_max_accepted() {
 ///   * P_B appears as itself and again byte-identical
 ///   * P_C appears once
 ///
-/// Expected: extract-unique-plans writes exactly the 3 first-occurrences,
-/// preserving original labels of the first time each partition was seen.
+/// Expected: extract-unique-plans writes exactly the 3 first-occurrences, preserving original
+/// labels of the first time each partition was seen.
 #[test]
 fn extract_unique_plans_dedups_label_permutations() {
     let plans: Vec<Vec<u16>> = vec![
@@ -912,11 +907,10 @@ fn extract_unique_plans_dedups_label_permutations() {
     );
 }
 
-/// `--high-compression` switches the parquet writer from Snappy to Brotli.
-/// None of the other snapshot tests exercise this branch, so a regression in
-/// the Brotli writer setup wouldn't be caught. Run cut-edges with
-/// --high-compression and verify the output is still a valid parquet file
-/// with the expected values; the polars reader is compression-agnostic.
+/// `--high-compression` switches the parquet writer from Snappy to Brotli. None of the other
+/// snapshot tests exercise this branch, so a regression in the Brotli writer setup wouldn't be
+/// caught. Run cut-edges with --high-compression and verify the output is still a valid parquet
+/// file with the expected values; the polars reader is compression-agnostic.
 #[test]
 fn cut_edges_with_high_compression_round_trips() {
     let f = fixture(&tri_plans());
@@ -937,18 +931,17 @@ fn cut_edges_with_high_compression_round_trips() {
     assert_eq!(u64_col(&df, "step"), vec![1, 2, 3]);
 }
 
-/// `extract-unique-plans` opens the input via `BenDecoder::new` after a
-/// `count_frames` pass, both of which return errors that propagate via `?`.
-/// Feed it a non-BEN file and assert the binary exits non-zero rather than
-/// silently producing an empty/corrupt output. This guards the error path
-/// in src/metrics/extract_unique_plans.rs and src/pipeline.rs (count_frames).
+/// `extract-unique-plans` opens the input via `BenDecoder::new` after a `count_frames` pass, both
+/// of which return errors that propagate via `?`. Feed it a non-BEN file and assert the binary
+/// exits non-zero rather than silently producing an empty/corrupt output. This guards the error
+/// path in src/metrics/extract_unique_plans.rs and src/pipeline.rs (count_frames).
 #[test]
 fn extract_unique_plans_fails_on_corrupted_ben_input() {
     let tmp = tempdir().unwrap();
     let dir = tmp.path().to_path_buf();
     let bogus = dir.join("not_a_real.jsonl.ben");
-    // Bytes that are definitely not a valid BEN stream — neither the magic
-    // header nor any decodable frames.
+    // Bytes that are definitely not a valid BEN stream — neither the magic header nor any decodable
+    // frames.
     std::fs::write(&bogus, b"this is not a BEN file").unwrap();
 
     let output = Command::new(bin())
@@ -972,12 +965,11 @@ fn extract_unique_plans_fails_on_corrupted_ben_input() {
     );
 }
 
-/// When both `--perim-key` and `--boundary-perim-key` are passed, `perim-key`
-/// must take precedence (main.rs uses the direct perimeter and ignores the
-/// boundary derivation in that case). Build a graph where `boundary_perim` is
-/// deliberately wrong (would derive `total_perim = 1002` per node and push the
-/// score toward zero); the only way to get the canonical
-/// `2 * PI / 9` score is for the perim-key path to win.
+/// When both `--perim-key` and `--boundary-perim-key` are passed, `perim-key` must take precedence
+/// (main.rs uses the direct perimeter and ignores the boundary derivation in that case). Build a
+/// graph where `boundary_perim` is deliberately wrong (would derive `total_perim = 1002` per node
+/// and push the score toward zero); the only way to get the canonical `2 * PI / 9` score is for the
+/// perim-key path to win.
 #[test]
 fn polsby_popper_perim_key_wins_when_both_keys_are_passed() {
     let tmp = tempdir().unwrap();
@@ -985,9 +977,9 @@ fn polsby_popper_perim_key_wins_when_both_keys_are_passed() {
     let graph = dir.join("graph.json");
     let ben = dir.join("plans.jsonl.ben");
 
-    // Same area / shared_perim / perim as the standard polsby fixture, but
-    // boundary_perim is set to 999.0 — derivation would yield ~1001 per node
-    // and a near-zero score. perim=4 yields 2*PI/9 for plan [1,1,2,2].
+    // Same area / shared_perim / perim as the standard polsby fixture, but boundary_perim is set to
+    // 999.0 — derivation would yield ~1001 per node and a near-zero score. perim=4 yields 2*PI/9
+    // for plan [1,1,2,2].
     let graph_json = serde_json::json!({
         "directed": false,
         "multigraph": false,
@@ -1034,11 +1026,10 @@ fn polsby_popper_perim_key_wins_when_both_keys_are_passed() {
     assert_f64_vec_close(&f64_col(&df, "district_2"), &expected);
 }
 
-/// `--randomize-reassignments` uses a thread-local OS-seeded RNG, so we can't
-/// pin exact dif counts. This is a smoke test: confirm the binary completes
-/// successfully, the output file uses the expected frame count, and the
-/// per-unit values are within the valid range. With two label-permuted frames,
-/// each per-unit count is either 0 (RNG fired and labels were swapped before
+/// `--randomize-reassignments` uses a thread-local OS-seeded RNG, so we can't pin exact dif counts.
+/// This is a smoke test: confirm the binary completes successfully, the output file uses the
+/// expected frame count, and the per-unit values are within the valid range. With two
+/// label-permuted frames, each per-unit count is either 0 (RNG fired and labels were swapped before
 /// counting) or 1 (RNG didn't fire; pure diff).
 #[test]
 fn changed_assignments_with_randomize_reassignments_runs_and_writes_valid_output() {
@@ -1075,9 +1066,9 @@ fn changed_assignments_with_randomize_reassignments_runs_and_writes_valid_output
     }
 }
 
-/// `--output-dir` pointing at an existing *file* (not a directory) cannot host
-/// the output parquet. `File::create` will fail; the binary must surface a
-/// non-zero exit rather than silently producing nothing.
+/// `--output-dir` pointing at an existing *file* (not a directory) cannot host the output parquet.
+/// `File::create` will fail; the binary must surface a non-zero exit rather than silently producing
+/// nothing.
 #[test]
 fn cut_edges_fails_when_output_dir_is_an_existing_file() {
     let f = fixture(&tri_plans());
@@ -1107,10 +1098,10 @@ fn cut_edges_fails_when_output_dir_is_an_existing_file() {
     );
 }
 
-/// `polsby-popper` has an explicit "no rows seen" branch that builds an empty
-/// schema-less DataFrame and finishes the parquet writer without ever calling
-/// `sorted_district_ids`. Drive that branch with a BEN file containing zero
-/// frames and verify the binary exits cleanly and produces a readable parquet.
+/// `polsby-popper` has an explicit "no rows seen" branch that builds an empty schema-less DataFrame
+/// and finishes the parquet writer without ever calling `sorted_district_ids`. Drive that branch
+/// with a BEN file containing zero frames and verify the binary exits cleanly and produces a
+/// readable parquet.
 #[test]
 fn polsby_popper_handles_empty_ben_input() {
     let plans: Vec<Vec<u16>> = vec![];
@@ -1142,10 +1133,10 @@ fn polsby_popper_handles_empty_ben_input() {
     );
 }
 
-/// `cut-edges` and `tally-keys` both go through `run_pipeline`; on a zero-frame
-/// BEN they must finish the parquet writer without ever invoking the per-row
-/// callback. Smoke-test both modes — the existence of a readable empty parquet
-/// is enough to catch a regression that panics on the empty-iterator path.
+/// `cut-edges` and `tally-keys` both go through `run_pipeline`; on a zero-frame BEN they must
+/// finish the parquet writer without ever invoking the per-row callback. Smoke-test both modes —
+/// the existence of a readable empty parquet is enough to catch a regression that panics on the
+/// empty-iterator path.
 #[test]
 fn cut_edges_and_tally_keys_handle_empty_ben_input() {
     let plans: Vec<Vec<u16>> = vec![];
@@ -1200,8 +1191,8 @@ fn unique_plans_reports_one_when_every_frame_is_identical() {
     assert_eq!(contents, "unique_plans: 1\ntotal_accepted_frames: 5\n");
 }
 
-/// Five frames, every one a distinct partition (not just a label permutation
-/// of any other) → unique count equals frame count.
+/// Five frames, every one a distinct partition (not just a label permutation of any other) → unique
+/// count equals frame count.
 #[test]
 fn unique_plans_reports_n_when_every_frame_is_distinct() {
     let plans: Vec<Vec<u16>> = vec![
@@ -1227,8 +1218,8 @@ fn unique_plans_reports_n_when_every_frame_is_distinct() {
 
 #[test]
 fn unique_plans_writes_distinct_partition_count_and_total_frames() {
-    // Same fixture as extract_unique_plans: 3 distinct partitions among 5 frames
-    // (P_A, P_B, P_A-relabeled, P_B-duplicate, P_C).
+    // Same fixture as extract_unique_plans: 3 distinct partitions among 5 frames (P_A, P_B,
+    // P_A-relabeled, P_B-duplicate, P_C).
     let plans: Vec<Vec<u16>> = vec![
         vec![1, 1, 1, 2, 2, 2],
         vec![1, 1, 2, 2, 1, 1],

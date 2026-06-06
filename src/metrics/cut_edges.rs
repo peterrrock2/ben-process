@@ -1,14 +1,13 @@
 use crate::graph::Graph;
+use crate::output::parquet::F64MetricWriter;
 use crate::pipeline::{count_samples, parquet_compression, run_pipeline, PARQUET_BATCH_ROWS};
-use polars::prelude::*;
 use std::fs::File;
 
 /// Count cut edges for a single assignment.
 ///
-/// `graph.edges` is a flat `Vec<(u32, u32)>` and — when the caller asked for
-/// a weighted tally — `graph.edge_weights` is a parallel `Vec<f64>` resolved
-/// once at load time. The hot loop is a straight pass over both, with no
-/// hashing and no per-sample string lookups.
+/// `graph.edges` is a flat `Vec<(u32, u32)>` and — when the caller asked for a weighted tally —
+/// `graph.edge_weights` is a parallel `Vec<f64>` resolved once at load time. The hot loop is a
+/// straight pass over both, with no hashing and no per-sample string lookups.
 fn cut_edges(graph: &Graph, assignment: &[u16]) -> f64 {
     match &graph.edge_weights {
         Some(weights) => {
@@ -32,20 +31,6 @@ fn cut_edges(graph: &Graph, assignment: &[u16]) -> f64 {
     }
 }
 
-fn cut_edges_batch_to_df(
-    sample_nums: &mut Vec<u64>,
-    n_reps_nums: &mut Vec<u32>,
-    accepted_nums: &mut Vec<u32>,
-    cut_edge_counts: &mut Vec<f64>,
-) -> PolarsResult<DataFrame> {
-    DataFrame::new_infer_height(vec![
-        Series::new("step".into(), std::mem::take(sample_nums)).into(),
-        Series::new("n_reps".into(), std::mem::take(n_reps_nums)).into(),
-        Series::new("accepted_count".into(), std::mem::take(accepted_nums)).into(),
-        Series::new("cut_edges".into(), std::mem::take(cut_edge_counts)).into(),
-    ])
-}
-
 pub fn tally_and_save_cut_edges(
     graph: Graph,
     in_file_name: &str,
@@ -55,21 +40,13 @@ pub fn tally_and_save_cut_edges(
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let total = count_samples(in_file_name)?;
 
-    let mut file = File::create(out_file_name)?;
-    let empty_df = DataFrame::new_infer_height(vec![
-        Series::new("step".into(), Vec::<u64>::new()).into(),
-        Series::new("n_reps".into(), Vec::<u32>::new()).into(),
-        Series::new("accepted_count".into(), Vec::<u32>::new()).into(),
-        Series::new("cut_edges".into(), Vec::<f64>::new()).into(),
-    ])?;
-    let mut writer = ParquetWriter::new(&mut file)
-        .with_compression(parquet_compression(high_compression))
-        .batched(empty_df.schema())?;
-
-    let mut sample_nums: Vec<u64> = Vec::with_capacity(PARQUET_BATCH_ROWS);
-    let mut n_reps_nums: Vec<u32> = Vec::with_capacity(PARQUET_BATCH_ROWS);
-    let mut accepted_nums: Vec<u32> = Vec::with_capacity(PARQUET_BATCH_ROWS);
-    let mut cut_edge_counts: Vec<f64> = Vec::with_capacity(PARQUET_BATCH_ROWS);
+    let file = File::create(out_file_name)?;
+    let mut writer = F64MetricWriter::new(
+        file,
+        "cut_edges",
+        parquet_compression(high_compression),
+        PARQUET_BATCH_ROWS,
+    )?;
 
     run_pipeline(
         in_file_name,
@@ -77,36 +54,14 @@ pub fn tally_and_save_cut_edges(
         Some(graph.node_count),
         |assignment, _n_reps| cut_edges(&graph, assignment),
         |step, n_reps, accepted, cuts| {
-            sample_nums.push(step);
-            n_reps_nums.push(n_reps);
-            accepted_nums.push(accepted);
-            cut_edge_counts.push(cuts);
-            if sample_nums.len() >= PARQUET_BATCH_ROWS {
-                let df = cut_edges_batch_to_df(
-                    &mut sample_nums,
-                    &mut n_reps_nums,
-                    &mut accepted_nums,
-                    &mut cut_edge_counts,
-                )
-                .expect("Unable to build cut-edges batch DataFrame");
-                writer
-                    .write_batch(&df)
-                    .expect("Unable to write cut-edges batch");
-            }
+            writer
+                .push(step, n_reps, accepted, cuts)
+                .expect("Unable to write cut-edges batch");
         },
         show_progress,
     )?;
 
     eprintln!("Writing final output...");
-    if !sample_nums.is_empty() {
-        let df = cut_edges_batch_to_df(
-            &mut sample_nums,
-            &mut n_reps_nums,
-            &mut accepted_nums,
-            &mut cut_edge_counts,
-        )?;
-        writer.write_batch(&df)?;
-    }
     writer.finish()?;
 
     eprintln!("Done!");
@@ -115,10 +70,11 @@ pub fn tally_and_save_cut_edges(
 
 #[cfg(test)]
 mod tests {
-    use super::{cut_edges, cut_edges_batch_to_df};
+    use super::cut_edges;
     use crate::graph::Graph;
+    use crate::output::parquet::F64MetricWriter;
     use crate::pipeline::parquet_compression;
-    use polars::prelude::{ParquetReader, ParquetWriter, SerReader};
+    use polars::prelude::{ParquetReader, SerReader};
     use std::collections::HashMap;
     use std::fs::File;
     use tempfile::NamedTempFile;
@@ -172,9 +128,9 @@ mod tests {
 
     #[test]
     fn cut_edges_returns_zero_for_empty_edge_list() {
-        // No edges → no crossings, regardless of assignment. Both the weighted
-        // and unweighted code paths must return 0.0 cleanly (no panic on the
-        // zip with weights, no negative-length iter issues).
+        // No edges → no crossings, regardless of assignment. Both the weighted and unweighted code
+        // paths must return 0.0 cleanly (no panic on the zip with weights, no negative-length iter
+        // issues).
         let unweighted = graph_with_explicit_edges(vec![], None);
         let weighted = graph_with_explicit_edges(vec![], Some(vec![]));
         assert_eq!(cut_edges(&unweighted, &[1, 2, 3]), 0.0);
@@ -183,9 +139,9 @@ mod tests {
 
     #[test]
     fn cut_edges_handles_zero_and_negative_weights() {
-        // The weighted path is a straight sum; there's no clamp on the inputs.
-        // Zero-weight cut edges contribute 0; negative weights subtract. Pin
-        // the behavior so a future "saturate at zero" change would be caught.
+        // The weighted path is a straight sum; there's no clamp on the inputs. Zero-weight cut
+        // edges contribute 0; negative weights subtract. Pin the behavior so a future "saturate at
+        // zero" change would be caught.
         let graph = graph_with_edges(Some(vec![0.0, -2.5, 4.0]));
         // Assignment [1,2,1,2] cuts every edge: 0.0 + (-2.5) + 4.0 = 1.5.
         assert_eq!(cut_edges(&graph, &[1, 2, 1, 2]), 1.5);
@@ -196,47 +152,17 @@ mod tests {
     #[test]
     fn cut_edges_batched_writer_appends_multiple_batches() {
         let file = NamedTempFile::new().unwrap();
-        let mut empty_steps = vec![];
-        let mut empty_reps = vec![];
-        let mut empty_accepted = vec![];
-        let mut empty_counts = vec![];
-        let empty_df = cut_edges_batch_to_df(
-            &mut empty_steps,
-            &mut empty_reps,
-            &mut empty_accepted,
-            &mut empty_counts,
+        let mut writer = F64MetricWriter::new(
+            File::create(file.path()).unwrap(),
+            "cut_edges",
+            parquet_compression(false),
+            2,
         )
         .unwrap();
-        let mut writer = ParquetWriter::new(File::create(file.path()).unwrap())
-            .with_compression(parquet_compression(false))
-            .batched(empty_df.schema())
-            .unwrap();
 
-        let mut batch1_steps = vec![1, 2];
-        let mut batch1_reps = vec![1, 1];
-        let mut batch1_accepted = vec![1, 2];
-        let mut batch1_counts = vec![3.0, 4.0];
-        let batch1 = cut_edges_batch_to_df(
-            &mut batch1_steps,
-            &mut batch1_reps,
-            &mut batch1_accepted,
-            &mut batch1_counts,
-        )
-        .unwrap();
-        writer.write_batch(&batch1).unwrap();
-
-        let mut batch2_steps = vec![3];
-        let mut batch2_reps = vec![2];
-        let mut batch2_accepted = vec![3];
-        let mut batch2_counts = vec![9.5];
-        let batch2 = cut_edges_batch_to_df(
-            &mut batch2_steps,
-            &mut batch2_reps,
-            &mut batch2_accepted,
-            &mut batch2_counts,
-        )
-        .unwrap();
-        writer.write_batch(&batch2).unwrap();
+        writer.push(1, 1, 1, 3.0).unwrap();
+        writer.push(2, 1, 2, 4.0).unwrap();
+        writer.push(3, 2, 3, 9.5).unwrap();
         writer.finish().unwrap();
 
         let df = ParquetReader::new(&mut File::open(file.path()).unwrap())
