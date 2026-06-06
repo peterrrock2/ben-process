@@ -79,8 +79,8 @@ fn parse_region_id(node: &Value, key: &str) -> Option<String> {
     }
 }
 
-fn parse_numeric(value: &Value, key: &str) -> f64 {
-    let extracted_val = &value[key];
+fn parse_numeric(node: &Value, key: &str) -> f64 {
+    let extracted_val = &node[key];
     match extracted_val {
         Value::Number(n) => n
             .as_f64()
@@ -89,12 +89,12 @@ fn parse_numeric(value: &Value, key: &str) -> f64 {
             panic!(
                 "Invalid value type in JSON file. Failed to parse value {:?} from \n\n{:?}\n\n as \
                 f64 for key {:?}",
-                &value[key], value, key
+                extracted_val, node, key
             )
         }),
         _ => panic!(
             "Invalid value type in JSON file. Failed to parse {:?} in \n\n{:?}\n\n as f64 for key {:?}",
-            extracted_val, value, key
+            extracted_val, node, key
         ),
     }
 }

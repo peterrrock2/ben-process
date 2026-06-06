@@ -249,17 +249,16 @@ mod tests {
         assert_eq!(rows, vec![(1, 2, 1, (1, 2)), (3, 1, 2, (2, 1)),]);
     }
 
-    #[test]
-    #[should_panic(expected = "BEN assignment has 4 entries but graph has 3 nodes")]
-    fn run_pipeline_panics_when_assignment_longer_than_graph() {
-        // A BEN file whose assignments are longer than the graph used to be
-        // silently truncated by every graph-driven metric. The pipeline now
-        // rejects the mismatch up front for all modes at once.
+    /// Run the pipeline over a single length-4 assignment, declaring a graph of
+    /// `expected_len` nodes. Used by the mismatch tests below; both directions
+    /// are kept as separate cases to pin that the contract is exact equality,
+    /// not "at least this long".
+    fn run_pipeline_with_expected_len(expected_len: usize) {
         let ben_file = write_ben_file(BenVariant::Standard, &[vec![0, 1, 2, 1]]);
         run_pipeline(
             ben_file.path().to_str().unwrap(),
             1,
-            Some(3),
+            Some(expected_len),
             |assignment, _n_reps| assignment.len(),
             |_step, _n_reps, _accepted, _row| {},
             false,
@@ -268,17 +267,17 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "BEN assignment has 4 entries but graph has 3 nodes")]
+    fn run_pipeline_panics_when_assignment_longer_than_graph() {
+        // A BEN file whose assignments are longer than the graph used to be
+        // silently truncated by every graph-driven metric. The pipeline now
+        // rejects the mismatch up front for all modes at once.
+        run_pipeline_with_expected_len(3);
+    }
+
+    #[test]
     #[should_panic(expected = "BEN assignment has 4 entries but graph has 5 nodes")]
     fn run_pipeline_panics_when_assignment_shorter_than_graph() {
-        let ben_file = write_ben_file(BenVariant::Standard, &[vec![0, 1, 2, 1]]);
-        run_pipeline(
-            ben_file.path().to_str().unwrap(),
-            1,
-            Some(5),
-            |assignment, _n_reps| assignment.len(),
-            |_step, _n_reps, _accepted, _row| {},
-            false,
-        )
-        .unwrap();
+        run_pipeline_with_expected_len(5);
     }
 }
