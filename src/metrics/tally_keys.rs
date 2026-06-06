@@ -229,9 +229,8 @@ pub fn tally_and_save_from_key_list(
     let attr_col_indices: Vec<usize> = key_list
         .iter()
         .map(|k| {
-            *graph
-                .attr_index
-                .get(k)
+            graph
+                .numeric_column_index(k)
                 .unwrap_or_else(|| panic!("key {:?} not pre-loaded on graph", k))
         })
         .collect();

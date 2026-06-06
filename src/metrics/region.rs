@@ -102,9 +102,8 @@ pub fn tally_and_save_region_metric(
     let region_col_indices: Vec<usize> = key_list
         .iter()
         .map(|k| {
-            *graph
-                .region_index
-                .get(k)
+            graph
+                .region_column_index(k)
                 .unwrap_or_else(|| panic!("region key {:?} not pre-loaded on graph", k))
         })
         .collect();

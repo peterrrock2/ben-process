@@ -22,6 +22,20 @@ pub struct JsonGraphData {
     pub adjacency: Vec<Value>,
 }
 
+#[derive(Debug, Clone)]
+pub struct EdgeWeightRequest {
+    pub key: String,
+    pub default_value: f64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GraphLoadRequest {
+    pub numeric_keys: Vec<String>,
+    pub partial_numeric_keys: Vec<String>,
+    pub region_keys: Vec<String>,
+    pub edge_weight: Option<EdgeWeightRequest>,
+}
+
 /// Pre-parsed graph ready for the hot loop.
 #[derive(Debug)]
 pub struct Graph {
@@ -49,6 +63,25 @@ pub struct Graph {
     /// `edges[i]` under the single weight key the caller asked for. Edges
     /// missing the key default to 1.0 (matching the old HashMap lookup fallback).
     pub edge_weights: Option<Vec<f64>>,
+}
+
+impl Graph {
+    pub fn numeric_column_index(&self, key: &str) -> Option<usize> {
+        self.attr_index.get(key).copied()
+    }
+
+    pub fn numeric_column(&self, key: &str) -> Option<&[f64]> {
+        self.numeric_column_index(key)
+            .map(|idx| self.attr_columns[idx].as_slice())
+    }
+
+    pub fn region_column_index(&self, key: &str) -> Option<usize> {
+        self.region_index.get(key).copied()
+    }
+
+    pub fn edge_weight_column(&self) -> Option<&[f64]> {
+        self.edge_weights.as_deref()
+    }
 }
 
 /// Decide whether a node's value for a region key is meaningful (e.g. a real
@@ -114,30 +147,20 @@ fn parse_numeric_opt(value: &Value) -> Option<f64> {
 /// Load a graph and pre-compute exactly the columns / edge weights the caller
 /// will need. Anything not asked for is not parsed.
 ///
-/// * `numeric_keys` — node attribute keys to pre-parse as f64 (tally-keys mode).
-/// * `region_keys` — node attribute keys to intern into dense region ids
-///   (region-splits / region-pieces modes).
-/// * `edge_weight_key` — optional single edge-attribute key to populate
-///   `edge_weights` with (cut-edges mode); defaults to 1.0 for edges that
-///   don't carry the key.
-pub fn load_graph(
-    file_path: &str,
-    numeric_keys: &[String],
-    partial_numeric_keys: &[String],
-    region_keys: &[String],
-    edge_weight_key: Option<&str>,
-    edge_default_value: f64,
-) -> Result<Graph> {
+/// `GraphLoadRequest` deliberately supports at most one edge-weight column per
+/// load because every current mode needs at most one. Widen the representation
+/// only when a mode genuinely needs multiple edge columns at the same time.
+pub fn load_graph(file_path: &str, request: GraphLoadRequest) -> Result<Graph> {
     let file = File::open(file_path).unwrap_or_else(|_| panic!("File {} not found", file_path));
     let reader = BufReader::new(file);
     let graph_data: JsonGraphData = serde_json::from_reader(reader).expect("Unable to parse JSON");
 
     // --- numeric node attributes ---
     let mut attr_columns: Vec<Vec<f64>> =
-        Vec::with_capacity(numeric_keys.len() + partial_numeric_keys.len());
+        Vec::with_capacity(request.numeric_keys.len() + request.partial_numeric_keys.len());
     let mut attr_index: HashMap<String, usize> =
-        HashMap::with_capacity(numeric_keys.len() + partial_numeric_keys.len());
-    for key in numeric_keys {
+        HashMap::with_capacity(request.numeric_keys.len() + request.partial_numeric_keys.len());
+    for key in &request.numeric_keys {
         let col: Vec<f64> = graph_data
             .nodes
             .iter()
@@ -146,7 +169,7 @@ pub fn load_graph(
         attr_index.insert(key.clone(), attr_columns.len());
         attr_columns.push(col);
     }
-    for key in partial_numeric_keys {
+    for key in &request.partial_numeric_keys {
         let col: Vec<f64> = graph_data
             .nodes
             .iter()
@@ -161,10 +184,11 @@ pub fn load_graph(
     }
 
     // --- interned region ids ---
-    let mut region_columns: Vec<Vec<Option<u32>>> = Vec::with_capacity(region_keys.len());
-    let mut region_index: HashMap<String, usize> = HashMap::with_capacity(region_keys.len());
-    let mut region_id_counts: Vec<u32> = Vec::with_capacity(region_keys.len());
-    for key in region_keys {
+    let mut region_columns: Vec<Vec<Option<u32>>> = Vec::with_capacity(request.region_keys.len());
+    let mut region_index: HashMap<String, usize> =
+        HashMap::with_capacity(request.region_keys.len());
+    let mut region_id_counts: Vec<u32> = Vec::with_capacity(request.region_keys.len());
+    for key in &request.region_keys {
         let mut interner: HashMap<String, u32> = HashMap::new();
         let col: Vec<Option<u32>> = graph_data
             .nodes
@@ -193,6 +217,7 @@ pub fn load_graph(
     //     the old nested-HashMap `.insert(key, weight)` behavior.
     let mut edge_set: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
     let mut edge_weights_map: HashMap<(u32, u32), f64> = HashMap::new();
+    let edge_weight_key = request.edge_weight.as_ref().map(|edge| edge.key.as_str());
     for (source_idx, adjacency_val) in graph_data.adjacency.iter().enumerate() {
         let src = source_idx as u32;
         let adj = adjacency_val
@@ -214,14 +239,14 @@ pub fn load_graph(
 
     let mut edges: Vec<(u32, u32)> = edge_set.into_iter().collect();
     edges.sort_unstable();
-    let edge_weights: Option<Vec<f64>> = edge_weight_key.map(|_| {
+    let edge_weights: Option<Vec<f64>> = request.edge_weight.map(|edge| {
         edges
             .iter()
             .map(|e| {
                 edge_weights_map
                     .get(e)
                     .copied()
-                    .unwrap_or(edge_default_value)
+                    .unwrap_or(edge.default_value)
             })
             .collect()
     });
@@ -240,7 +265,10 @@ pub fn load_graph(
 
 #[cfg(test)]
 mod tests {
-    use super::{load_graph, parse_numeric, parse_numeric_opt, parse_region_id};
+    use super::{
+        load_graph, parse_numeric, parse_numeric_opt, parse_region_id, EdgeWeightRequest,
+        GraphLoadRequest,
+    };
     use serde_json::json;
     use tempfile::NamedTempFile;
 
@@ -312,11 +340,15 @@ mod tests {
         let region_keys = vec!["region".to_string()];
         let graph = load_graph(
             graph_file.path().to_str().unwrap(),
-            &numeric_keys,
-            &[],
-            &region_keys,
-            Some("weight"),
-            1.0,
+            GraphLoadRequest {
+                numeric_keys,
+                region_keys,
+                edge_weight: Some(EdgeWeightRequest {
+                    key: "weight".to_string(),
+                    default_value: 1.0,
+                }),
+                ..Default::default()
+            },
         )
         .unwrap();
 
@@ -358,11 +390,10 @@ mod tests {
 
         let _ = load_graph(
             graph_file.path().to_str().unwrap(),
-            &["does_not_exist".to_string()],
-            &[],
-            &[],
-            None,
-            1.0,
+            GraphLoadRequest {
+                numeric_keys: vec!["does_not_exist".to_string()],
+                ..Default::default()
+            },
         );
     }
 
@@ -385,11 +416,13 @@ mod tests {
 
         let graph = load_graph(
             graph_file.path().to_str().unwrap(),
-            &[],
-            &[],
-            &[],
-            Some("weight"),
-            1.0,
+            GraphLoadRequest {
+                edge_weight: Some(EdgeWeightRequest {
+                    key: "weight".to_string(),
+                    default_value: 1.0,
+                }),
+                ..Default::default()
+            },
         )
         .unwrap();
 
@@ -415,11 +448,11 @@ mod tests {
 
         let graph = load_graph(
             graph_file.path().to_str().unwrap(),
-            &["area".to_string()],
-            &["boundary_perim".to_string()],
-            &[],
-            None,
-            0.0,
+            GraphLoadRequest {
+                numeric_keys: vec!["area".to_string()],
+                partial_numeric_keys: vec!["boundary_perim".to_string()],
+                ..Default::default()
+            },
         )
         .unwrap();
 
@@ -452,11 +485,13 @@ mod tests {
 
         let graph = load_graph(
             graph_file.path().to_str().unwrap(),
-            &[],
-            &[],
-            &[],
-            Some("shared_perim"),
-            0.0,
+            GraphLoadRequest {
+                edge_weight: Some(EdgeWeightRequest {
+                    key: "shared_perim".to_string(),
+                    default_value: 0.0,
+                }),
+                ..Default::default()
+            },
         )
         .unwrap();
 

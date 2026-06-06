@@ -172,37 +172,29 @@ pub fn tally_and_save_polsby_popper(
     show_progress: bool,
     high_compression: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let area_idx = *graph
-        .attr_index
-        .get(area_key)
+    let area_vals = graph
+        .numeric_column(area_key)
         .unwrap_or_else(|| panic!("area key {:?} not pre-loaded on graph", area_key));
-    let area_vals = &graph.attr_columns[area_idx];
 
     let shared_perims = graph
-        .edge_weights
-        .as_ref()
+        .edge_weight_column()
         .unwrap_or_else(|| panic!("shared perimeter edge column not pre-loaded on graph"));
 
     let total_perims = if let Some(perim_key) = perim_key {
-        let perim_idx = *graph
-            .attr_index
-            .get(perim_key)
-            .unwrap_or_else(|| panic!("perimeter key {:?} not pre-loaded on graph", perim_key));
-        graph.attr_columns[perim_idx].clone()
+        graph
+            .numeric_column(perim_key)
+            .unwrap_or_else(|| panic!("perimeter key {:?} not pre-loaded on graph", perim_key))
+            .to_vec()
     } else {
         let boundary_key = boundary_perim_key
             .expect("boundary perimeter key should exist when direct perimeter key is absent");
-        let boundary_idx = *graph.attr_index.get(boundary_key).unwrap_or_else(|| {
+        let boundary_perims = graph.numeric_column(boundary_key).unwrap_or_else(|| {
             panic!(
                 "boundary perimeter key {:?} not pre-loaded on graph",
                 boundary_key
             )
         });
-        derive_total_perimeters(
-            &graph.attr_columns[boundary_idx],
-            &graph.edges,
-            shared_perims,
-        )
+        derive_total_perimeters(boundary_perims, &graph.edges, shared_perims)
     };
 
     let total = count_samples(in_file_name)?;
