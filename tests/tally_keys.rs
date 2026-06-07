@@ -1,0 +1,154 @@
+#[path = "common/mod.rs"]
+mod common;
+
+use common::*;
+
+#[test]
+fn tally_keys_requires_at_least_one_key() {
+    let f = fixture(&tri_plans());
+    let stderr = run_failure(&[
+        "--mode",
+        "tally-keys",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--no-progress",
+    ]);
+
+    assert!(
+        stderr.contains("at least one key is required for tally-keys mode"),
+        "stderr should explain empty key list, got: {stderr}"
+    );
+}
+
+#[test]
+fn tally_keys_pop_per_district() {
+    let f = fixture(&tri_plans());
+    run(&[
+        "--mode",
+        "tally-keys",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--keys",
+        "pop",
+        "--no-progress",
+    ]);
+    let df = read_parquet(&f.dir.join("plans_tallies").join("pop_tally_plans.parquet"));
+    assert_eq!(f64_col(&df, "district_1"), vec![60.0, 90.0, 140.0]);
+    assert_eq!(f64_col(&df, "district_2"), vec![150.0, 120.0, 70.0]);
+    assert_eq!(u64_col(&df, "step"), vec![1, 2, 3]);
+    assert_eq!(u32_col(&df, "n_reps"), vec![1, 1, 1]);
+    assert_eq!(u32_col(&df, "accepted_count"), vec![1, 2, 3]);
+    assert_eq!(
+        df.get_column_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>(),
+        vec![
+            "step".to_string(),
+            "n_reps".to_string(),
+            "accepted_count".to_string(),
+            "district_1".to_string(),
+            "district_2".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn tally_keys_multiple_keys_write_separate_files() {
+    let f = fixture(&tri_plans());
+    run(&[
+        "--mode",
+        "tally-keys",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--keys",
+        "pop",
+        "area",
+        "--no-progress",
+    ]);
+
+    let pop_df = read_parquet(&f.dir.join("plans_tallies").join("pop_tally_plans.parquet"));
+    let area_df = read_parquet(&f.dir.join("plans_tallies").join("area_tally_plans.parquet"));
+
+    assert_eq!(f64_col(&pop_df, "district_1"), vec![60.0, 90.0, 140.0]);
+    assert_eq!(f64_col(&pop_df, "district_2"), vec![150.0, 120.0, 70.0]);
+    assert_eq!(f64_col(&area_df, "district_1"), vec![6.0, 9.0, 14.0]);
+    assert_eq!(f64_col(&area_df, "district_2"), vec![15.0, 12.0, 7.0]);
+    assert_eq!(u64_col(&area_df, "step"), vec![1, 2, 3]);
+    assert_eq!(u32_col(&area_df, "accepted_count"), vec![1, 2, 3]);
+}
+
+#[test]
+fn tally_keys_output_dir_nests_files_under_graph_stem_directory() {
+    let f = fixture(&tri_plans());
+    let output_dir = f.dir.join("custom_out");
+    run(&[
+        "--mode",
+        "tally-keys",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        output_dir.to_str().unwrap(),
+        "--keys",
+        "pop",
+        "--no-progress",
+    ]);
+
+    let expected = output_dir
+        .join("plans_tallies")
+        .join("pop_tally_plans.parquet");
+    assert!(expected.exists(), "expected tally file at {:?}", expected);
+    assert!(
+        !f.dir
+            .join("plans_tallies")
+            .join("pop_tally_plans.parquet")
+            .exists(),
+        "tally file should respect --output-dir rather than defaulting to fixture dir"
+    );
+}
+
+#[test]
+fn tally_keys_fails_when_later_frames_introduce_unseen_district_ids() {
+    let plans = vec![vec![1u16, 1, 1, 1, 1, 1], vec![1u16, 2, 1, 2, 1, 2]];
+    let f = fixture(&plans);
+    let output = Command::new(bin())
+        .args([
+            "--mode",
+            "tally-keys",
+            "--graph-file",
+            f.graph.to_str().unwrap(),
+            "--ben-file",
+            f.ben.to_str().unwrap(),
+            "--output-dir",
+            f.dir.to_str().unwrap(),
+            "--keys",
+            "pop",
+            "--no-progress",
+        ])
+        .output()
+        .expect("failed to spawn ben-process");
+
+    assert!(
+        !output.status.success(),
+        "tally-keys should fail on unseen district ids"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not present in first assignment"),
+        "stderr should explain the streaming-schema failure, got: {stderr}"
+    );
+}
