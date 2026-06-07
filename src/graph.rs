@@ -119,7 +119,7 @@ fn parse_numeric(node: &Value, key: &str) -> io::Result<f64> {
             format!("missing numeric graph key {:?} on node {:?}", key, node),
         )
     })?;
-    match extracted_val {
+    let parsed = match extracted_val {
         Value::Number(n) => n.as_f64().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -128,7 +128,7 @@ fn parse_numeric(node: &Value, key: &str) -> io::Result<f64> {
                     key, extracted_val
                 ),
             )
-        }),
+        })?,
         Value::String(s) => s.parse::<f64>().map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -137,14 +137,31 @@ fn parse_numeric(node: &Value, key: &str) -> io::Result<f64> {
                     key, extracted_val, node
                 ),
             )
-        }),
-        _ => Err(io::Error::new(
+        })?,
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "invalid numeric graph value for key {:?}: {:?} on node {:?}",
+                    key, extracted_val, node
+                ),
+            ))
+        }
+    };
+
+    // Rust's f64 FromStr accepts "NaN"/"inf"/"infinity", and an out-of-range JSON number can parse
+    // to ±inf. A single non-finite node value would silently poison its whole district sum to
+    // NaN/inf, so reject it here (mirroring parse_region_id, which already drops "nan").
+    if parsed.is_finite() {
+        Ok(parsed)
+    } else {
+        Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
-                "invalid numeric graph value for key {:?}: {:?} on node {:?}",
+                "non-finite numeric graph value for key {:?}: {:?} on node {:?}",
                 key, extracted_val, node
             ),
-        )),
+        ))
     }
 }
 
@@ -153,11 +170,14 @@ fn parse_numeric_or_zero(value: &Value) -> f64 {
 }
 
 fn parse_numeric_opt(value: &Value) -> Option<f64> {
-    match value {
+    let parsed = match value {
         Value::Number(n) => n.as_f64(),
         Value::String(s) => s.parse::<f64>().ok(),
         _ => None,
-    }
+    }?;
+    // Drop non-finite values (e.g. the string "NaN"/"inf") so they never reach a tally or edge
+    // weight; the lenient path treats them the same as a missing/unparseable value.
+    parsed.is_finite().then_some(parsed)
 }
 
 /// Load a graph and pre-compute exactly the columns / edge weights the caller will need. Anything
@@ -254,6 +274,23 @@ pub fn load_graph(
     //     values are not stored; those edges fall back to 1.0 at lookup time.
     //   - `.insert()` (not `.or_insert()`) — last valid weight wins, matching the old
     //     nested-HashMap `.insert(key, weight)` behavior.
+    // `node_count` is the contract every assignment is later validated against (one entry per
+    // node). The adjacency block must agree with it: one adjacency list per node, and every
+    // edge endpoint a real node id. Otherwise an out-of-range id would index `assignment[id]`
+    // and panic deep in a metric hot loop mid-run, and a length mismatch would silently
+    // under/over-count edges.
+    let node_count = graph_data.nodes.len();
+    if graph_data.adjacency.len() != node_count {
+        return Err(Box::new(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "graph has {} nodes but {} adjacency lists; node and adjacency counts must match",
+                node_count,
+                graph_data.adjacency.len()
+            ),
+        )));
+    }
+
     let mut edge_set: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
     let mut edge_weights_map: HashMap<(u32, u32), f64> = HashMap::new();
     let edge_weight_key = request.edge_weight.as_ref().map(|edge| edge.key.as_str());
@@ -278,6 +315,15 @@ pub fn load_graph(
                         ),
                     )
                 })? as u32;
+            if tgt as usize >= node_count {
+                return Err(Box::new(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "graph adjacency entry {} references node id {} but the graph has only {} nodes",
+                        source_idx, tgt, node_count
+                    ),
+                )));
+            }
             let edge = (src.min(tgt), src.max(tgt));
             edge_set.insert(edge);
 
@@ -305,7 +351,7 @@ pub fn load_graph(
     });
 
     Ok(Graph {
-        node_count: graph_data.nodes.len(),
+        node_count,
         attr_columns,
         attr_index,
         region_columns,
@@ -555,5 +601,88 @@ mod tests {
 
         assert_eq!(graph.edges, vec![(0, 1)]);
         assert_eq!(graph.edge_weights, Some(vec![0.0]));
+    }
+
+    #[test]
+    fn parse_numeric_rejects_non_finite_strings() {
+        // Rust's f64 FromStr accepts "NaN"/"inf"/"infinity". Left unguarded, a single such node
+        // value flows straight into a district tally and poisons the whole district sum to NaN/inf.
+        // parse_numeric must reject non-finite values the same way parse_region_id rejects "nan".
+        assert!(
+            parse_numeric(&json!({ "pop": "NaN" }), "pop").is_err(),
+            "parse_numeric should reject the string \"NaN\""
+        );
+        assert!(
+            parse_numeric(&json!({ "pop": "inf" }), "pop").is_err(),
+            "parse_numeric should reject the string \"inf\""
+        );
+        assert!(
+            parse_numeric(&json!({ "pop": "Infinity" }), "pop").is_err(),
+            "parse_numeric should reject the string \"Infinity\""
+        );
+    }
+
+    #[test]
+    fn parse_numeric_opt_rejects_non_finite_strings() {
+        // Same hazard on the lenient path used for partial numeric columns and edge weights.
+        assert_eq!(parse_numeric_opt(&json!("NaN")), None);
+        assert_eq!(parse_numeric_opt(&json!("inf")), None);
+        assert_eq!(parse_numeric_opt(&json!("Infinity")), None);
+    }
+
+    #[test]
+    fn load_graph_rejects_out_of_range_adjacency_target() {
+        // The graph has 2 nodes, but an adjacency entry references node id 9. The resulting edge
+        // (0, 9) would later index `assignment[9]` and panic out-of-bounds deep inside a metric hot
+        // loop, mid-run, in a rayon worker. load_graph must reject the inconsistency up front.
+        let graph_json = json!({
+            "directed": false,
+            "multigraph": false,
+            "graph": [],
+            "nodes": [ { "pop": 1.0 }, { "pop": 2.0 } ],
+            "adjacency": [
+                [ { "id": 1 } ],
+                [ { "id": 0 }, { "id": 9 } ]
+            ]
+        });
+        let graph_file = write_graph(graph_json);
+
+        let result = load_graph(
+            graph_file.path().to_str().unwrap(),
+            GraphLoadRequest::default(),
+        );
+        assert!(
+            result.is_err(),
+            "load_graph should reject an adjacency target id beyond the node count, got Ok"
+        );
+    }
+
+    #[test]
+    fn load_graph_rejects_adjacency_node_count_mismatch() {
+        // `node_count` is taken from `nodes` (3 here), so the pipeline validates assignments
+        // against 3 nodes — but the edge set was built from a 2-row adjacency. That is an
+        // internally inconsistent graph (silent edge undercount → wrong cut-edge /
+        // perimeter totals) and should be rejected at load time rather than silently
+        // producing wrong tallies.
+        let graph_json = json!({
+            "directed": false,
+            "multigraph": false,
+            "graph": [],
+            "nodes": [ { "pop": 1.0 }, { "pop": 2.0 }, { "pop": 3.0 } ],
+            "adjacency": [
+                [ { "id": 1 } ],
+                [ { "id": 0 } ]
+            ]
+        });
+        let graph_file = write_graph(graph_json);
+
+        let result = load_graph(
+            graph_file.path().to_str().unwrap(),
+            GraphLoadRequest::default(),
+        );
+        assert!(
+            result.is_err(),
+            "load_graph should reject an adjacency list whose length differs from the node count, got Ok"
+        );
     }
 }

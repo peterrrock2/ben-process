@@ -1,7 +1,5 @@
 use crate::cli::{build_tally_output_dir, build_tally_output_path};
-use crate::district::{
-    observed_assignment_districts, sorted_district_ids, validate_no_unseen_districts,
-};
+use crate::district::{observed_assignment_districts, sorted_district_ids};
 use crate::graph::Graph;
 use crate::output::parquet::DistrictMetricWriter;
 use crate::pipeline::{count_samples, parquet_compression, run_pipeline, PARQUET_BATCH_ROWS};
@@ -120,13 +118,18 @@ pub fn tally_and_save_from_key_list(
     let total = count_samples(in_file_name)?;
     let mut key_states: Option<Vec<DistrictMetricWriter>> = None;
     let mut district_ids: Vec<u16> = Vec::new();
-    let mut expected_observed: Option<u128> = None;
 
     run_pipeline(
         in_file_name,
         total,
         Some(graph.node_count),
-        |assignment, _n_reps| Ok(tally_keys(&graph, assignment, &attr_col_indices)),
+        // The pipeline enforces that this district set is identical for every plan, so the schema
+        // fixed from the first row below holds for the whole run.
+        Some("tally"),
+        |assignment, _n_reps| {
+            let (totals, n_districts, observed) = tally_keys(&graph, assignment, &attr_col_indices);
+            Ok((observed, (totals, n_districts, observed)))
+        },
         |step, n_reps, accepted, row| {
             let (totals, n_districts, observed) = row;
             let row = TallyRow {
@@ -139,7 +142,6 @@ pub fn tally_and_save_from_key_list(
             };
 
             if key_states.is_none() {
-                expected_observed = Some(row.observed);
                 district_ids = sorted_district_ids(row.observed);
                 key_states = Some(
                     key_list
@@ -157,9 +159,6 @@ pub fn tally_and_save_from_key_list(
                         .map_err(|e| io::Error::other(e.to_string()))?,
                 );
             }
-
-            let expected = expected_observed.expect("writers should initialize on first row");
-            validate_no_unseen_districts(row.observed, expected, "tally")?;
 
             for (key_idx, state) in key_states
                 .as_mut()

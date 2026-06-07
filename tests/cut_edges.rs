@@ -124,6 +124,33 @@ fn cut_edges_with_high_compression_round_trips() {
     assert_eq!(u64_col(&df, "step"), vec![1, 2, 3]);
 }
 
+/// Cut-edges has no per-district output schema, but the fixed-district-set invariant is now
+/// enforced centrally in the pipeline (cut-edges captures the set from the edge endpoints it
+/// already walks). plan 0 = [1,1,1,2,2,2] establishes districts {1,2}; plan 1 = [1,1,1,1,1,1] drops
+/// district 2, so the run must fail fast.
+#[test]
+fn cut_edges_fails_when_district_set_changes() {
+    let plans = vec![vec![1u16, 1, 1, 2, 2, 2], vec![1u16, 1, 1, 1, 1, 1]];
+    let f = fixture(&plans);
+    let stderr = run_failure(&[
+        "--mode",
+        "cut-edges",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--no-progress",
+    ]);
+
+    assert!(
+        stderr.contains("districts [2] from the first assignment are missing from a later plan")
+            && stderr.contains("same district labels"),
+        "stderr should explain the changed-district-set failure, got: {stderr}"
+    );
+}
+
 /// `--output-dir` pointing at an existing *file* (not a directory) cannot host the output parquet.
 /// `File::create` will fail; the binary must surface a non-zero exit rather than silently producing
 /// nothing.

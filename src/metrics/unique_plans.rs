@@ -24,9 +24,11 @@ pub fn count_and_save_unique_plans(
         in_file_name,
         total,
         // No graph is loaded for this mode — it only hashes the raw assignment, so there is no
-        // node count to validate against.
+        // node count to validate against. The partition is label-invariant by design, so
+        // the fixed district-set check is deliberately disabled (`None`) too.
         None,
-        |assignment, _n_reps| Ok(canonical_hash(assignment)),
+        None,
+        |assignment, _n_reps| Ok((0u128, canonical_hash(assignment))),
         |_step, _n_reps, _accepted, hash| {
             unique.insert(hash);
             total_frames += 1;

@@ -234,6 +234,32 @@ fn polsby_popper_perim_key_wins_when_both_keys_are_passed() {
     assert_f64_vec_close(&f64_col(&df, "district_2"), &expected);
 }
 
+/// Same fixed-district-set invariant as tally-keys, exercised through the Polsby-Popper schema:
+/// plan 0 = [1,1,2,2] establishes districts {1,2}; plan 1 = [1,1,1,1] drops district 2. The run
+/// must fail fast rather than emit a null/zero score for the vanished district.
+#[test]
+fn polsby_popper_fails_when_later_frame_drops_a_first_assignment_district() {
+    let plans = vec![vec![1u16, 1, 2, 2], vec![1u16, 1, 1, 1]];
+    let f = polsby_fixture(&plans);
+    let stderr = run_failure(&[
+        "--mode",
+        "polsby-popper",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--no-progress",
+    ]);
+
+    assert!(
+        stderr.contains("districts [2] from the first assignment are missing from a later plan")
+            && stderr.contains("same district labels"),
+        "stderr should explain the dropped-district schema failure, got: {stderr}"
+    );
+}
+
 /// `polsby-popper` has an explicit "no rows seen" branch that builds an empty schema-less DataFrame
 /// and finishes the parquet writer without ever calling `sorted_district_ids`. Drive that branch
 /// with a BEN file containing zero frames and verify the binary exits cleanly and produces a

@@ -121,6 +121,38 @@ fn tally_keys_output_dir_nests_files_under_graph_stem_directory() {
     );
 }
 
+/// The district label set must be identical across every plan in the ensemble. A later plan that
+/// *drops* a district present in the first plan (here district 2 vanishes) breaks the fixed
+/// per-district schema just as much as one that *adds* a district, so it must fail fast rather than
+/// silently emit a null/zero column.
+///
+/// pop fixture: plan 0 = [1,1,1,2,2,2] establishes districts {1,2}; plan 1 = [1,1,1,1,1,1] has only
+/// district 1, so district 2 is missing.
+#[test]
+fn tally_keys_fails_when_later_frame_drops_a_first_assignment_district() {
+    let plans = vec![vec![1u16, 1, 1, 2, 2, 2], vec![1u16, 1, 1, 1, 1, 1]];
+    let f = fixture(&plans);
+    let stderr = run_failure(&[
+        "--mode",
+        "tally-keys",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--keys",
+        "pop",
+        "--no-progress",
+    ]);
+
+    assert!(
+        stderr.contains("districts [2] from the first assignment are missing from a later plan")
+            && stderr.contains("same district labels"),
+        "stderr should explain the dropped-district schema failure, got: {stderr}"
+    );
+}
+
 #[test]
 fn tally_keys_fails_when_later_frames_introduce_unseen_district_ids() {
     let plans = vec![vec![1u16, 1, 1, 1, 1, 1], vec![1u16, 2, 1, 2, 1, 2]];

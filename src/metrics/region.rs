@@ -1,3 +1,4 @@
+use crate::district::observed_assignment_districts;
 use crate::graph::Graph;
 use crate::output::parquet::U32KeyedMetricWriter;
 use crate::pipeline::{count_samples, parquet_compression, run_pipeline, PARQUET_BATCH_ROWS};
@@ -25,11 +26,14 @@ fn region_metric_col_name(metric: RegionMetric) -> &'static str {
 /// runs (< 64 districts) each region occupies exactly one u64, so the whole bitset is
 /// `n_regions * 8` bytes and sits in L1. Replaces the per-sample `Vec<HashSet<u16>>` allocations
 /// from Phase 2.
+/// `max_d` is the maximum district id in the assignment, computed once by the caller (together with
+/// the observed-district set) so it isn't re-derived per region key.
 fn region_metric_for_key(
     graph: &Graph,
     assignment: &[u16],
     region_col_idx: usize,
     metric: RegionMetric,
+    max_d: usize,
 ) -> u32 {
     let col = &graph.region_columns[region_col_idx];
     let n_regions = graph.region_id_counts[region_col_idx] as usize;
@@ -37,7 +41,6 @@ fn region_metric_for_key(
         return 0;
     }
 
-    let max_d = assignment.iter().copied().max().unwrap_or(0) as usize;
     let words_per_region = (max_d / 64) + 1;
     let mut bitset = vec![0u64; n_regions * words_per_region];
 
@@ -112,18 +115,24 @@ pub fn tally_and_save_region_metric(
         in_file_name,
         total,
         Some(graph.node_count),
+        // The pipeline enforces a fixed district set across the ensemble for region modes too.
+        Some(metric_col_name),
         |assignment, _n_reps| {
+            // One pass yields both the observed district set (for the pipeline's fixed-set check)
+            // and `max_d`, which every per-key bitset below is sized from.
+            let (n_districts, observed) = observed_assignment_districts(assignment);
+            let max_d = n_districts.saturating_sub(1) as usize;
             let rows = key_list
                 .iter()
                 .zip(region_col_indices.iter())
                 .map(|(key, &col_idx)| {
                     (
                         key.clone(),
-                        region_metric_for_key(&graph, assignment, col_idx, metric),
+                        region_metric_for_key(&graph, assignment, col_idx, metric, max_d),
                     )
                 })
                 .collect::<Vec<(String, u32)>>();
-            Ok(rows)
+            Ok((observed, rows))
         },
         |step, n_reps, accepted, counts| {
             for (key, count_val) in counts {
@@ -171,13 +180,14 @@ mod tests {
     fn region_metric_counts_splits_and_pieces_while_ignoring_missing_regions() {
         let graph = graph_with_region_column(vec![Some(0), Some(0), Some(1), None], 2);
         let assignment = vec![1, 2, 2, 3];
+        let max_d = 3;
 
         assert_eq!(
-            region_metric_for_key(&graph, &assignment, 0, RegionMetric::Splits),
+            region_metric_for_key(&graph, &assignment, 0, RegionMetric::Splits, max_d),
             1
         );
         assert_eq!(
-            region_metric_for_key(&graph, &assignment, 0, RegionMetric::Pieces),
+            region_metric_for_key(&graph, &assignment, 0, RegionMetric::Pieces, max_d),
             3
         );
     }
@@ -186,13 +196,14 @@ mod tests {
     fn region_metric_handles_district_ids_across_word_boundaries() {
         let graph = graph_with_region_column(vec![Some(0), Some(0), Some(1)], 2);
         let assignment = vec![0, 64, 64];
+        let max_d = 64;
 
         assert_eq!(
-            region_metric_for_key(&graph, &assignment, 0, RegionMetric::Splits),
+            region_metric_for_key(&graph, &assignment, 0, RegionMetric::Splits, max_d),
             1
         );
         assert_eq!(
-            region_metric_for_key(&graph, &assignment, 0, RegionMetric::Pieces),
+            region_metric_for_key(&graph, &assignment, 0, RegionMetric::Pieces, max_d),
             3
         );
     }
@@ -204,13 +215,14 @@ mod tests {
         // how many regions exist.
         let graph = graph_with_region_column(vec![Some(0), Some(1), Some(0), Some(1)], 2);
         let assignment = vec![0u16, 0, 0, 0];
+        let max_d = 0;
 
         assert_eq!(
-            region_metric_for_key(&graph, &assignment, 0, RegionMetric::Splits),
+            region_metric_for_key(&graph, &assignment, 0, RegionMetric::Splits, max_d),
             0
         );
         assert_eq!(
-            region_metric_for_key(&graph, &assignment, 0, RegionMetric::Pieces),
+            region_metric_for_key(&graph, &assignment, 0, RegionMetric::Pieces, max_d),
             2
         );
     }
@@ -220,13 +232,14 @@ mod tests {
         // Single region, single district → zero splits, one piece.
         let graph = graph_with_region_column(vec![Some(0), Some(0), Some(0)], 1);
         let assignment = vec![5u16, 5, 5];
+        let max_d = 5;
 
         assert_eq!(
-            region_metric_for_key(&graph, &assignment, 0, RegionMetric::Splits),
+            region_metric_for_key(&graph, &assignment, 0, RegionMetric::Splits, max_d),
             0
         );
         assert_eq!(
-            region_metric_for_key(&graph, &assignment, 0, RegionMetric::Pieces),
+            region_metric_for_key(&graph, &assignment, 0, RegionMetric::Pieces, max_d),
             1
         );
     }
@@ -235,11 +248,11 @@ mod tests {
     fn region_metric_returns_zero_when_no_regions_are_present() {
         let graph = graph_with_region_column(vec![None, None], 0);
         assert_eq!(
-            region_metric_for_key(&graph, &[1, 2], 0, RegionMetric::Splits),
+            region_metric_for_key(&graph, &[1, 2], 0, RegionMetric::Splits, 2),
             0
         );
         assert_eq!(
-            region_metric_for_key(&graph, &[1, 2], 0, RegionMetric::Pieces),
+            region_metric_for_key(&graph, &[1, 2], 0, RegionMetric::Pieces, 2),
             0
         );
     }

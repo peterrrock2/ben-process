@@ -1,6 +1,4 @@
-use crate::district::{
-    observed_assignment_districts, sorted_district_ids, validate_no_unseen_districts,
-};
+use crate::district::{observed_assignment_districts, sorted_district_ids};
 use crate::graph::Graph;
 use crate::output::parquet::DistrictMetricWriter;
 use crate::pipeline::{count_samples, parquet_compression, run_pipeline, PARQUET_BATCH_ROWS};
@@ -110,20 +108,23 @@ pub fn tally_and_save_polsby_popper(
     let total = count_samples(in_file_name)?;
     let mut file = Some(File::create(out_file_name)?);
     let mut writer_state: Option<DistrictMetricWriter> = None;
-    let mut expected_observed: Option<u128> = None;
 
     run_pipeline(
         in_file_name,
         total,
         Some(graph.node_count),
+        // The pipeline enforces a fixed district set, so the schema fixed from the first row
+        // holds.
+        Some("polsby-popper"),
         |assignment, _n_reps| {
-            Ok(polsby_popper_rows(
+            let (scores, n_districts, observed) = polsby_popper_rows(
                 assignment,
                 area_vals,
                 &total_perims,
                 &graph.edges,
                 shared_perims,
-            ))
+            );
+            Ok((observed, (scores, n_districts, observed)))
         },
         |step, n_reps, accepted, row| {
             let (scores, n_districts, observed) = row;
@@ -137,7 +138,6 @@ pub fn tally_and_save_polsby_popper(
             };
 
             if writer_state.is_none() {
-                expected_observed = Some(row.observed);
                 let district_ids = sorted_district_ids(row.observed);
                 writer_state = Some(
                     DistrictMetricWriter::new(
@@ -150,9 +150,6 @@ pub fn tally_and_save_polsby_popper(
                     .map_err(|e| io::Error::other(e.to_string()))?,
                 );
             }
-
-            let expected = expected_observed.expect("writer should initialize on first row");
-            validate_no_unseen_districts(row.observed, expected, "polsby-popper")?;
 
             let state = writer_state
                 .as_mut()
