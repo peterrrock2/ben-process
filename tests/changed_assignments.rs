@@ -163,6 +163,37 @@ fn changed_assignments_with_randomize_reassignments_runs_and_writes_valid_output
     }
 }
 
+/// `--seed` makes `--randomize-reassignments` reproducible: two runs with the same seed must
+/// produce byte-identical output. Without a seed the RNG is OS-seeded and runs can differ.
+#[test]
+fn changed_assignments_seed_makes_randomization_reproducible() {
+    let plans = vec![vec![1u16, 1, 2, 2], vec![2u16, 2, 1, 1]];
+    let f = fixture(&plans);
+    let dir_a = f.dir.join("a");
+    let dir_b = f.dir.join("b");
+    std::fs::create_dir_all(&dir_a).unwrap();
+    std::fs::create_dir_all(&dir_b).unwrap();
+
+    for out in [&dir_a, &dir_b] {
+        run(&[
+            "--mode",
+            "changed-assignments",
+            "--ben-file",
+            f.ben.to_str().unwrap(),
+            "--output-dir",
+            out.to_str().unwrap(),
+            "--randomize-reassignments",
+            "--seed",
+            "42",
+            "--no-progress",
+        ]);
+    }
+
+    let a = std::fs::read_to_string(dir_a.join("plans_accept_2_changed_assignments.txt")).unwrap();
+    let b = std::fs::read_to_string(dir_b.join("plans_accept_2_changed_assignments.txt")).unwrap();
+    assert_eq!(a, b, "same seed must produce identical randomized output");
+}
+
 #[test]
 fn changed_assignments_reports_later_unseen_assignment_labels() {
     let plans = vec![vec![1u16, 1, 2, 2], vec![1u16, 3, 2, 2]];

@@ -5,7 +5,7 @@
 //! labels collide on the same digest and thus count as the same partition.
 
 use crate::metrics::canonical::canonical_hash;
-use crate::pipeline::{count_samples, run_pipeline};
+use crate::pipeline::run_pipeline;
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write;
@@ -15,14 +15,11 @@ pub fn count_and_save_unique_plans(
     out_file_name: &str,
     show_progress: bool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let total = count_samples(in_file_name)?;
-
     let mut unique: HashSet<u128> = HashSet::new();
     let mut total_frames: u64 = 0;
 
     run_pipeline(
         in_file_name,
-        total,
         // No graph is loaded for this mode — it only hashes the raw assignment, so there is no
         // node count to validate against. The partition is label-invariant by design, so
         // the fixed district-set check is deliberately disabled (`None`) too.

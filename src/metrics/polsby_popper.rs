@@ -1,12 +1,12 @@
 use crate::district::{observed_assignment_districts, sorted_district_ids};
 use crate::graph::Graph;
 use crate::output::parquet::DistrictMetricWriter;
-use crate::pipeline::{count_samples, parquet_compression, run_pipeline, PARQUET_BATCH_ROWS};
+use crate::pipeline::{parquet_compression, run_pipeline, PARQUET_BATCH_ROWS};
 use std::fs::File;
 use std::io;
 
 struct PolsbyRow {
-    sample_num: u64,
+    sample_number: u64,
     n_reps: u32,
     accepted_count: u32,
     scores: Vec<f64>,
@@ -24,48 +24,50 @@ fn polsby_popper_score(area: f64, perimeter: f64) -> f64 {
 }
 
 fn derive_total_perimeters(
-    boundary_perims: &[f64],
+    boundary_perimeters: &[f64],
     edges: &[(u32, u32)],
-    shared_perims: &[f64],
+    shared_perimeters: &[f64],
 ) -> Vec<f64> {
-    let mut total_perims = boundary_perims.to_vec();
-    for (i, &(u, v)) in edges.iter().enumerate() {
-        total_perims[u as usize] += shared_perims[i];
-        total_perims[v as usize] += shared_perims[i];
+    let mut total_perimeters = boundary_perimeters.to_vec();
+    for (edge_index, &(node_u, node_v)) in edges.iter().enumerate() {
+        total_perimeters[node_u as usize] += shared_perimeters[edge_index];
+        total_perimeters[node_v as usize] += shared_perimeters[edge_index];
     }
-    total_perims
+    total_perimeters
 }
 
 fn polsby_popper_rows(
     assignment: &[u16],
-    area_vals: &[f64],
-    total_perim_vals: &[f64],
+    area_values: &[f64],
+    total_perimeter_values: &[f64],
     edges: &[(u32, u32)],
-    shared_perims: &[f64],
-) -> (Vec<f64>, u16, u128) {
-    let (n_districts, observed) = observed_assignment_districts(assignment);
+    shared_perimeters: &[f64],
+) -> io::Result<(Vec<f64>, u16, u128)> {
+    let (n_districts, observed) = observed_assignment_districts(assignment)?;
     let n_districts = n_districts as usize;
-    let mut area_d = vec![0.0f64; n_districts];
-    let mut perim_d = vec![0.0f64; n_districts];
+    let mut area_by_district = vec![0.0f64; n_districts];
+    let mut perimeter_by_district = vec![0.0f64; n_districts];
 
     for (node, &district) in assignment.iter().enumerate() {
         let district = district as usize;
-        area_d[district] += area_vals[node];
-        perim_d[district] += total_perim_vals[node];
+        area_by_district[district] += area_values[node];
+        perimeter_by_district[district] += total_perimeter_values[node];
     }
 
-    for (edge_idx, &(u, v)) in edges.iter().enumerate() {
-        let d_u = assignment[u as usize] as usize;
-        let d_v = assignment[v as usize] as usize;
-        if d_u == d_v {
-            perim_d[d_u] -= 2.0 * shared_perims[edge_idx];
+    for (edge_index, &(node_u, node_v)) in edges.iter().enumerate() {
+        let district_u = assignment[node_u as usize] as usize;
+        let district_v = assignment[node_v as usize] as usize;
+        if district_u == district_v {
+            perimeter_by_district[district_u] -= 2.0 * shared_perimeters[edge_index];
         }
     }
 
     let scores = (0..n_districts)
-        .map(|d| polsby_popper_score(area_d[d], perim_d[d]))
+        .map(|district| {
+            polsby_popper_score(area_by_district[district], perimeter_by_district[district])
+        })
         .collect();
-    (scores, n_districts as u16, observed)
+    Ok((scores, n_districts as u16, observed))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -76,19 +78,18 @@ pub fn tally_and_save_polsby_popper(
     area_key: &str,
     perim_key: Option<&str>,
     boundary_perim_key: Option<&str>,
-    _shared_perim_key: &str,
     show_progress: bool,
     high_compression: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let area_vals = graph
+    let area_values = graph
         .numeric_column(area_key)
         .unwrap_or_else(|| panic!("area key {:?} not pre-loaded on graph", area_key));
 
-    let shared_perims = graph
+    let shared_perimeters = graph
         .edge_weight_column()
         .unwrap_or_else(|| panic!("shared perimeter edge column not pre-loaded on graph"));
 
-    let total_perims = if let Some(perim_key) = perim_key {
+    let total_perimeters = if let Some(perim_key) = perim_key {
         graph
             .numeric_column(perim_key)
             .unwrap_or_else(|| panic!("perimeter key {:?} not pre-loaded on graph", perim_key))
@@ -96,22 +97,20 @@ pub fn tally_and_save_polsby_popper(
     } else {
         let boundary_key = boundary_perim_key
             .expect("boundary perimeter key should exist when direct perimeter key is absent");
-        let boundary_perims = graph.numeric_column(boundary_key).unwrap_or_else(|| {
+        let boundary_perimeters = graph.numeric_column(boundary_key).unwrap_or_else(|| {
             panic!(
                 "boundary perimeter key {:?} not pre-loaded on graph",
                 boundary_key
             )
         });
-        derive_total_perimeters(boundary_perims, &graph.edges, shared_perims)
+        derive_total_perimeters(boundary_perimeters, &graph.edges, shared_perimeters)
     };
 
-    let total = count_samples(in_file_name)?;
     let mut file = Some(File::create(out_file_name)?);
     let mut writer_state: Option<DistrictMetricWriter> = None;
 
     run_pipeline(
         in_file_name,
-        total,
         Some(graph.node_count),
         // The pipeline enforces a fixed district set, so the schema fixed from the first row
         // holds.
@@ -119,17 +118,17 @@ pub fn tally_and_save_polsby_popper(
         |assignment, _n_reps| {
             let (scores, n_districts, observed) = polsby_popper_rows(
                 assignment,
-                area_vals,
-                &total_perims,
+                area_values,
+                &total_perimeters,
                 &graph.edges,
-                shared_perims,
-            );
+                shared_perimeters,
+            )?;
             Ok((observed, (scores, n_districts, observed)))
         },
         |step, n_reps, accepted, row| {
             let (scores, n_districts, observed) = row;
             let row = PolsbyRow {
-                sample_num: step,
+                sample_number: step,
                 n_reps,
                 accepted_count: accepted,
                 scores,
@@ -154,17 +153,23 @@ pub fn tally_and_save_polsby_popper(
             let state = writer_state
                 .as_mut()
                 .expect("writer should exist before writing polsby-popper rows");
-            let n_d = row.n_districts as usize;
+            let n_districts = row.n_districts as usize;
             state
-                .push_row_with(row.sample_num, row.n_reps, row.accepted_count, |d| {
-                    let di = d as usize;
-                    let present = di < n_d && (row.observed & (1u128 << d)) != 0;
-                    if present {
-                        Some(row.scores[di])
-                    } else {
-                        None
-                    }
-                })
+                .push_row_with(
+                    row.sample_number,
+                    row.n_reps,
+                    row.accepted_count,
+                    |district| {
+                        let district_index = district as usize;
+                        let present = district_index < n_districts
+                            && (row.observed & (1u128 << district)) != 0;
+                        if present {
+                            Some(row.scores[district_index])
+                        } else {
+                            None
+                        }
+                    },
+                )
                 .map_err(|e| io::Error::other(e.to_string()))?;
             Ok(())
         },
@@ -215,7 +220,8 @@ mod tests {
             &[4.0, 4.0, 4.0, 4.0],
             &[(0, 1), (1, 2), (2, 3)],
             &[1.0, 1.0, 1.0],
-        );
+        )
+        .unwrap();
 
         let expected = 2.0 * std::f64::consts::PI / 9.0;
         assert_eq!(n_districts, 3);

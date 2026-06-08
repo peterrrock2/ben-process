@@ -4,6 +4,25 @@ mod common;
 use common::*;
 
 #[test]
+fn rejects_ben_file_path_without_file_name() {
+    // A --ben-file with no file-name component (here "..") would panic in ben_stem when deriving
+    // the output path; the entry-point guard must turn it into a clean error instead.
+    // unique-plans needs no graph, so this isolates the ben-file check.
+    let stderr = run_failure(&[
+        "--mode",
+        "unique-plans",
+        "--ben-file",
+        "..",
+        "--no-progress",
+    ]);
+
+    assert!(
+        stderr.contains("path has no file name component"),
+        "stderr should explain the invalid --ben-file, got: {stderr}"
+    );
+}
+
+#[test]
 fn graph_backed_modes_require_graph_file_argument() {
     let f = fixture(&tri_plans());
     let stderr = run_failure(&[

@@ -2,7 +2,7 @@ use crate::cli::{build_tally_output_dir, build_tally_output_path};
 use crate::district::{observed_assignment_districts, sorted_district_ids};
 use crate::graph::Graph;
 use crate::output::parquet::DistrictMetricWriter;
-use crate::pipeline::{count_samples, parquet_compression, run_pipeline, PARQUET_BATCH_ROWS};
+use crate::pipeline::{parquet_compression, run_pipeline, PARQUET_BATCH_ROWS};
 use std::fs::{create_dir_all, File};
 use std::io;
 
@@ -13,7 +13,7 @@ use std::io;
 /// this sample's assignment. Keeping `observed` lets the writer emit columns only for districts
 /// that actually show up in the first assignment, which fixes the per-key parquet schemas.
 struct TallyRow {
-    sample_num: u64,
+    sample_number: u64,
     n_reps: u32,
     accepted_count: u32,
     totals: Vec<f64>,
@@ -26,22 +26,22 @@ struct TallyRow {
 fn tally_keys(
     graph: &Graph,
     assignment: &[u16],
-    attr_col_indices: &[usize],
-) -> (Vec<f64>, u16, u128) {
+    attr_column_indices: &[usize],
+) -> io::Result<(Vec<f64>, u16, u128)> {
     // The assignment is guaranteed to have one entry per graph node by `run_pipeline`'s length
-    // check; this hot loop relies on that invariant when indexing `assignment[node_idx]` below.
-    let (n_districts, observed) = observed_assignment_districts(assignment);
+    // check; this hot loop relies on that invariant when indexing `assignment[node_index]` below.
+    let (n_districts, observed) = observed_assignment_districts(assignment)?;
     let n_districts = n_districts as usize;
-    let n_keys = attr_col_indices.len();
+    let n_keys = attr_column_indices.len();
     let mut totals = vec![0.0f64; n_keys * n_districts];
-    for (k, &col_idx) in attr_col_indices.iter().enumerate() {
-        let col = &graph.attr_columns[col_idx];
-        let offset = k * n_districts;
-        for (i, &v) in col.iter().enumerate() {
-            totals[offset + assignment[i] as usize] += v;
+    for (key_index, &column_index) in attr_column_indices.iter().enumerate() {
+        let column = &graph.attr_columns[column_index];
+        let offset = key_index * n_districts;
+        for (node_index, &value) in column.iter().enumerate() {
+            totals[offset + assignment[node_index] as usize] += value;
         }
     }
-    (totals, n_districts as u16, observed)
+    Ok((totals, n_districts as u16, observed))
 }
 
 fn make_key_writer_state(
@@ -68,7 +68,9 @@ fn save_single_key_tallies_to_parquet(
     key_index: usize,
     high_compression: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let global_observed: u128 = tallies.iter().fold(0u128, |acc, t| acc | t.observed);
+    let global_observed: u128 = tallies
+        .iter()
+        .fold(0u128, |accumulator, tally| accumulator | tally.observed);
     let district_ids = sorted_district_ids(global_observed);
     let file = File::create(file_path)?;
     let mut writer = DistrictMetricWriter::new(
@@ -79,17 +81,23 @@ fn save_single_key_tallies_to_parquet(
     )?;
 
     for row in tallies {
-        let n_d = row.n_districts as usize;
-        let offset = key_index * n_d;
-        writer.push_row_with(row.sample_num, row.n_reps, row.accepted_count, |d| {
-            let di = d as usize;
-            let present = di < n_d && (row.observed & (1u128 << d)) != 0;
-            if present {
-                Some(row.totals[offset + di])
-            } else {
-                None
-            }
-        })?;
+        let n_districts = row.n_districts as usize;
+        let offset = key_index * n_districts;
+        writer.push_row_with(
+            row.sample_number,
+            row.n_reps,
+            row.accepted_count,
+            |district| {
+                let district_index = district as usize;
+                let present =
+                    district_index < n_districts && (row.observed & (1u128 << district)) != 0;
+                if present {
+                    Some(row.totals[offset + district_index])
+                } else {
+                    None
+                }
+            },
+        )?;
     }
     writer.finish()?;
 
@@ -104,36 +112,35 @@ pub fn tally_and_save_from_key_list(
     show_progress: bool,
     high_compression: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let attr_col_indices: Vec<usize> = key_list
+    let attr_column_indices: Vec<usize> = key_list
         .iter()
-        .map(|k| {
+        .map(|key| {
             graph
-                .numeric_column_index(k)
-                .unwrap_or_else(|| panic!("key {:?} not pre-loaded on graph", k))
+                .numeric_column_index(key)
+                .unwrap_or_else(|| panic!("key {:?} not pre-loaded on graph", key))
         })
         .collect();
 
     create_dir_all(build_tally_output_dir(in_file_name, output_dir))?;
 
-    let total = count_samples(in_file_name)?;
     let mut key_states: Option<Vec<DistrictMetricWriter>> = None;
     let mut district_ids: Vec<u16> = Vec::new();
 
     run_pipeline(
         in_file_name,
-        total,
         Some(graph.node_count),
         // The pipeline enforces that this district set is identical for every plan, so the schema
         // fixed from the first row below holds for the whole run.
         Some("tally"),
         |assignment, _n_reps| {
-            let (totals, n_districts, observed) = tally_keys(&graph, assignment, &attr_col_indices);
+            let (totals, n_districts, observed) =
+                tally_keys(&graph, assignment, &attr_column_indices)?;
             Ok((observed, (totals, n_districts, observed)))
         },
         |step, n_reps, accepted, row| {
             let (totals, n_districts, observed) = row;
             let row = TallyRow {
-                sample_num: step,
+                sample_number: step,
                 n_reps,
                 accepted_count: accepted,
                 totals,
@@ -160,24 +167,30 @@ pub fn tally_and_save_from_key_list(
                 );
             }
 
-            for (key_idx, state) in key_states
+            for (key_index, state) in key_states
                 .as_mut()
                 .expect("writers should exist before writing tallies")
                 .iter_mut()
                 .enumerate()
             {
-                let n_d = row.n_districts as usize;
-                let offset = key_idx * n_d;
+                let n_districts = row.n_districts as usize;
+                let offset = key_index * n_districts;
                 state
-                    .push_row_with(row.sample_num, row.n_reps, row.accepted_count, |d| {
-                        let di = d as usize;
-                        let present = di < n_d && (row.observed & (1u128 << d)) != 0;
-                        if present {
-                            Some(row.totals[offset + di])
-                        } else {
-                            None
-                        }
-                    })
+                    .push_row_with(
+                        row.sample_number,
+                        row.n_reps,
+                        row.accepted_count,
+                        |district| {
+                            let district_index = district as usize;
+                            let present = district_index < n_districts
+                                && (row.observed & (1u128 << district)) != 0;
+                            if present {
+                                Some(row.totals[offset + district_index])
+                            } else {
+                                None
+                            }
+                        },
+                    )
                     .map_err(|e| io::Error::other(e.to_string()))?;
             }
             Ok(())
@@ -238,7 +251,7 @@ mod tests {
     fn tally_keys_accumulates_multiple_keys_and_sparse_district_ids() {
         let graph = graph_with_attr_columns(vec![vec![1.0, 2.0, 3.0], vec![10.0, 20.0, 30.0]]);
 
-        let (totals, n_districts, observed) = tally_keys(&graph, &[1, 3, 1], &[0, 1]);
+        let (totals, n_districts, observed) = tally_keys(&graph, &[1, 3, 1], &[0, 1]).unwrap();
 
         assert_eq!(n_districts, 4);
         assert_eq!(observed, (1u128 << 1) | (1u128 << 3));
@@ -250,7 +263,7 @@ mod tests {
         let file = NamedTempFile::new().unwrap();
         let tallies = vec![
             TallyRow {
-                sample_num: 1,
+                sample_number: 1,
                 n_reps: 1,
                 accepted_count: 1,
                 totals: vec![0.0, 60.0],
@@ -258,7 +271,7 @@ mod tests {
                 observed: 1u128 << 1,
             },
             TallyRow {
-                sample_num: 2,
+                sample_number: 2,
                 n_reps: 1,
                 accepted_count: 2,
                 totals: vec![0.0, 0.0, 0.0, 20.0],

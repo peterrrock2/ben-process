@@ -1,7 +1,7 @@
 use crate::district::observe_district;
 use crate::graph::Graph;
 use crate::output::parquet::F64MetricWriter;
-use crate::pipeline::{count_samples, parquet_compression, run_pipeline, PARQUET_BATCH_ROWS};
+use crate::pipeline::{parquet_compression, run_pipeline, PARQUET_BATCH_ROWS};
 use std::fs::File;
 use std::io;
 
@@ -15,37 +15,37 @@ use std::io;
 /// endpoints this loop already reads, so the pipeline can enforce a fixed district set without a
 /// second pass. Note this captures districts that touch at least one edge; an isolated node (degree
 /// 0, not present in a GerryChain dual graph) would not be reflected.
-fn cut_edges(graph: &Graph, assignment: &[u16]) -> (f64, u128) {
+fn cut_edges(graph: &Graph, assignment: &[u16]) -> io::Result<(f64, u128)> {
     let mut observed: u128 = 0;
     let cut_value = match &graph.edge_weights {
         Some(weights) => {
             let mut total = 0.0f64;
-            for (i, &(u, v)) in graph.edges.iter().enumerate() {
-                let du = assignment[u as usize];
-                let dv = assignment[v as usize];
-                observe_district(&mut observed, du);
-                observe_district(&mut observed, dv);
-                if du != dv {
-                    total += weights[i];
+            for (edge_index, &(node_u, node_v)) in graph.edges.iter().enumerate() {
+                let district_u = assignment[node_u as usize];
+                let district_v = assignment[node_v as usize];
+                observe_district(&mut observed, district_u)?;
+                observe_district(&mut observed, district_v)?;
+                if district_u != district_v {
+                    total += weights[edge_index];
                 }
             }
             total
         }
         None => {
             let mut count: u64 = 0;
-            for &(u, v) in graph.edges.iter() {
-                let du = assignment[u as usize];
-                let dv = assignment[v as usize];
-                observe_district(&mut observed, du);
-                observe_district(&mut observed, dv);
-                if du != dv {
+            for &(node_u, node_v) in graph.edges.iter() {
+                let district_u = assignment[node_u as usize];
+                let district_v = assignment[node_v as usize];
+                observe_district(&mut observed, district_u)?;
+                observe_district(&mut observed, district_v)?;
+                if district_u != district_v {
                     count += 1;
                 }
             }
             count as f64
         }
     };
-    (cut_value, observed)
+    Ok((cut_value, observed))
 }
 
 pub fn tally_and_save_cut_edges(
@@ -55,8 +55,6 @@ pub fn tally_and_save_cut_edges(
     show_progress: bool,
     high_compression: bool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let total = count_samples(in_file_name)?;
-
     let file = File::create(out_file_name)?;
     let mut writer = F64MetricWriter::new(
         file,
@@ -67,11 +65,10 @@ pub fn tally_and_save_cut_edges(
 
     run_pipeline(
         in_file_name,
-        total,
         Some(graph.node_count),
         Some("cut-edges"),
         |assignment, _n_reps| {
-            let (cuts, observed) = cut_edges(&graph, assignment);
+            let (cuts, observed) = cut_edges(&graph, assignment)?;
             Ok((observed, cuts))
         },
         |step, n_reps, accepted, cuts| {
@@ -118,18 +115,18 @@ mod tests {
         let graph = graph_with_edges(None);
         // Each call also returns the district set folded in from the edge endpoints it walked.
         let d12 = (1u128 << 1) | (1u128 << 2);
-        assert_eq!(cut_edges(&graph, &[1, 1, 2, 2]), (1.0, d12));
-        assert_eq!(cut_edges(&graph, &[1, 2, 1, 2]), (3.0, d12));
-        assert_eq!(cut_edges(&graph, &[7, 7, 7, 7]), (0.0, 1u128 << 7));
+        assert_eq!(cut_edges(&graph, &[1, 1, 2, 2]).unwrap(), (1.0, d12));
+        assert_eq!(cut_edges(&graph, &[1, 2, 1, 2]).unwrap(), (3.0, d12));
+        assert_eq!(cut_edges(&graph, &[7, 7, 7, 7]).unwrap(), (0.0, 1u128 << 7));
     }
 
     #[test]
     fn cut_edges_sums_aligned_weights_for_crossings() {
         let graph = graph_with_edges(Some(vec![2.0, 5.5, 3.0]));
         let d12 = (1u128 << 1) | (1u128 << 2);
-        assert_eq!(cut_edges(&graph, &[1, 1, 2, 2]), (5.5, d12));
-        assert_eq!(cut_edges(&graph, &[1, 2, 1, 2]), (10.5, d12));
-        assert_eq!(cut_edges(&graph, &[4, 4, 4, 4]), (0.0, 1u128 << 4));
+        assert_eq!(cut_edges(&graph, &[1, 1, 2, 2]).unwrap(), (5.5, d12));
+        assert_eq!(cut_edges(&graph, &[1, 2, 1, 2]).unwrap(), (10.5, d12));
+        assert_eq!(cut_edges(&graph, &[4, 4, 4, 4]).unwrap(), (0.0, 1u128 << 4));
     }
 
     fn graph_with_explicit_edges(edges: Vec<(u32, u32)>, edge_weights: Option<Vec<f64>>) -> Graph {
@@ -158,8 +155,21 @@ mod tests {
         // (0) — pinning that the cut-edges set is edge-derived, not node-derived.
         let unweighted = graph_with_explicit_edges(vec![], None);
         let weighted = graph_with_explicit_edges(vec![], Some(vec![]));
-        assert_eq!(cut_edges(&unweighted, &[1, 2, 3]), (0.0, 0u128));
-        assert_eq!(cut_edges(&weighted, &[1, 2, 3]), (0.0, 0u128));
+        assert_eq!(cut_edges(&unweighted, &[1, 2, 3]).unwrap(), (0.0, 0u128));
+        assert_eq!(cut_edges(&weighted, &[1, 2, 3]).unwrap(), (0.0, 0u128));
+    }
+
+    #[test]
+    fn cut_edges_errors_on_district_beyond_limit() {
+        // A district id >= 128 can't fit the u128 observed bitmask. cut_edges captures the set in
+        // its edge loop, so it must surface a clean error rather than silently wrapping the shift.
+        let graph = graph_with_edges(None);
+        let err = cut_edges(&graph, &[1, 1, 2, 128]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("exceeds current 128-district limit"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -170,9 +180,9 @@ mod tests {
         let graph = graph_with_edges(Some(vec![0.0, -2.5, 4.0]));
         let d12 = (1u128 << 1) | (1u128 << 2);
         // Assignment [1,2,1,2] cuts every edge: 0.0 + (-2.5) + 4.0 = 1.5.
-        assert_eq!(cut_edges(&graph, &[1, 2, 1, 2]), (1.5, d12));
+        assert_eq!(cut_edges(&graph, &[1, 2, 1, 2]).unwrap(), (1.5, d12));
         // Assignment [1,1,2,2] cuts only edge (1,2) which has weight -2.5.
-        assert_eq!(cut_edges(&graph, &[1, 1, 2, 2]), (-2.5, d12));
+        assert_eq!(cut_edges(&graph, &[1, 1, 2, 2]).unwrap(), (-2.5, d12));
     }
 
     #[test]

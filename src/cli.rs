@@ -17,7 +17,7 @@ pub enum Mode {
 #[command(
     name = "BEN Process Tool",
     about = "A tool for processing BEN files and saving outputs to Parquet or text.",
-    version = "0.1.0"
+    version
 )]
 pub struct Args {
     #[arg(short, long, default_value = "cut-edges")]
@@ -34,6 +34,10 @@ pub struct Args {
     /// for MCMC merge-split ensembles. Default: off.
     #[arg(long, default_value_t = false)]
     pub randomize_reassignments: bool,
+    /// Seed for `--randomize-reassignments` (changed-assignments mode). When omitted, a fresh
+    /// OS-seeded RNG is used and the randomized run is not reproducible.
+    #[arg(long)]
+    pub seed: Option<u64>,
     #[arg(short, long, num_args(1..))]
     pub keys: Vec<String>,
     #[arg(long)]

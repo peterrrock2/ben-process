@@ -35,8 +35,8 @@ pub fn extract_unique_plans(
 
     let total =
         run_sequential_accepted_frames(in_file_name, total_frames, None, show_progress, |frame| {
-            let h = canonical_hash(&frame.assignment);
-            if seen.insert(h) {
+            let hash = canonical_hash(&frame.assignment);
+            if seen.insert(hash) {
                 encoder.write_assignment(frame.assignment)?;
                 written += 1;
             }

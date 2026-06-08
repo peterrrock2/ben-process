@@ -46,15 +46,15 @@ pub struct AcceptedFrame {
 }
 
 fn make_progress_bar(total_samples: usize) -> ProgressBar {
-    let pb = ProgressBar::new(total_samples as u64);
-    pb.set_style(
+    let progress_bar = ProgressBar::new(total_samples as u64);
+    progress_bar.set_style(
         ProgressStyle::with_template(
             "{bar:40.cyan/blue} {pos}/{len} [{elapsed_precise} ETA {eta}]",
         )
         .unwrap()
         .progress_chars("=>-"),
     );
-    pb
+    progress_bar
 }
 
 fn decode_frame(frame: &BenFrame) -> io::Result<Vec<u16>> {
@@ -128,12 +128,12 @@ pub fn count_samples(in_file: &str) -> io::Result<usize> {
 pub fn count_frames(in_file: &str) -> io::Result<usize> {
     let file = File::open(in_file)?;
     let frames = BenDecoder::new(file)?.into_frames();
-    let mut n = 0usize;
+    let mut frame_count = 0usize;
     for frame in frames {
         frame?;
-        n += 1;
+        frame_count += 1;
     }
-    Ok(n)
+    Ok(frame_count)
 }
 
 pub fn run_sequential_accepted_frames<F>(
@@ -147,7 +147,7 @@ where
     F: FnMut(AcceptedFrame) -> Result<(), Box<dyn Error>>,
 {
     let frame_limit = max_frames.unwrap_or(total_frames);
-    let pb = show_progress.then(|| make_progress_bar(frame_limit));
+    let progress_bar = show_progress.then(|| make_progress_bar(frame_limit));
 
     let file = File::open(in_file)?;
     let decoder = BenDecoder::new(file)?;
@@ -162,13 +162,13 @@ where
             n_reps,
         })?;
 
-        if let Some(pb) = &pb {
-            pb.inc(1);
+        if let Some(progress_bar) = &progress_bar {
+            progress_bar.inc(1);
         }
     }
 
-    if let Some(pb) = pb {
-        pb.finish_and_clear();
+    if let Some(progress_bar) = progress_bar {
+        progress_bar.finish_and_clear();
     }
 
     Ok(accepted_count)
@@ -196,9 +196,11 @@ where
 /// that enforces "every plan in the ensemble uses the same district labels" for every graph-driven
 /// mode at once. Pass `None` for label-invariant modes (unique plans), which must not be
 /// constrained this way.
+///
+/// The total sample count needed to size the progress bar is computed here (a single extra pass
+/// over the file) only when `show_progress` is set, so `--no-progress` runs never pay for it.
 pub fn run_pipeline<Row, P, F>(
     in_file: &str,
-    total_samples: usize,
     expected_assignment_len: Option<usize>,
     district_set_label: Option<&str>,
     process: P,
@@ -218,7 +220,11 @@ where
         .unwrap_or_default();
     eprintln!("Reading {:?}...", basename);
 
-    let pb = show_progress.then(|| make_progress_bar(total_samples));
+    let progress_bar = if show_progress {
+        Some(make_progress_bar(count_samples(in_file)?))
+    } else {
+        None
+    };
 
     let frames = BenDecoder::new(&ben_file)?.into_frames();
     let mut frame_batch: Vec<BenFrame> = Vec::with_capacity(BATCH);
@@ -253,8 +259,8 @@ where
             sample_count += n_reps as u64;
             accepted_count += 1;
             // Advance by n_reps so MkvChain repetitions tick the bar correctly.
-            if let Some(pb) = &pb {
-                pb.inc(n_reps as u64);
+            if let Some(progress_bar) = &progress_bar {
+                progress_bar.inc(n_reps as u64);
             }
         }
         frame_batch.clear();
@@ -268,14 +274,14 @@ where
             on_row(sample_count, n_reps as u32, accepted_count, row)?;
             sample_count += n_reps as u64;
             accepted_count += 1;
-            if let Some(pb) = &pb {
-                pb.inc(n_reps as u64);
+            if let Some(progress_bar) = &progress_bar {
+                progress_bar.inc(n_reps as u64);
             }
         }
     }
 
-    if let Some(pb) = pb {
-        pb.finish_and_clear();
+    if let Some(progress_bar) = progress_bar {
+        progress_bar.finish_and_clear();
     }
     Ok(())
 }
@@ -321,7 +327,6 @@ mod tests {
         let mut rows = Vec::new();
         run_pipeline(
             ben_file.path().to_str().unwrap(),
-            3,
             Some(4),
             None,
             |assignment, n_reps| Ok((0u128, (assignment[0], n_reps))),
@@ -367,7 +372,6 @@ mod tests {
         let ben_file = write_ben_file(BenVariant::Standard, &[vec![0, 1, 2, 1]]);
         run_pipeline(
             ben_file.path().to_str().unwrap(),
-            1,
             Some(expected_len),
             None,
             |assignment, _n_reps| Ok((0u128, assignment.len())),
@@ -414,7 +418,6 @@ mod tests {
         let mut rows = Vec::new();
         run_pipeline(
             ben_file.path().to_str().unwrap(),
-            n,
             Some(2),
             None,
             |assignment, _n_reps| Ok((0u128, assignment[0])),
@@ -444,7 +447,6 @@ mod tests {
         let ben_file = write_ben_file(BenVariant::Standard, &[vec![1, 1, 2, 2], vec![1, 1, 1, 1]]);
         let err = run_pipeline(
             ben_file.path().to_str().unwrap(),
-            2,
             Some(4),
             Some("cut-edges"),
             |assignment, _n_reps| {
@@ -473,7 +475,6 @@ mod tests {
         let mut seen = 0usize;
         run_pipeline(
             ben_file.path().to_str().unwrap(),
-            2,
             None,
             None,
             |_assignment, _n_reps| Ok((0u128, ())),

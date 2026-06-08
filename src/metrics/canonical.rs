@@ -17,14 +17,14 @@ pub fn canonical_hash(assignment: &[u16]) -> u128 {
 
     let mut hasher = Xxh3::new();
     for &label in assignment {
-        let idx = label as usize;
-        let canonical = if remap[idx] == u16::MAX {
+        let label_index = label as usize;
+        let canonical = if remap[label_index] == u16::MAX {
             let id = next_id;
-            remap[idx] = id;
+            remap[label_index] = id;
             next_id += 1;
             id
         } else {
-            remap[idx]
+            remap[label_index]
         };
         hasher.update(&canonical.to_le_bytes());
     }
@@ -124,8 +124,8 @@ mod tests {
         for _ in 0..200 {
             let plan = random_binary_plan_with_both_labels(&mut rng, 24);
             let mut changed = plan.clone();
-            let idx = rng.random_range(0..changed.len());
-            changed[idx] = if changed[idx] == 1 { 2 } else { 1 };
+            let flip_index = rng.random_range(0..changed.len());
+            changed[flip_index] = if changed[flip_index] == 1 { 2 } else { 1 };
 
             assert_ne!(plan, changed);
             assert_ne!(canonical_hash(&plan), canonical_hash(&changed));

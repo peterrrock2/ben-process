@@ -44,7 +44,7 @@ pub struct Graph {
     /// lengths.
     pub node_count: usize,
     /// Numeric node attributes the caller asked for, one column per key.
-    /// `attr_columns[col_idx][node_idx]` is the parsed f64 value.
+    /// `attr_columns[column_index][node_index]` is the parsed f64 value.
     pub attr_columns: Vec<Vec<f64>>,
     /// Key → column index into `attr_columns`.
     pub attr_index: HashMap<String, usize>,
@@ -72,7 +72,7 @@ impl Graph {
 
     pub fn numeric_column(&self, key: &str) -> Option<&[f64]> {
         self.numeric_column_index(key)
-            .map(|idx| self.attr_columns[idx].as_slice())
+            .map(|column_index| self.attr_columns[column_index].as_slice())
     }
 
     pub fn region_column_index(&self, key: &str) -> Option<usize> {
@@ -91,9 +91,9 @@ fn parse_region_id(node: &Value, key: &str) -> Option<String> {
     let value = &node[key];
     match value {
         Value::Null => None,
-        Value::Number(n) => {
-            let v = n.as_f64()?;
-            if v.is_nan() {
+        Value::Number(number) => {
+            let numeric_value = number.as_f64()?;
+            if numeric_value.is_nan() {
                 None
             } else {
                 Some(value.to_string())
@@ -113,19 +113,19 @@ fn parse_region_id(node: &Value, key: &str) -> Option<String> {
 }
 
 fn parse_numeric(node: &Value, key: &str) -> io::Result<f64> {
-    let extracted_val = node.get(key).ok_or_else(|| {
+    let extracted_value = node.get(key).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("missing numeric graph key {:?} on node {:?}", key, node),
         )
     })?;
-    let parsed = match extracted_val {
+    let parsed = match extracted_value {
         Value::Number(n) => n.as_f64().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
                     "non-f64 numeric graph value for key {:?}: {:?}",
-                    key, extracted_val
+                    key, extracted_value
                 ),
             )
         })?,
@@ -134,7 +134,7 @@ fn parse_numeric(node: &Value, key: &str) -> io::Result<f64> {
                 io::ErrorKind::InvalidData,
                 format!(
                     "invalid numeric graph value for key {:?}: {:?} on node {:?}",
-                    key, extracted_val, node
+                    key, extracted_value, node
                 ),
             )
         })?,
@@ -143,7 +143,7 @@ fn parse_numeric(node: &Value, key: &str) -> io::Result<f64> {
                 io::ErrorKind::InvalidData,
                 format!(
                     "invalid numeric graph value for key {:?}: {:?} on node {:?}",
-                    key, extracted_val, node
+                    key, extracted_value, node
                 ),
             ))
         }
@@ -159,7 +159,7 @@ fn parse_numeric(node: &Value, key: &str) -> io::Result<f64> {
             io::ErrorKind::InvalidData,
             format!(
                 "non-finite numeric graph value for key {:?}: {:?} on node {:?}",
-                key, extracted_val, node
+                key, extracted_value, node
             ),
         ))
     }
@@ -204,33 +204,45 @@ pub fn load_graph(
         )
     })?;
 
+    // Edges are symmetrized via `(min, max)` dedup, which silently mangles a directed graph. Reject
+    // it rather than producing an undirected reinterpretation the caller never asked for.
+    if graph_data.directed {
+        return Err(Box::new(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "graph {:?} is marked directed; ben-process only supports undirected dual graphs",
+                file_path
+            ),
+        )));
+    }
+
     // --- numeric node attributes ---
     let mut attr_columns: Vec<Vec<f64>> =
         Vec::with_capacity(request.numeric_keys.len() + request.partial_numeric_keys.len());
     let mut attr_index: HashMap<String, usize> =
         HashMap::with_capacity(request.numeric_keys.len() + request.partial_numeric_keys.len());
     for key in &request.numeric_keys {
-        let col: Vec<f64> = graph_data
+        let column: Vec<f64> = graph_data
             .nodes
             .iter()
             .enumerate()
-            .map(|(idx, node)| {
+            .map(|(node_index, node)| {
                 parse_numeric(node, key).map_err(|e| {
                     io::Error::new(
                         e.kind(),
                         format!(
                             "failed to load numeric graph key {:?} at node {}: {}",
-                            key, idx, e
+                            key, node_index, e
                         ),
                     )
                 })
             })
             .collect::<io::Result<Vec<_>>>()?;
         attr_index.insert(key.clone(), attr_columns.len());
-        attr_columns.push(col);
+        attr_columns.push(column);
     }
     for key in &request.partial_numeric_keys {
-        let col: Vec<f64> = graph_data
+        let column: Vec<f64> = graph_data
             .nodes
             .iter()
             .map(|node| {
@@ -240,7 +252,7 @@ pub fn load_graph(
             })
             .collect();
         attr_index.insert(key.clone(), attr_columns.len());
-        attr_columns.push(col);
+        attr_columns.push(column);
     }
 
     // --- interned region ids ---
@@ -250,19 +262,19 @@ pub fn load_graph(
     let mut region_id_counts: Vec<u32> = Vec::with_capacity(request.region_keys.len());
     for key in &request.region_keys {
         let mut interner: HashMap<String, u32> = HashMap::new();
-        let col: Vec<Option<u32>> = graph_data
+        let column: Vec<Option<u32>> = graph_data
             .nodes
             .iter()
             .map(|node| {
-                parse_region_id(node, key).map(|rid| {
+                parse_region_id(node, key).map(|region_id| {
                     let next = interner.len() as u32;
-                    *interner.entry(rid).or_insert(next)
+                    *interner.entry(region_id).or_insert(next)
                 })
             })
             .collect();
         region_index.insert(key.clone(), region_columns.len());
         region_id_counts.push(interner.len() as u32);
-        region_columns.push(col);
+        region_columns.push(column);
     }
 
     // --- flat dedup'd edges + (optionally) parallel weight vector ---
@@ -294,16 +306,16 @@ pub fn load_graph(
     let mut edge_set: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
     let mut edge_weights_map: HashMap<(u32, u32), f64> = HashMap::new();
     let edge_weight_key = request.edge_weight.as_ref().map(|edge| edge.key.as_str());
-    for (source_idx, adjacency_val) in graph_data.adjacency.iter().enumerate() {
-        let src = source_idx as u32;
-        let adj = adjacency_val.as_array().ok_or_else(|| {
+    for (source_index, adjacency_val) in graph_data.adjacency.iter().enumerate() {
+        let source = source_index as u32;
+        let neighbors = adjacency_val.as_array().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("graph adjacency entry {} is not an array", source_idx),
+                format!("graph adjacency entry {} is not an array", source_index),
             )
         })?;
-        for target_data in adj {
-            let tgt = target_data
+        for target_data in neighbors {
+            let target_id = target_data
                 .get("id")
                 .and_then(Value::as_u64)
                 .ok_or_else(|| {
@@ -311,24 +323,27 @@ pub fn load_graph(
                         io::ErrorKind::InvalidData,
                         format!(
                             "graph adjacency entry {} has edge without numeric id: {:?}",
-                            source_idx, target_data
+                            source_index, target_data
                         ),
                     )
-                })? as u32;
-            if tgt as usize >= node_count {
+                })?;
+            // Validate the full u64 against the node count *before* narrowing to u32, so a huge id
+            // can't wrap to a small in-range index and silently create the wrong edge.
+            if target_id >= node_count as u64 {
                 return Err(Box::new(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
                         "graph adjacency entry {} references node id {} but the graph has only {} nodes",
-                        source_idx, tgt, node_count
+                        source_index, target_id, node_count
                     ),
                 )));
             }
-            let edge = (src.min(tgt), src.max(tgt));
+            let target = target_id as u32;
+            let edge = (source.min(target), source.max(target));
             edge_set.insert(edge);
 
-            if let Some(wkey) = edge_weight_key {
-                if let Some(weight) = target_data.get(wkey).and_then(parse_numeric_opt) {
+            if let Some(weight_key) = edge_weight_key {
+                if let Some(weight) = target_data.get(weight_key).and_then(parse_numeric_opt) {
                     // .insert (overwrite) — matches old last-seen-wins behavior.
                     edge_weights_map.insert(edge, weight);
                 }
@@ -338,14 +353,14 @@ pub fn load_graph(
 
     let mut edges: Vec<(u32, u32)> = edge_set.into_iter().collect();
     edges.sort_unstable();
-    let edge_weights: Option<Vec<f64>> = request.edge_weight.map(|edge| {
+    let edge_weights: Option<Vec<f64>> = request.edge_weight.map(|edge_weight_request| {
         edges
             .iter()
-            .map(|e| {
+            .map(|edge| {
                 edge_weights_map
-                    .get(e)
+                    .get(edge)
                     .copied()
-                    .unwrap_or(edge.default_value)
+                    .unwrap_or(edge_weight_request.default_value)
             })
             .collect()
     });
@@ -628,6 +643,30 @@ mod tests {
         assert_eq!(parse_numeric_opt(&json!("NaN")), None);
         assert_eq!(parse_numeric_opt(&json!("inf")), None);
         assert_eq!(parse_numeric_opt(&json!("Infinity")), None);
+    }
+
+    #[test]
+    fn load_graph_rejects_directed_graph() {
+        // Edges are symmetrized by (min,max) dedup, so a directed graph would be silently
+        // reinterpreted as undirected. Reject it instead.
+        let graph_json = json!({
+            "directed": true,
+            "multigraph": false,
+            "graph": [],
+            "nodes": [ { "pop": 1.0 }, { "pop": 2.0 } ],
+            "adjacency": [ [ { "id": 1 } ], [ { "id": 0 } ] ]
+        });
+        let graph_file = write_graph(graph_json);
+
+        let err = load_graph(
+            graph_file.path().to_str().unwrap(),
+            GraphLoadRequest::default(),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("is marked directed"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

@@ -6,37 +6,43 @@ use std::io;
 /// this representation is widened.
 pub(crate) const MAX_DISTRICTS: u16 = 128;
 
-/// Fold a single district id into an observed bitmask, panicking past the dense-bitmask limit.
+/// Fold a single district id into an observed bitmask, erroring past the dense-bitmask limit.
 ///
 /// Shared by every metric so the set capture is bound-checked identically wherever it happens — a
 /// raw `1u128 << district_id` would silently wrap (`1 << 128 == 1`) in release builds for ids >=
-/// 128.
+/// 128. Returns a typed error (rather than panicking inside a rayon worker) so a plan with more
+/// districts than the bitmask supports fails the run cleanly.
 #[inline]
-pub(crate) fn observe_district(observed: &mut u128, district_id: u16) {
+pub(crate) fn observe_district(observed: &mut u128, district_id: u16) -> io::Result<()> {
     if district_id >= MAX_DISTRICTS {
-        panic!(
-            "district id {} exceeds current {}-district limit; widen the observed bitmask",
-            district_id, MAX_DISTRICTS
-        );
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "district id {} exceeds current {}-district limit; widen the observed bitmask",
+                district_id, MAX_DISTRICTS
+            ),
+        ));
     }
     *observed |= 1u128 << district_id;
+    Ok(())
 }
 
 /// Returns `(n_districts, observed_mask)` for an assignment.
 ///
 /// `n_districts` is `max(assignment) + 1`, preserving the existing dense-buffer shape used by
 /// metric hot loops. `observed_mask` has bit `d` set when district `d` appears in the assignment.
-pub(crate) fn observed_assignment_districts(assignment: &[u16]) -> (u16, u128) {
+/// Errors if any district id is at or beyond the [`MAX_DISTRICTS`] bitmask limit.
+pub(crate) fn observed_assignment_districts(assignment: &[u16]) -> io::Result<(u16, u128)> {
     let mut observed: u128 = 0;
-    let mut max_d: u16 = 0;
+    let mut max_district: u16 = 0;
     for &district_id in assignment {
-        observe_district(&mut observed, district_id);
-        if district_id > max_d {
-            max_d = district_id;
+        observe_district(&mut observed, district_id)?;
+        if district_id > max_district {
+            max_district = district_id;
         }
     }
 
-    (max_d + 1, observed)
+    Ok((max_district + 1, observed))
 }
 
 /// Bits set in `mask`, returned in ascending order.
@@ -104,16 +110,20 @@ mod tests {
 
     #[test]
     fn observed_assignment_districts_returns_dense_count_and_mask() {
-        let (n_districts, observed) = observed_assignment_districts(&[1, 3, 1]);
+        let (n_districts, observed) = observed_assignment_districts(&[1, 3, 1]).unwrap();
 
         assert_eq!(n_districts, 4);
         assert_eq!(observed, (1u128 << 1) | (1u128 << 3));
     }
 
     #[test]
-    #[should_panic(expected = "district id 128 exceeds current 128-district limit")]
-    fn observed_assignment_districts_panics_when_assignment_exceeds_supported_limit() {
-        let _ = observed_assignment_districts(&[128]);
+    fn observed_assignment_districts_errors_when_assignment_exceeds_supported_limit() {
+        let err = observed_assignment_districts(&[128]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("district id 128 exceeds current 128-district limit"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

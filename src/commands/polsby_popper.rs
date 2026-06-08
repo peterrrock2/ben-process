@@ -9,23 +9,20 @@ pub fn run(args: Args) -> std::result::Result<(), Box<dyn std::error::Error>> {
         .shared_perim_key
         .clone()
         .unwrap_or_else(|| "shared_perim".to_string());
-    let (perim_key, boundary_perim_key) = match (&args.perim_key, &args.boundary_perim_key) {
-        (Some(perim_key), _) => Some(perim_key.clone()),
-        (None, _) => None,
-    }
-    .map_or_else(
-        || {
-            (
-                None,
-                Some(
-                    args.boundary_perim_key
-                        .clone()
-                        .unwrap_or_else(|| "boundary_perim".to_string()),
-                ),
-            )
-        },
-        |perim_key| (Some(perim_key), args.boundary_perim_key.clone()),
-    );
+    // `--perim-key` (direct node perimeter) takes precedence; only when it is absent do we fall
+    // back to deriving from boundary perimeter, defaulting that key to the GerryChain
+    // "boundary_perim".
+    let (perim_key, boundary_perim_key) = match &args.perim_key {
+        Some(perim_key) => (Some(perim_key.clone()), args.boundary_perim_key.clone()),
+        None => (
+            None,
+            Some(
+                args.boundary_perim_key
+                    .clone()
+                    .unwrap_or_else(|| "boundary_perim".to_string()),
+            ),
+        ),
+    };
 
     let mut numeric_keys = vec![area_key.clone()];
     let mut partial_numeric_keys = Vec::new();
@@ -60,7 +57,6 @@ pub fn run(args: Args) -> std::result::Result<(), Box<dyn std::error::Error>> {
         area_key.as_str(),
         perim_key.as_deref(),
         boundary_perim_key.as_deref(),
-        shared_perim_key.as_str(),
         !args.no_progress,
         args.high_compression,
     )

@@ -1,5 +1,6 @@
 use crate::cli::{Args, Mode};
 use std::io;
+use std::path::Path;
 
 mod changed_assignments;
 mod cut_edges;
@@ -10,6 +11,18 @@ mod tally_keys;
 mod unique_plans;
 
 pub fn run(args: Args) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    // Every mode derives its output name from the BEN file's basename; a path with no file-name
+    // component (empty, `.`, `..`, `/`) would otherwise panic in `ben_stem`. Reject it up front.
+    if Path::new(&args.ben_file).file_name().is_none() {
+        return Err(Box::new(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "invalid --ben-file {:?}: path has no file name component",
+                args.ben_file
+            ),
+        )));
+    }
+
     match args.mode.clone() {
         Mode::TallyKeys => tally_keys::run(args),
         Mode::CutEdges => cut_edges::run(args),
