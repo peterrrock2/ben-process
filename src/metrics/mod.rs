@@ -1,4 +1,5 @@
 pub mod canonical;
+pub mod changed_assignments;
 pub mod cut_edges;
 pub mod extract_unique_plans;
 pub mod polsby_popper;
