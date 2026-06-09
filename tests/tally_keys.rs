@@ -184,3 +184,37 @@ fn tally_keys_fails_when_later_frames_introduce_unseen_district_ids() {
         "stderr should explain the streaming-schema failure, got: {stderr}"
     );
 }
+
+/// MkvChain BEN: `step` advances by `n_reps`, `accepted_count` by 1, and per-district tallies are
+/// emitted once per frame (not once per repeated sample).
+///
+/// Frames after coalescing:
+///   frame 1: [1,1,1,2,2,2], count=2 → pop d1=60,  d2=150
+///   frame 2: [1,2,1,2,1,2], count=1 → pop d1=90,  d2=120
+#[test]
+fn tally_keys_mkvchain_step_advances_by_n_reps() {
+    let f = fixture_mkv(&[
+        vec![1, 1, 1, 2, 2, 2],
+        vec![1, 1, 1, 2, 2, 2], // coalesces with previous → count=2
+        vec![1, 2, 1, 2, 1, 2],
+    ]);
+    run(&[
+        "--mode",
+        "tally-keys",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--keys",
+        "pop",
+        "--no-progress",
+    ]);
+    let df = read_parquet(&f.dir.join("plans_tallies").join("pop_tally_plans.parquet"));
+    assert_eq!(f64_col(&df, "district_1"), vec![60.0, 90.0]);
+    assert_eq!(f64_col(&df, "district_2"), vec![150.0, 120.0]);
+    assert_eq!(u64_col(&df, "step"), vec![1, 3]);
+    assert_eq!(u32_col(&df, "n_reps"), vec![2, 1]);
+    assert_eq!(u32_col(&df, "accepted_count"), vec![1, 2]);
+}

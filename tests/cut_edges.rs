@@ -182,3 +182,36 @@ fn cut_edges_fails_when_output_dir_is_an_existing_file() {
         String::from_utf8_lossy(&output.stderr),
     );
 }
+
+/// MkvChain BEN coalesces consecutive identical assignments into one frame with `count > 1`.
+/// Through `run_pipeline` that means `step` advances by `n_reps` while `accepted_count` advances by
+/// 1, and the `n_reps` column reflects the repetition count. Standard-BEN tests only ever see
+/// `n_reps == 1`.
+///
+/// Frames after run-length coalescing:
+///   frame 1: [1,1,1,2,2,2], count=2 → cut_edges=2
+///   frame 2: [1,2,1,2,1,2], count=1 → cut_edges=6
+#[test]
+fn cut_edges_mkvchain_step_advances_by_n_reps() {
+    let f = fixture_mkv(&[
+        vec![1, 1, 1, 2, 2, 2],
+        vec![1, 1, 1, 2, 2, 2], // coalesces with previous → count=2
+        vec![1, 2, 1, 2, 1, 2],
+    ]);
+    run(&[
+        "--mode",
+        "cut-edges",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--no-progress",
+    ]);
+    let df = read_parquet(&f.dir.join("plans_cut_edges.parquet"));
+    assert_eq!(f64_col(&df, "cut_edges"), vec![2.0, 6.0]);
+    assert_eq!(u64_col(&df, "step"), vec![1, 3]);
+    assert_eq!(u32_col(&df, "n_reps"), vec![2, 1]);
+    assert_eq!(u32_col(&df, "accepted_count"), vec![1, 2]);
+}

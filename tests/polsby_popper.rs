@@ -294,3 +294,46 @@ fn polsby_popper_handles_empty_ben_input() {
         ]
     );
 }
+
+/// MkvChain BEN: `step` advances by `n_reps`, `accepted_count` by 1, and one score row is emitted
+/// per frame. Reuses the known scores from `polsby_popper_with_explicit_perimeter_key`.
+///
+/// Frames after coalescing:
+///   frame 1: [1,1,2,2], count=2 → d1=d2=2*PI/9
+///   frame 2: [1,2,2,2], count=1 → d1=PI/4, d2=3*PI/16
+#[test]
+fn polsby_popper_mkvchain_step_advances_by_n_reps() {
+    let f = polsby_fixture_mkv(&[
+        vec![1, 1, 2, 2],
+        vec![1, 1, 2, 2], // coalesces with previous → count=2
+        vec![1, 2, 2, 2],
+    ]);
+    run(&[
+        "--mode",
+        "polsby-popper",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--area-key",
+        "area",
+        "--perim-key",
+        "perim",
+        "--shared-perim-key",
+        "shared_perim",
+        "--no-progress",
+    ]);
+    let df = read_parquet(&f.dir.join("plans_polsby_popper.parquet"));
+    let expected_d1 = [2.0 * std::f64::consts::PI / 9.0, std::f64::consts::PI / 4.0];
+    let expected_d2 = [
+        2.0 * std::f64::consts::PI / 9.0,
+        3.0 * std::f64::consts::PI / 16.0,
+    ];
+    assert_f64_vec_close(&f64_col(&df, "district_1"), &expected_d1);
+    assert_f64_vec_close(&f64_col(&df, "district_2"), &expected_d2);
+    assert_eq!(u64_col(&df, "step"), vec![1, 3]);
+    assert_eq!(u32_col(&df, "n_reps"), vec![2, 1]);
+    assert_eq!(u32_col(&df, "accepted_count"), vec![1, 2]);
+}

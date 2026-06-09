@@ -175,6 +175,23 @@ pub(crate) fn fixture(plans: &[Vec<u16>]) -> Fixture {
     }
 }
 
+/// Like [`fixture`] but encodes the plans as MkvChain BEN, so consecutive identical assignments
+/// coalesce into one frame with `count > 1`. Used to verify the `step`/`n_reps` accounting.
+pub(crate) fn fixture_mkv(plans: &[Vec<u16>]) -> Fixture {
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let graph = dir.join("graph.json");
+    let ben = dir.join("plans.jsonl.ben");
+    write_fixture_graph(&graph);
+    write_fixture_ben_mkv(&ben, plans);
+    Fixture {
+        _tmp: tmp,
+        dir,
+        graph,
+        ben,
+    }
+}
+
 pub(crate) fn polsby_fixture(plans: &[Vec<u16>]) -> Fixture {
     let tmp = tempdir().unwrap();
     let dir = tmp.path().to_path_buf();
@@ -182,6 +199,22 @@ pub(crate) fn polsby_fixture(plans: &[Vec<u16>]) -> Fixture {
     let ben = dir.join("plans.jsonl.ben");
     write_polsby_fixture_graph(&graph);
     write_fixture_ben(&ben, plans);
+    Fixture {
+        _tmp: tmp,
+        dir,
+        graph,
+        ben,
+    }
+}
+
+/// MkvChain counterpart of [`polsby_fixture`].
+pub(crate) fn polsby_fixture_mkv(plans: &[Vec<u16>]) -> Fixture {
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let graph = dir.join("graph.json");
+    let ben = dir.join("plans.jsonl.ben");
+    write_polsby_fixture_graph(&graph);
+    write_fixture_ben_mkv(&ben, plans);
     Fixture {
         _tmp: tmp,
         dir,
