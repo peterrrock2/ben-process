@@ -1,5 +1,6 @@
 use crate::cli::build_output_path;
 use crate::district::{observed_assignment_districts, validate_district_set_unchanged};
+use crate::error::BenError;
 use crate::pipeline::{count_frames, run_sequential_accepted_frames};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -163,7 +164,7 @@ pub fn tally_and_save_changed_assignments(
     seed: Option<u64>,
     show_progress: bool,
     output_dir: Option<&str>,
-) -> std::result::Result<(), Box<dyn std::error::Error>> {
+) -> crate::error::Result<()> {
     // A seed makes `--randomize-reassignments` reproducible; without one we seed from the
     // OS-backed thread RNG.
     let mut rng = match seed {
@@ -243,7 +244,7 @@ pub fn tally_and_save_changed_assignments(
     )?;
 
     if full_count == 0 {
-        return Err(Box::new(io::Error::other("No data found")));
+        return Err(BenError::NoData);
     }
 
     let final_count = finalize_changed_counts(&diff_count, line_count, normalize);

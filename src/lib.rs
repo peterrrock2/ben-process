@@ -6,6 +6,7 @@
 pub mod cli;
 mod commands;
 mod district;
+pub mod error;
 pub mod graph;
 pub mod metrics;
 mod output;
@@ -13,6 +14,6 @@ pub mod pipeline;
 
 use cli::Args;
 
-pub fn run(args: Args) -> std::result::Result<(), Box<dyn std::error::Error>> {
+pub fn run(args: Args) -> crate::error::Result<()> {
     commands::run(args)
 }

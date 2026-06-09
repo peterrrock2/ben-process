@@ -16,7 +16,7 @@ pub fn extract_unique_plans(
     in_file_name: &str,
     out_file_name: &str,
     show_progress: bool,
-) -> std::result::Result<(), Box<dyn std::error::Error>> {
+) -> crate::error::Result<()> {
     let basename = Path::new(in_file_name)
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())

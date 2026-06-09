@@ -40,7 +40,7 @@ impl F64MetricWriter {
         metric_column_name: impl Into<String>,
         compression: ParquetCompression,
         batch_rows: usize,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    ) -> crate::error::Result<Self> {
         let metric_column_name = metric_column_name.into();
         let empty_df = empty_f64_metric_df(&metric_column_name)?;
         let writer = ParquetWriter::new(file)
@@ -64,7 +64,7 @@ impl F64MetricWriter {
         n_reps: u32,
         accepted_count: u64,
         value: f64,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> crate::error::Result<()> {
         self.sample_numbers.push(step);
         self.n_reps_numbers.push(n_reps);
         self.accepted_numbers.push(accepted_count);
@@ -77,13 +77,13 @@ impl F64MetricWriter {
         Ok(())
     }
 
-    pub(crate) fn finish(mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub(crate) fn finish(mut self) -> crate::error::Result<()> {
         self.flush()?;
         self.writer.finish()?;
         Ok(())
     }
 
-    fn flush(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    fn flush(&mut self) -> crate::error::Result<()> {
         if self.sample_numbers.is_empty() {
             return Ok(());
         }
@@ -116,7 +116,7 @@ impl U32KeyedMetricWriter {
         metric_column_name: impl Into<String>,
         compression: ParquetCompression,
         batch_rows: usize,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    ) -> crate::error::Result<Self> {
         let key_column_name = key_column_name.into();
         let metric_column_name = metric_column_name.into();
         let empty_df = empty_u32_keyed_metric_df(&key_column_name, &metric_column_name)?;
@@ -144,7 +144,7 @@ impl U32KeyedMetricWriter {
         accepted_count: u64,
         key: impl Into<String>,
         value: u32,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> crate::error::Result<()> {
         self.sample_numbers.push(step);
         self.n_reps_numbers.push(n_reps);
         self.accepted_numbers.push(accepted_count);
@@ -158,13 +158,13 @@ impl U32KeyedMetricWriter {
         Ok(())
     }
 
-    pub(crate) fn finish(mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub(crate) fn finish(mut self) -> crate::error::Result<()> {
         self.flush()?;
         self.writer.finish()?;
         Ok(())
     }
 
-    fn flush(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    fn flush(&mut self) -> crate::error::Result<()> {
         if self.sample_numbers.is_empty() {
             return Ok(());
         }
@@ -199,7 +199,7 @@ impl DistrictMetricWriter {
         district_ids: Vec<u16>,
         compression: ParquetCompression,
         batch_rows: usize,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    ) -> crate::error::Result<Self> {
         let empty_df = empty_district_metric_df(&district_ids)?;
         let writer = ParquetWriter::new(file)
             .with_compression(compression)
@@ -225,7 +225,7 @@ impl DistrictMetricWriter {
         n_reps: u32,
         accepted_count: u64,
         mut value_for_district: impl FnMut(u16) -> Option<f64>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> crate::error::Result<()> {
         self.sample_numbers.push(step);
         self.n_reps_numbers.push(n_reps);
         self.accepted_numbers.push(accepted_count);
@@ -241,13 +241,13 @@ impl DistrictMetricWriter {
         Ok(())
     }
 
-    pub(crate) fn finish(mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub(crate) fn finish(mut self) -> crate::error::Result<()> {
         self.flush()?;
         self.writer.finish()?;
         Ok(())
     }
 
-    fn flush(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    fn flush(&mut self) -> crate::error::Result<()> {
         if self.sample_numbers.is_empty() {
             return Ok(());
         }

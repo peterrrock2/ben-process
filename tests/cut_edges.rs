@@ -45,9 +45,9 @@ fn cut_edges_weighted_by_edge_key() {
 }
 
 /// Asymmetric edge-weight fixture: the same edge carries a valid weight from one endpoint and a
-/// missing/non-numeric value from the other. The pre-refactor code's semantics were "last valid
-/// weight wins" (and don't store anything when the parsed value isn't numeric). Must still give 8.0
-/// for cut_edges on p0=[1,1,1,2,2,2] regardless of which endpoint's JSON entry is seen first.
+/// missing/non-numeric value from the other. The edge-weight rule is "last valid weight wins" (a
+/// non-numeric value is not stored), so cut_edges on p0=[1,1,1,2,2,2] must give 8.0 regardless of
+/// which endpoint's JSON entry is seen first.
 ///
 /// Edge (0,5): node 0 says weight missing; node 5 says weight=3.0 → must pick 3.0. Edge (2,3): node
 /// 2 says weight=5.0; node 3 says weight missing → must pick 5.0. p0 cuts (2,3) and (0,5), so

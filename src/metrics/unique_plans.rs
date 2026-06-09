@@ -14,7 +14,7 @@ pub fn count_and_save_unique_plans(
     in_file_name: &str,
     out_file_name: &str,
     show_progress: bool,
-) -> std::result::Result<(), Box<dyn std::error::Error>> {
+) -> crate::error::Result<()> {
     let mut unique: HashSet<u128> = HashSet::new();
     let mut total_frames: u64 = 0;
 

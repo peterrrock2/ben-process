@@ -3,7 +3,7 @@ use crate::commands::graph_file;
 use crate::graph::{load_graph, EdgeWeightRequest, GraphLoadRequest};
 use crate::metrics;
 
-pub fn run(args: Args) -> std::result::Result<(), Box<dyn std::error::Error>> {
+pub fn run(args: Args) -> crate::error::Result<()> {
     let graph = load_graph(
         graph_file(&args)?,
         GraphLoadRequest {

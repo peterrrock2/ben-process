@@ -24,8 +24,8 @@ fn region_metric_column_name(metric: RegionMetric) -> &'static str {
 /// Dense bitset keyed by interned region id × district id: one `Vec<u64>` of length
 /// `n_regions * words_per_region`. `words_per_region` is `ceil(n_districts / 64)` — for typical FL
 /// runs (< 64 districts) each region occupies exactly one u64, so the whole bitset is
-/// `n_regions * 8` bytes and sits in L1. Replaces the per-sample `Vec<HashSet<u16>>` allocations
-/// from Phase 2.
+/// `n_regions * 8` bytes and sits in L1.
+///
 /// `max_district` is the maximum district id in the assignment, computed once by the caller
 /// (together with the observed-district set) so it isn't re-derived per region key.
 fn region_metric_for_key(
@@ -83,7 +83,7 @@ pub fn tally_and_save_region_metric(
     metric: RegionMetric,
     show_progress: bool,
     high_compression: bool,
-) -> std::result::Result<(), Box<dyn std::error::Error>> {
+) -> crate::error::Result<()> {
     let region_column_indices: Vec<usize> = key_list
         .iter()
         .map(|key| {
@@ -140,9 +140,7 @@ pub fn tally_and_save_region_metric(
         },
         |step, n_reps, accepted, counts| {
             for (key, count) in counts {
-                writer
-                    .push(step, n_reps, accepted, key, count)
-                    .map_err(|e| io::Error::other(e.to_string()))?;
+                writer.push(step, n_reps, accepted, key, count)?;
             }
             Ok(())
         },

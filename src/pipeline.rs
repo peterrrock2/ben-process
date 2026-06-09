@@ -13,12 +13,12 @@
 //! state.
 
 use crate::district::validate_district_set_unchanged;
+use crate::error::{BenError, Result};
 use ben::decode::{count_samples_from_file, decode_ben_line, BenDecoder, BenFrame};
 use ben::utils::rle_to_vec;
 use indicatif::{ProgressBar, ProgressStyle};
 use polars::prelude::ParquetCompression;
 use rayon::prelude::*;
-use std::error::Error;
 use std::fs::File;
 use std::io::{self, Cursor};
 use std::path::Path;
@@ -78,31 +78,27 @@ fn process_batch<Row, P>(
     process: &P,
     expected_assignment_len: Option<usize>,
     frames: &[BenFrame],
-) -> io::Result<Vec<(u16, u128, Row)>>
+) -> Result<Vec<(u16, u128, Row)>>
 where
     Row: Send,
-    P: Fn(&[u16], u16) -> io::Result<(u128, Row)> + Sync,
+    P: Fn(&[u16], u16) -> Result<(u128, Row)> + Sync,
 {
     frames
         .par_iter()
-        .map(|frame| -> io::Result<(u16, u128, Row)> {
+        .map(|frame| -> Result<(u16, u128, Row)> {
             let assignment = decode_frame(frame)?;
             if let Some(expected) = expected_assignment_len {
                 // Every graph-driven metric indexes `assignment[node_idx]` while iterating a
                 // graph-length container. A too-long assignment would otherwise be silently
                 // truncated to the first `expected` entries (wrong-but-quiet tallies); a too-short
                 // one would panic deep in a metric with an opaque out-of-bounds index. Checking
-                // here, at the single point every assignment is decoded, fixes both directions for
-                // all modes at once.
+                // here, at the single point every assignment is decoded, covers both directions for
+                // every mode in one place.
                 if assignment.len() != expected {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "BEN assignment has {} entries but graph has {} nodes",
-                            assignment.len(),
-                            expected
-                        ),
-                    ));
+                    return Err(BenError::AssignmentLength {
+                        actual: assignment.len(),
+                        expected,
+                    });
                 }
             }
             // `process` returns its own district label set (folded into the single pass it already
@@ -143,15 +139,15 @@ pub fn run_sequential_accepted_frames<F>(
     max_frames: Option<usize>,
     show_progress: bool,
     mut on_frame: F,
-) -> Result<u64, Box<dyn Error>>
+) -> Result<u64>
 where
-    F: FnMut(AcceptedFrame) -> Result<(), Box<dyn Error>>,
+    F: FnMut(AcceptedFrame) -> Result<()>,
 {
     let frame_limit = max_frames.unwrap_or(total_frames);
     let progress_bar = show_progress.then(|| make_progress_bar(frame_limit));
 
     let file = File::open(in_file)?;
-    let decoder = BenDecoder::new(file)?;
+    let decoder = BenDecoder::new(file).map_err(io::Error::from)?;
     let mut accepted_count = 0u64;
 
     for record_res in decoder.take(frame_limit) {
@@ -207,11 +203,11 @@ pub fn run_pipeline<Row, P, F>(
     process: P,
     mut on_row: F,
     show_progress: bool,
-) -> io::Result<()>
+) -> Result<()>
 where
     Row: Send,
-    P: Fn(&[u16], u16) -> io::Result<(u128, Row)> + Sync,
-    F: FnMut(u64, u32, u64, Row) -> io::Result<()>,
+    P: Fn(&[u16], u16) -> Result<(u128, Row)> + Sync,
+    F: FnMut(u64, u32, u64, Row) -> Result<()>,
 {
     let ben_file = File::open(in_file)?;
 
@@ -227,7 +223,9 @@ where
         None
     };
 
-    let frames = BenDecoder::new(&ben_file)?.into_frames();
+    let frames = BenDecoder::new(&ben_file)
+        .map_err(io::Error::from)?
+        .into_frames();
     let mut frame_batch: Vec<BenFrame> = Vec::with_capacity(BATCH);
 
     let mut sample_count: u64 = 1;
@@ -237,7 +235,7 @@ where
 
     // Validate one frame's district set against the established expectation (establishing it on the
     // first frame), in BEN-file order, before its row is handed to `on_row`.
-    let mut check_district_set = |observed: u128| -> io::Result<()> {
+    let mut check_district_set = |observed: u128| -> Result<()> {
         if let Some(label) = district_set_label {
             match expected_district_set {
                 None => expected_district_set = Some(observed),
@@ -292,8 +290,6 @@ mod tests {
     use super::{count_frames, count_samples, run_pipeline, run_sequential_accepted_frames};
     use ben::encode::BenEncoder;
     use ben::BenVariant;
-    use std::error::Error;
-    use std::io;
     use tempfile::NamedTempFile;
 
     fn write_ben_file(variant: BenVariant, assignments: &[Vec<u16>]) -> NamedTempFile {
@@ -357,7 +353,7 @@ mod tests {
             false,
             |frame| {
                 rows.push((frame.accepted_count, frame.n_reps, frame.assignment));
-                Ok::<(), Box<dyn Error>>(())
+                Ok(())
             },
         )
         .unwrap();
@@ -369,7 +365,7 @@ mod tests {
     /// Run the pipeline over a single length-4 assignment, declaring a graph of `expected_len`
     /// nodes. Used by the mismatch tests below; both directions are kept as separate cases to pin
     /// that the contract is exact equality, not "at least this long".
-    fn run_pipeline_with_expected_len(expected_len: usize) -> io::Result<()> {
+    fn run_pipeline_with_expected_len(expected_len: usize) -> crate::error::Result<()> {
         let ben_file = write_ben_file(BenVariant::Standard, &[vec![0, 1, 2, 1]]);
         run_pipeline(
             ben_file.path().to_str().unwrap(),
@@ -383,9 +379,8 @@ mod tests {
 
     #[test]
     fn run_pipeline_errors_when_assignment_longer_than_graph() {
-        // A BEN file whose assignments are longer than the graph used to be silently truncated by
-        // every graph-driven metric. The pipeline now rejects the mismatch up front for all modes
-        // at once.
+        // A too-long assignment (more entries than the graph has nodes) is rejected up front rather
+        // than silently truncated by a metric.
         let err = run_pipeline_with_expected_len(3).unwrap_err();
         assert_eq!(
             err.to_string(),
@@ -407,9 +402,8 @@ mod tests {
         // Frames are popped serially and decoded in batches of `BATCH` (256). With > 2*BATCH
         // Standard frames this drives the mid-loop flush at `frame_batch.len() == BATCH` AND the
         // trailing partial-batch flush, plus the cross-batch accumulation of `sample_count` /
-        // `accepted_count`. Every other test uses < BATCH frames, so the 256-seam accounting was
-        // previously unexercised — exactly where an off-by-one in `step`/`accepted_count` would
-        // hide on real (million-frame) ensembles while the rest of the suite stayed green.
+        // `accepted_count` — the 256-frame seam, where an off-by-one in `step`/`accepted_count`
+        // could hide on real (million-frame) ensembles.
         let n = 600usize;
         // Encode each frame's index into its assignment so we can also assert in-order delivery
         // across the seam, not just the running counters.

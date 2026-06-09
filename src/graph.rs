@@ -1,15 +1,12 @@
 //! Graph representation used by every tally mode.
 //!
-//! The old representation held `Vec<serde_json::Value>` for nodes and a
-//! `HashMap<(u64,u64), HashMap<String,f64>>` for edge weights, forcing every per-sample metric to
-//! re-walk JSON and re-parse strings on every call. This module pre-parses everything the metrics
-//! need at load time into flat, integer-indexed columns. `serde_json::Value` is not held anywhere
-//! in `Graph` after [`load_graph`] returns.
+//! Everything the metrics need is pre-parsed at load time into flat, integer-indexed columns, so
+//! the per-sample hot loop never re-walks JSON or re-parses strings. `serde_json::Value` is not
+//! held anywhere in `Graph` after [`load_graph`] returns.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::error::Error;
 use std::fs::File;
 use std::io::{self, BufReader};
 
@@ -60,8 +57,8 @@ pub struct Graph {
     /// Deduplicated, sorted (min, max) edges. u32 is plenty for block graphs.
     pub edges: Vec<(u32, u32)>,
     /// When `Some`, aligned with `edges`: `edge_weights[i]` is the weight of `edges[i]` under the
-    /// single weight key the caller asked for. Edges missing the key default to 1.0 (matching the
-    /// old HashMap lookup fallback).
+    /// single weight key the caller asked for. Edges missing the key fall back to the request's
+    /// `default_value`.
     pub edge_weights: Option<Vec<f64>>,
 }
 
@@ -85,8 +82,7 @@ impl Graph {
 }
 
 /// Decide whether a node's value for a region key is meaningful (e.g. a real county id) or missing.
-/// Extracted from the old `parse_region_id` — same semantics (Null / empty / "nan" / NaN-number →
-/// `None`).
+/// Returns `None` for a JSON null, an empty or `nan` string, or a NaN number.
 fn parse_region_id(node: &Value, key: &str) -> Option<String> {
     let value = &node[key];
     match value {
@@ -186,10 +182,7 @@ fn parse_numeric_opt(value: &Value) -> Option<f64> {
 /// `GraphLoadRequest` deliberately supports at most one edge-weight column per load because every
 /// current mode needs at most one. Widen the representation only when a mode genuinely needs
 /// multiple edge columns at the same time.
-pub fn load_graph(
-    file_path: &str,
-    request: GraphLoadRequest,
-) -> std::result::Result<Graph, Box<dyn Error>> {
+pub fn load_graph(file_path: &str, request: GraphLoadRequest) -> crate::error::Result<Graph> {
     let file = File::open(file_path).map_err(|e| {
         io::Error::new(
             e.kind(),
@@ -207,13 +200,14 @@ pub fn load_graph(
     // Edges are symmetrized via `(min, max)` dedup, which silently mangles a directed graph. Reject
     // it rather than producing an undirected reinterpretation the caller never asked for.
     if graph_data.directed {
-        return Err(Box::new(io::Error::new(
+        return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
                 "graph {:?} is marked directed; ben-process only supports undirected dual graphs",
                 file_path
             ),
-        )));
+        )
+        .into());
     }
 
     // --- numeric node attributes ---
@@ -279,13 +273,11 @@ pub fn load_graph(
 
     // --- flat dedup'd edges + (optionally) parallel weight vector ---
     //
-    // Semantics match the pre-refactor code exactly:
     //   - `edge_set` tracks which (min, max) pairs exist.
     //   - `edge_weights_map` only holds entries for edges that carry at least one *numerically
     //     parseable* value for `edge_weight_key` on at least one endpoint. Missing or non-numeric
-    //     values are not stored; those edges fall back to 1.0 at lookup time.
-    //   - `.insert()` (not `.or_insert()`) — last valid weight wins, matching the old
-    //     nested-HashMap `.insert(key, weight)` behavior.
+    //     values are not stored; those edges fall back to the request's default at lookup time.
+    //   - `.insert()` (not `.or_insert()`) so the last valid weight for an edge wins.
     // `node_count` is the contract every assignment is later validated against (one entry per
     // node). The adjacency block must agree with it: one adjacency list per node, and every
     // edge endpoint a real node id. Otherwise an out-of-range id would index `assignment[id]`
@@ -293,14 +285,15 @@ pub fn load_graph(
     // under/over-count edges.
     let node_count = graph_data.nodes.len();
     if graph_data.adjacency.len() != node_count {
-        return Err(Box::new(io::Error::new(
+        return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
                 "graph has {} nodes but {} adjacency lists; node and adjacency counts must match",
                 node_count,
                 graph_data.adjacency.len()
             ),
-        )));
+        )
+        .into());
     }
 
     let mut edge_set: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
@@ -330,13 +323,14 @@ pub fn load_graph(
             // Validate the full u64 against the node count *before* narrowing to u32, so a huge id
             // can't wrap to a small in-range index and silently create the wrong edge.
             if target_id >= node_count as u64 {
-                return Err(Box::new(io::Error::new(
+                return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
                         "graph adjacency entry {} references node id {} but the graph has only {} nodes",
                         source_index, target_id, node_count
                     ),
-                )));
+                )
+                .into());
             }
             let target = target_id as u32;
             let edge = (source.min(target), source.max(target));
@@ -344,7 +338,7 @@ pub fn load_graph(
 
             if let Some(weight_key) = edge_weight_key {
                 if let Some(weight) = target_data.get(weight_key).and_then(parse_numeric_opt) {
-                    // .insert (overwrite) — matches old last-seen-wins behavior.
+                    // .insert (overwrite) so the last valid weight wins.
                     edge_weights_map.insert(edge, weight);
                 }
             }

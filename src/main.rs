@@ -13,9 +13,8 @@ fn main() {
 }
 
 /// Initialize status logging. By default, `info`-level status lines print to stderr as plain
-/// messages (matching the tool's historical output); `--quiet` turns them off. `RUST_LOG` overrides
-/// the level in either case. The final `Error:` line above is a plain `eprintln!` so it always
-/// shows, even under `--quiet`.
+/// messages; `--quiet` turns them off. `RUST_LOG` overrides the level in either case. The final
+/// `Error:` line above is a plain `eprintln!` so it always shows, even under `--quiet`.
 fn init_logging(quiet: bool) {
     let default_level = if quiet { "off" } else { "info" };
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_level))

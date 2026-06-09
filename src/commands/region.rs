@@ -4,7 +4,7 @@ use crate::graph::{load_graph, GraphLoadRequest};
 use crate::metrics;
 use crate::metrics::region::RegionMetric;
 
-pub fn run_splits(args: Args) -> std::result::Result<(), Box<dyn std::error::Error>> {
+pub fn run_splits(args: Args) -> crate::error::Result<()> {
     run(
         args,
         RegionMetric::Splits,
@@ -13,7 +13,7 @@ pub fn run_splits(args: Args) -> std::result::Result<(), Box<dyn std::error::Err
     )
 }
 
-pub fn run_pieces(args: Args) -> std::result::Result<(), Box<dyn std::error::Error>> {
+pub fn run_pieces(args: Args) -> crate::error::Result<()> {
     run(
         args,
         RegionMetric::Pieces,
@@ -27,7 +27,7 @@ fn run(
     metric: RegionMetric,
     suffix: &str,
     mode_name: &str,
-) -> std::result::Result<(), Box<dyn std::error::Error>> {
+) -> crate::error::Result<()> {
     require_keys(&args, mode_name)?;
     let graph = load_graph(
         graph_file(&args)?,

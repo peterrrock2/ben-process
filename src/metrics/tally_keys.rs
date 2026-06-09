@@ -4,7 +4,6 @@ use crate::graph::Graph;
 use crate::output::parquet::DistrictMetricWriter;
 use crate::pipeline::{parquet_compression, run_pipeline, PARQUET_BATCH_ROWS};
 use std::fs::{create_dir_all, File};
-use std::io;
 
 /// Per-sample tally result.
 ///
@@ -27,7 +26,7 @@ fn tally_keys(
     graph: &Graph,
     assignment: &[u16],
     attr_column_indices: &[usize],
-) -> io::Result<(Vec<f64>, u16, u128)> {
+) -> crate::error::Result<(Vec<f64>, u16, u128)> {
     // The assignment is guaranteed to have one entry per graph node by `run_pipeline`'s length
     // check; this hot loop relies on that invariant when indexing `assignment[node_index]` below.
     let (n_districts, observed) = observed_assignment_districts(assignment)?;
@@ -50,7 +49,7 @@ fn make_key_writer_state(
     key: &str,
     district_ids: &[u16],
     high_compression: bool,
-) -> Result<DistrictMetricWriter, Box<dyn std::error::Error>> {
+) -> crate::error::Result<DistrictMetricWriter> {
     let output_path = build_tally_output_path(ben_file_name, key, output_dir);
     let file = File::create(output_path)?;
     DistrictMetricWriter::new(
@@ -68,7 +67,7 @@ pub fn tally_and_save_from_key_list(
     key_list: Vec<String>,
     show_progress: bool,
     high_compression: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> crate::error::Result<()> {
     let attr_column_indices: Vec<usize> = key_list
         .iter()
         .map(|key| {
@@ -119,8 +118,7 @@ pub fn tally_and_save_from_key_list(
                                 high_compression,
                             )
                         })
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_err(|e| io::Error::other(e.to_string()))?,
+                        .collect::<Result<Vec<_>, _>>()?,
                 );
             }
 
@@ -132,23 +130,21 @@ pub fn tally_and_save_from_key_list(
             {
                 let n_districts = row.n_districts as usize;
                 let offset = key_index * n_districts;
-                state
-                    .push_row_with(
-                        row.sample_number,
-                        row.n_reps,
-                        row.accepted_count,
-                        |district| {
-                            let district_index = district as usize;
-                            let present = district_index < n_districts
-                                && (row.observed & (1u128 << district)) != 0;
-                            if present {
-                                Some(row.totals[offset + district_index])
-                            } else {
-                                None
-                            }
-                        },
-                    )
-                    .map_err(|e| io::Error::other(e.to_string()))?;
+                state.push_row_with(
+                    row.sample_number,
+                    row.n_reps,
+                    row.accepted_count,
+                    |district| {
+                        let district_index = district as usize;
+                        let present = district_index < n_districts
+                            && (row.observed & (1u128 << district)) != 0;
+                        if present {
+                            Some(row.totals[offset + district_index])
+                        } else {
+                            None
+                        }
+                    },
+                )?;
             }
             Ok(())
         },

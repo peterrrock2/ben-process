@@ -174,8 +174,8 @@ mod tests {
 
     #[test]
     fn build_output_path_appends_suffix_when_input_has_no_known_extension() {
-        // Old behavior silently returned the input unchanged here, which would cause File::create
-        // to overwrite the input BEN. New behavior appends.
+        // An input with no recognized BEN extension still gets the suffix appended, so the derived
+        // output path can never collide with the input file.
         assert_eq!(
             build_output_path("/tmp/runs/plans", "_cut_edges.parquet", None),
             "/tmp/runs/plans_cut_edges.parquet"

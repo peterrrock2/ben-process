@@ -3,7 +3,6 @@ use crate::graph::Graph;
 use crate::output::parquet::F64MetricWriter;
 use crate::pipeline::{parquet_compression, run_pipeline, PARQUET_BATCH_ROWS};
 use std::fs::File;
-use std::io;
 
 /// Count cut edges for a single assignment, and capture the district label set in the same pass.
 ///
@@ -15,7 +14,7 @@ use std::io;
 /// endpoints this loop already reads, so the pipeline can enforce a fixed district set without a
 /// second pass. Note this captures districts that touch at least one edge; an isolated node (degree
 /// 0, not present in a GerryChain dual graph) would not be reflected.
-fn cut_edges(graph: &Graph, assignment: &[u16]) -> io::Result<(f64, u128)> {
+fn cut_edges(graph: &Graph, assignment: &[u16]) -> crate::error::Result<(f64, u128)> {
     let mut observed: u128 = 0;
     let cut_value = match &graph.edge_weights {
         Some(weights) => {
@@ -54,7 +53,7 @@ pub fn tally_and_save_cut_edges(
     out_file_name: &str,
     show_progress: bool,
     high_compression: bool,
-) -> std::result::Result<(), Box<dyn std::error::Error>> {
+) -> crate::error::Result<()> {
     let file = File::create(out_file_name)?;
     let mut writer = F64MetricWriter::new(
         file,
@@ -71,11 +70,7 @@ pub fn tally_and_save_cut_edges(
             let (cuts, observed) = cut_edges(&graph, assignment)?;
             Ok((observed, cuts))
         },
-        |step, n_reps, accepted, cuts| {
-            writer
-                .push(step, n_reps, accepted, cuts)
-                .map_err(|e| io::Error::other(e.to_string()))
-        },
+        |step, n_reps, accepted, cuts| writer.push(step, n_reps, accepted, cuts),
         show_progress,
     )?;
 

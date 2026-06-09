@@ -10,17 +10,18 @@ mod region;
 mod tally_keys;
 mod unique_plans;
 
-pub fn run(args: Args) -> std::result::Result<(), Box<dyn std::error::Error>> {
+pub fn run(args: Args) -> crate::error::Result<()> {
     // Every mode derives its output name from the BEN file's basename; a path with no file-name
     // component (empty, `.`, `..`, `/`) would otherwise panic in `ben_stem`. Reject it up front.
     if Path::new(&args.ben_file).file_name().is_none() {
-        return Err(Box::new(io::Error::new(
+        return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
                 "invalid --ben-file {:?}: path has no file name component",
                 args.ben_file
             ),
-        )));
+        )
+        .into());
     }
 
     match args.mode.clone() {
@@ -35,24 +36,23 @@ pub fn run(args: Args) -> std::result::Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-pub(super) fn graph_file(args: &Args) -> std::result::Result<&str, Box<dyn std::error::Error>> {
+pub(super) fn graph_file(args: &Args) -> crate::error::Result<&str> {
     args.graph_file.as_deref().ok_or_else(|| {
-        Box::new(io::Error::new(
+        io::Error::new(
             io::ErrorKind::InvalidInput,
             "graph file required; pass --graph-file <PATH>",
-        )) as Box<dyn std::error::Error>
+        )
+        .into()
     })
 }
 
-pub(super) fn require_keys(
-    args: &Args,
-    mode_name: &str,
-) -> std::result::Result<(), Box<dyn std::error::Error>> {
+pub(super) fn require_keys(args: &Args, mode_name: &str) -> crate::error::Result<()> {
     if args.keys.is_empty() {
-        return Err(Box::new(io::Error::new(
+        return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("at least one key is required for {} mode", mode_name),
-        )));
+        )
+        .into());
     }
 
     Ok(())

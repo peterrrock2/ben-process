@@ -1,7 +1,7 @@
 use crate::cli::{build_output_path, Args};
 use crate::metrics;
 
-pub fn run(args: Args) -> std::result::Result<(), Box<dyn std::error::Error>> {
+pub fn run(args: Args) -> crate::error::Result<()> {
     let output_file = build_output_path(
         &args.ben_file,
         "_unique.jsonl.ben",

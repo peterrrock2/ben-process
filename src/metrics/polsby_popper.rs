@@ -3,7 +3,6 @@ use crate::graph::Graph;
 use crate::output::parquet::DistrictMetricWriter;
 use crate::pipeline::{parquet_compression, run_pipeline, PARQUET_BATCH_ROWS};
 use std::fs::File;
-use std::io;
 
 struct PolsbyRow {
     sample_number: u64,
@@ -42,7 +41,7 @@ fn polsby_popper_rows(
     total_perimeter_values: &[f64],
     edges: &[(u32, u32)],
     shared_perimeters: &[f64],
-) -> io::Result<(Vec<f64>, u16, u128)> {
+) -> crate::error::Result<(Vec<f64>, u16, u128)> {
     let (n_districts, observed) = observed_assignment_districts(assignment)?;
     let n_districts = n_districts as usize;
     let mut area_by_district = vec![0.0f64; n_districts];
@@ -80,7 +79,7 @@ pub fn tally_and_save_polsby_popper(
     boundary_perim_key: Option<&str>,
     show_progress: bool,
     high_compression: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> crate::error::Result<()> {
     let area_values = graph
         .numeric_column(area_key)
         .unwrap_or_else(|| panic!("area key {:?} not pre-loaded on graph", area_key));
@@ -138,39 +137,34 @@ pub fn tally_and_save_polsby_popper(
 
             if writer_state.is_none() {
                 let district_ids = sorted_district_ids(row.observed);
-                writer_state = Some(
-                    DistrictMetricWriter::new(
-                        file.take()
-                            .expect("output file should be available when initializing writer"),
-                        district_ids.clone(),
-                        parquet_compression(high_compression),
-                        PARQUET_BATCH_ROWS,
-                    )
-                    .map_err(|e| io::Error::other(e.to_string()))?,
-                );
+                writer_state = Some(DistrictMetricWriter::new(
+                    file.take()
+                        .expect("output file should be available when initializing writer"),
+                    district_ids.clone(),
+                    parquet_compression(high_compression),
+                    PARQUET_BATCH_ROWS,
+                )?);
             }
 
             let state = writer_state
                 .as_mut()
                 .expect("writer should exist before writing polsby-popper rows");
             let n_districts = row.n_districts as usize;
-            state
-                .push_row_with(
-                    row.sample_number,
-                    row.n_reps,
-                    row.accepted_count,
-                    |district| {
-                        let district_index = district as usize;
-                        let present = district_index < n_districts
-                            && (row.observed & (1u128 << district)) != 0;
-                        if present {
-                            Some(row.scores[district_index])
-                        } else {
-                            None
-                        }
-                    },
-                )
-                .map_err(|e| io::Error::other(e.to_string()))?;
+            state.push_row_with(
+                row.sample_number,
+                row.n_reps,
+                row.accepted_count,
+                |district| {
+                    let district_index = district as usize;
+                    let present =
+                        district_index < n_districts && (row.observed & (1u128 << district)) != 0;
+                    if present {
+                        Some(row.scores[district_index])
+                    } else {
+                        None
+                    }
+                },
+            )?;
             Ok(())
         },
         show_progress,

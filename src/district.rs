@@ -1,4 +1,4 @@
-use std::io;
+use crate::error::{BenError, Result};
 
 /// Upper bound on district ids supported by the dense bitmask path.
 ///
@@ -13,15 +13,12 @@ pub(crate) const MAX_DISTRICTS: u16 = 128;
 /// 128. Returns a typed error (rather than panicking inside a rayon worker) so a plan with more
 /// districts than the bitmask supports fails the run cleanly.
 #[inline]
-pub(crate) fn observe_district(observed: &mut u128, district_id: u16) -> io::Result<()> {
+pub(crate) fn observe_district(observed: &mut u128, district_id: u16) -> Result<()> {
     if district_id >= MAX_DISTRICTS {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "district id {} exceeds current {}-district limit; widen the observed bitmask",
-                district_id, MAX_DISTRICTS
-            ),
-        ));
+        return Err(BenError::DistrictLimitExceeded {
+            id: district_id,
+            limit: MAX_DISTRICTS,
+        });
     }
     *observed |= 1u128 << district_id;
     Ok(())
@@ -32,7 +29,7 @@ pub(crate) fn observe_district(observed: &mut u128, district_id: u16) -> io::Res
 /// `n_districts` is `max(assignment) + 1`, preserving the existing dense-buffer shape used by
 /// metric hot loops. `observed_mask` has bit `d` set when district `d` appears in the assignment.
 /// Errors if any district id is at or beyond the [`MAX_DISTRICTS`] bitmask limit.
-pub(crate) fn observed_assignment_districts(assignment: &[u16]) -> io::Result<(u16, u128)> {
+pub(crate) fn observed_assignment_districts(assignment: &[u16]) -> Result<(u16, u128)> {
     let mut observed: u128 = 0;
     let mut max_district: u16 = 0;
     for &district_id in assignment {
@@ -71,7 +68,7 @@ pub(crate) fn validate_district_set_unchanged(
     observed: u128,
     expected: u128,
     output_name: &str,
-) -> io::Result<()> {
+) -> Result<()> {
     if observed == expected {
         return Ok(());
     }
@@ -92,14 +89,11 @@ pub(crate) fn validate_district_set_unchanged(
         ));
     }
 
-    Err(io::Error::new(
-        io::ErrorKind::InvalidData,
-        format!(
-            "{}; every plan in the ensemble must use the same district labels to stream {} output with a fixed schema",
-            parts.join("; "),
-            output_name
-        ),
-    ))
+    Err(BenError::DistrictSetChanged(format!(
+        "{}; every plan in the ensemble must use the same district labels to stream {} output with a fixed schema",
+        parts.join("; "),
+        output_name
+    )))
 }
 
 #[cfg(test)]
