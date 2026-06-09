@@ -1,15 +1,16 @@
-//! Frame-parallel decode pipeline shared by the three batched metric modes
-//! (`tally-keys`, `cut-edges`, `region-*`).
+//! Frame-parallel decode pipeline shared by the batched, per-sample metric modes (`tally-keys`,
+//! `cut-edges`, `polsby-popper`, `region-*`, and `unique-plans`).
 //!
 //! The key insight: `binary-ensemble`'s `BenDecoder::next` does two things per record — a cheap
 //! byte-level frame pop AND an expensive RLE expansion into a `Vec<u16>` assignment. The two can be
-//! separated via `BenDecoder::into_frames()` (returns a `BenFrameDecoeder`) + `decode_ben_line` +
-//! `rle_to_vec`, both of which are public API.
+//! separated via `BenDecoder::into_frames()` + `decode_ben_line` + `rle_to_vec`, all public API.
 //!
 //! `run_pipeline` pops frames serially on the caller thread (fast), then hands each batch of frames
 //! to rayon for parallel RLE decode + metric compute in one fused pass. Results come back in
 //! BEN-file order and are forwarded to `on_row` along with the running `sample_count` /
-//! `accepted_count` (same semantics as the pre-Phase-4 loops).
+//! `accepted_count`. The per-accepted-frame modes (`changed-assignments`, `extract-unique-plans`)
+//! instead drive `run_sequential_accepted_frames`, which keeps frames serial for their cross-frame
+//! state.
 
 use crate::district::validate_district_set_unchanged;
 use ben::decode::{count_samples_from_file, decode_ben_line, BenDecoder, BenFrame};

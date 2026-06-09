@@ -5,15 +5,18 @@ repos:
       - id: check-merge-conflict
   - repo: local
     hooks:
-      - id: fmt-check
-        name: rustfmt
-        entry: cargo fmt -- --check
+      # Formats only the staged .rs files, in place. If rustfmt rewrites a file the commit aborts so
+      # you can review and re-stage the result. rustfmt discovers rustfmt.toml automatically.
+      - id: rustfmt
+        name: rustfmt (staged files)
+        entry: rustfmt --edition 2021
         language: system
-        pass_filenames: false
         types: [rust]
+      # clippy compiles the whole crate, so it can't be scoped to individual files; it runs once per
+      # commit that touches Rust.
       - id: clippy
         name: clippy
-        entry: cargo clippy -- -D warnings
+        entry: cargo clippy --all-targets -- -D warnings
         language: system
         pass_filenames: false
         types: [rust]

@@ -61,49 +61,6 @@ fn make_key_writer_state(
     )
 }
 
-#[cfg(test)]
-fn save_single_key_tallies_to_parquet(
-    file_path: &str,
-    tallies: &[TallyRow],
-    key_index: usize,
-    high_compression: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let global_observed: u128 = tallies
-        .iter()
-        .fold(0u128, |accumulator, tally| accumulator | tally.observed);
-    let district_ids = sorted_district_ids(global_observed);
-    let file = File::create(file_path)?;
-    let mut writer = DistrictMetricWriter::new(
-        file,
-        district_ids.clone(),
-        parquet_compression(high_compression),
-        PARQUET_BATCH_ROWS,
-    )?;
-
-    for row in tallies {
-        let n_districts = row.n_districts as usize;
-        let offset = key_index * n_districts;
-        writer.push_row_with(
-            row.sample_number,
-            row.n_reps,
-            row.accepted_count,
-            |district| {
-                let district_index = district as usize;
-                let present =
-                    district_index < n_districts && (row.observed & (1u128 << district)) != 0;
-                if present {
-                    Some(row.totals[offset + district_index])
-                } else {
-                    None
-                }
-            },
-        )?;
-    }
-    writer.finish()?;
-
-    Ok(())
-}
-
 pub fn tally_and_save_from_key_list(
     graph: Graph,
     in_file_name: &str,
@@ -227,12 +184,9 @@ pub fn tally_and_save_from_key_list(
 
 #[cfg(test)]
 mod tests {
-    use super::{save_single_key_tallies_to_parquet, tally_keys, TallyRow};
+    use super::tally_keys;
     use crate::graph::Graph;
-    use polars::prelude::{ParquetReader, SerReader};
     use std::collections::HashMap;
-    use std::fs::File;
-    use tempfile::NamedTempFile;
 
     fn graph_with_attr_columns(attr_columns: Vec<Vec<f64>>) -> Graph {
         Graph {
@@ -256,55 +210,5 @@ mod tests {
         assert_eq!(n_districts, 4);
         assert_eq!(observed, (1u128 << 1) | (1u128 << 3));
         assert_eq!(totals, vec![0.0, 4.0, 0.0, 2.0, 0.0, 40.0, 0.0, 20.0]);
-    }
-
-    #[test]
-    fn save_single_key_tallies_to_parquet_writes_union_of_observed_districts_with_nulls() {
-        let file = NamedTempFile::new().unwrap();
-        let tallies = vec![
-            TallyRow {
-                sample_number: 1,
-                n_reps: 1,
-                accepted_count: 1,
-                totals: vec![0.0, 60.0],
-                n_districts: 2,
-                observed: 1u128 << 1,
-            },
-            TallyRow {
-                sample_number: 2,
-                n_reps: 1,
-                accepted_count: 2,
-                totals: vec![0.0, 0.0, 0.0, 20.0],
-                n_districts: 4,
-                observed: 1u128 << 3,
-            },
-        ];
-
-        save_single_key_tallies_to_parquet(file.path().to_str().unwrap(), &tallies, 0, false)
-            .unwrap();
-
-        let df = ParquetReader::new(&mut File::open(file.path()).unwrap())
-            .finish()
-            .unwrap();
-        let district_1 = df.column("district_1").unwrap().f64().unwrap();
-        let district_3 = df.column("district_3").unwrap().f64().unwrap();
-
-        assert_eq!(
-            df.get_column_names()
-                .iter()
-                .map(|name| name.as_str())
-                .collect::<Vec<_>>(),
-            vec![
-                "step",
-                "n_reps",
-                "accepted_count",
-                "district_1",
-                "district_3",
-            ]
-        );
-        assert_eq!(district_1.get(0), Some(60.0));
-        assert_eq!(district_1.get(1), None);
-        assert_eq!(district_3.get(0), None);
-        assert_eq!(district_3.get(1), Some(20.0));
     }
 }

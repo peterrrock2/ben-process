@@ -194,8 +194,11 @@ fn changed_assignments_seed_makes_randomization_reproducible() {
     assert_eq!(a, b, "same seed must produce identical randomized output");
 }
 
+/// changed-assignments enforces the same fixed-district-set invariant as the pipeline modes: a
+/// later plan that introduces a new district id must fail fast. plan 0 = [1,1,2,2] establishes
+/// {1,2}; plan 1 = [1,3,2,2] introduces district 3.
 #[test]
-fn changed_assignments_reports_later_unseen_assignment_labels() {
+fn changed_assignments_fails_when_later_frame_adds_a_district() {
     let plans = vec![vec![1u16, 1, 2, 2], vec![1u16, 3, 2, 2]];
     let f = fixture(&plans);
 
@@ -210,8 +213,33 @@ fn changed_assignments_reports_later_unseen_assignment_labels() {
     ]);
 
     assert!(
-        stderr.contains("encountered assignment label 3 at index 1")
-            && stderr.contains("outside first assignment label range"),
-        "stderr should explain unseen assignment labels, got: {stderr}"
+        stderr.contains("encountered districts [3] not present in first assignment")
+            && stderr.contains("same district labels"),
+        "stderr should explain the changed-district-set failure, got: {stderr}"
+    );
+}
+
+/// The dropped-district direction too: plan 0 = [1,1,2,2] establishes {1,2}; plan 1 = [1,1,1,1]
+/// drops district 2. Its labels are within the first plan's range, so only the fixed-set check
+/// (not the permutation range check) catches it.
+#[test]
+fn changed_assignments_fails_when_later_frame_drops_a_district() {
+    let plans = vec![vec![1u16, 1, 2, 2], vec![1u16, 1, 1, 1]];
+    let f = fixture(&plans);
+
+    let stderr = run_failure(&[
+        "--mode",
+        "changed-assignments",
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--no-progress",
+    ]);
+
+    assert!(
+        stderr.contains("districts [2] from the first assignment are missing from a later plan")
+            && stderr.contains("same district labels"),
+        "stderr should explain the dropped-district failure, got: {stderr}"
     );
 }
