@@ -57,7 +57,7 @@ pub fn run(args: Args) -> std::result::Result<(), Box<dyn std::error::Error>> {
         area_key.as_str(),
         perim_key.as_deref(),
         boundary_perim_key.as_deref(),
-        !args.no_progress,
+        args.show_progress(),
         args.high_compression,
     )
 }

@@ -8,7 +8,7 @@ pub(crate) struct F64MetricWriter {
     batch_rows: usize,
     sample_numbers: Vec<u64>,
     n_reps_numbers: Vec<u32>,
-    accepted_numbers: Vec<u32>,
+    accepted_numbers: Vec<u64>,
     metric_values: Vec<f64>,
 }
 
@@ -19,7 +19,7 @@ pub(crate) struct U32KeyedMetricWriter {
     batch_rows: usize,
     sample_numbers: Vec<u64>,
     n_reps_numbers: Vec<u32>,
-    accepted_numbers: Vec<u32>,
+    accepted_numbers: Vec<u64>,
     metric_keys: Vec<String>,
     metric_values: Vec<u32>,
 }
@@ -30,7 +30,7 @@ pub(crate) struct DistrictMetricWriter {
     batch_rows: usize,
     sample_numbers: Vec<u64>,
     n_reps_numbers: Vec<u32>,
-    accepted_numbers: Vec<u32>,
+    accepted_numbers: Vec<u64>,
     district_columns: Vec<Vec<Option<f64>>>,
 }
 
@@ -62,7 +62,7 @@ impl F64MetricWriter {
         &mut self,
         step: u64,
         n_reps: u32,
-        accepted_count: u32,
+        accepted_count: u64,
         value: f64,
     ) -> Result<(), Box<dyn std::error::Error>> {
         self.sample_numbers.push(step);
@@ -141,7 +141,7 @@ impl U32KeyedMetricWriter {
         &mut self,
         step: u64,
         n_reps: u32,
-        accepted_count: u32,
+        accepted_count: u64,
         key: impl Into<String>,
         value: u32,
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -223,7 +223,7 @@ impl DistrictMetricWriter {
         &mut self,
         step: u64,
         n_reps: u32,
-        accepted_count: u32,
+        accepted_count: u64,
         mut value_for_district: impl FnMut(u16) -> Option<f64>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         self.sample_numbers.push(step);
@@ -281,7 +281,7 @@ fn empty_f64_metric_df(metric_column_name: &str) -> PolarsResult<DataFrame> {
     DataFrame::new_infer_height(vec![
         Series::new("step".into(), Vec::<u64>::new()).into(),
         Series::new("n_reps".into(), Vec::<u32>::new()).into(),
-        Series::new("accepted_count".into(), Vec::<u32>::new()).into(),
+        Series::new("accepted_count".into(), Vec::<u64>::new()).into(),
         Series::new(metric_column_name.into(), Vec::<f64>::new()).into(),
     ])
 }
@@ -290,7 +290,7 @@ fn empty_district_metric_df(district_ids: &[u16]) -> PolarsResult<DataFrame> {
     let mut df = DataFrame::new_infer_height(vec![
         Series::new("step".into(), Vec::<u64>::new()).into(),
         Series::new("n_reps".into(), Vec::<u32>::new()).into(),
-        Series::new("accepted_count".into(), Vec::<u32>::new()).into(),
+        Series::new("accepted_count".into(), Vec::<u64>::new()).into(),
     ])?;
 
     for &district_id in district_ids {
@@ -310,7 +310,7 @@ fn f64_metric_batch_to_df(
     metric_column_name: &str,
     sample_numbers: &mut Vec<u64>,
     n_reps_numbers: &mut Vec<u32>,
-    accepted_numbers: &mut Vec<u32>,
+    accepted_numbers: &mut Vec<u64>,
     metric_values: &mut Vec<f64>,
 ) -> PolarsResult<DataFrame> {
     DataFrame::new_infer_height(vec![
@@ -328,7 +328,7 @@ fn empty_u32_keyed_metric_df(
     DataFrame::new_infer_height(vec![
         Series::new("step".into(), Vec::<u64>::new()).into(),
         Series::new("n_reps".into(), Vec::<u32>::new()).into(),
-        Series::new("accepted_count".into(), Vec::<u32>::new()).into(),
+        Series::new("accepted_count".into(), Vec::<u64>::new()).into(),
         Series::new(key_column_name.into(), Vec::<String>::new()).into(),
         Series::new(metric_column_name.into(), Vec::<u32>::new()).into(),
     ])
@@ -339,7 +339,7 @@ fn u32_keyed_metric_batch_to_df(
     metric_column_name: &str,
     sample_numbers: &mut Vec<u64>,
     n_reps_numbers: &mut Vec<u32>,
-    accepted_numbers: &mut Vec<u32>,
+    accepted_numbers: &mut Vec<u64>,
     metric_keys: &mut Vec<String>,
     metric_values: &mut Vec<u32>,
 ) -> PolarsResult<DataFrame> {
@@ -356,7 +356,7 @@ fn district_metric_batch_to_df(
     district_ids: &[u16],
     sample_numbers: &mut Vec<u64>,
     n_reps_numbers: &mut Vec<u32>,
-    accepted_numbers: &mut Vec<u32>,
+    accepted_numbers: &mut Vec<u64>,
     district_columns: &mut [Vec<Option<f64>>],
 ) -> PolarsResult<DataFrame> {
     let mut df = DataFrame::new_infer_height(vec![

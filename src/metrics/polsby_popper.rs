@@ -8,7 +8,7 @@ use std::io;
 struct PolsbyRow {
     sample_number: u64,
     n_reps: u32,
-    accepted_count: u32,
+    accepted_count: u64,
     scores: Vec<f64>,
     n_districts: u16,
     observed: u128,
@@ -176,7 +176,7 @@ pub fn tally_and_save_polsby_popper(
         show_progress,
     )?;
 
-    eprintln!("Writing final output...");
+    log::info!("Writing final output...");
     let writer_state = match writer_state {
         Some(state) => state,
         None => DistrictMetricWriter::new(
@@ -188,7 +188,7 @@ pub fn tally_and_save_polsby_popper(
         )?,
     };
     writer_state.finish()?;
-    eprintln!("Done!");
+    log::info!("Done!");
     Ok(())
 }
 

@@ -35,15 +35,16 @@ pub fn count_and_save_unique_plans(
     )?;
 
     let n_unique = unique.len();
-    eprintln!(
+    log::info!(
         "Unique plans: {} (out of {} accepted frames)",
-        n_unique, total_frames
+        n_unique,
+        total_frames
     );
 
     let mut out = File::create(out_file_name)?;
     writeln!(out, "unique_plans: {}", n_unique)?;
     writeln!(out, "total_accepted_frames: {}", total_frames)?;
 
-    eprintln!("Wrote {}", out_file_name);
+    log::info!("Wrote {}", out_file_name);
     Ok(())
 }

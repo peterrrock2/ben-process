@@ -11,6 +11,6 @@ pub fn run(args: Args) -> std::result::Result<(), Box<dyn std::error::Error>> {
     metrics::extract_unique_plans::extract_unique_plans(
         &args.ben_file,
         output_file.as_str(),
-        !args.no_progress,
+        args.show_progress(),
     )
 }

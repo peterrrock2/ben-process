@@ -104,5 +104,5 @@ fn region_splits_mkvchain_step_advances_by_n_reps() {
     assert_eq!(u32_col(&df, "region_splits"), vec![2, 0]);
     assert_eq!(u64_col(&df, "step"), vec![1, 3]);
     assert_eq!(u32_col(&df, "n_reps"), vec![2, 1]);
-    assert_eq!(u32_col(&df, "accepted_count"), vec![1, 2]);
+    assert_eq!(u64_col(&df, "accepted_count"), vec![1, 2]);
 }

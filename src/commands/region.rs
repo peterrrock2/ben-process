@@ -37,6 +37,7 @@ fn run(
         },
     )?;
     let output_file = build_output_path(&args.ben_file, suffix, args.output_dir.as_deref());
+    let show_progress = args.show_progress();
 
     metrics::region::tally_and_save_region_metric(
         graph,
@@ -44,7 +45,7 @@ fn run(
         output_file.as_str(),
         args.keys,
         metric,
-        !args.no_progress,
+        show_progress,
         args.high_compression,
     )
 }

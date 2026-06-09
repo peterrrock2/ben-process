@@ -21,10 +21,10 @@ pub fn extract_unique_plans(
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
-    eprintln!("Reading {:?}...", basename);
+    log::info!("Reading {:?}...", basename);
 
     let total_frames = count_frames(in_file_name)?;
-    eprintln!("Found {} accepted plans in {:?}", total_frames, basename);
+    log::info!("Found {} accepted plans in {:?}", total_frames, basename);
 
     let out_file = File::create(out_file_name)?;
     let mut writer = BufWriter::new(out_file);
@@ -46,10 +46,11 @@ pub fn extract_unique_plans(
     encoder.finish()?;
     drop(encoder);
 
-    eprintln!(
+    log::info!(
         "Unique plans: {} (out of {} accepted frames)",
-        written, total
+        written,
+        total
     );
-    eprintln!("Wrote {}", out_file_name);
+    log::info!("Wrote {}", out_file_name);
     Ok(())
 }

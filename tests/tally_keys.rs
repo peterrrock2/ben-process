@@ -45,7 +45,7 @@ fn tally_keys_pop_per_district() {
     assert_eq!(f64_col(&df, "district_2"), vec![150.0, 120.0, 70.0]);
     assert_eq!(u64_col(&df, "step"), vec![1, 2, 3]);
     assert_eq!(u32_col(&df, "n_reps"), vec![1, 1, 1]);
-    assert_eq!(u32_col(&df, "accepted_count"), vec![1, 2, 3]);
+    assert_eq!(u64_col(&df, "accepted_count"), vec![1, 2, 3]);
     assert_eq!(
         df.get_column_names()
             .iter()
@@ -87,7 +87,7 @@ fn tally_keys_multiple_keys_write_separate_files() {
     assert_eq!(f64_col(&area_df, "district_1"), vec![6.0, 9.0, 14.0]);
     assert_eq!(f64_col(&area_df, "district_2"), vec![15.0, 12.0, 7.0]);
     assert_eq!(u64_col(&area_df, "step"), vec![1, 2, 3]);
-    assert_eq!(u32_col(&area_df, "accepted_count"), vec![1, 2, 3]);
+    assert_eq!(u64_col(&area_df, "accepted_count"), vec![1, 2, 3]);
 }
 
 #[test]
@@ -216,5 +216,5 @@ fn tally_keys_mkvchain_step_advances_by_n_reps() {
     assert_eq!(f64_col(&df, "district_2"), vec![150.0, 120.0]);
     assert_eq!(u64_col(&df, "step"), vec![1, 3]);
     assert_eq!(u32_col(&df, "n_reps"), vec![2, 1]);
-    assert_eq!(u32_col(&df, "accepted_count"), vec![1, 2]);
+    assert_eq!(u64_col(&df, "accepted_count"), vec![1, 2]);
 }

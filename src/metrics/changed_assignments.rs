@@ -175,13 +175,13 @@ pub fn tally_and_save_changed_assignments(
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
-    eprintln!("Reading {:?}...", basename);
+    log::info!("Reading {:?}...", basename);
 
     // Changed-assignments works per *accepted record* (frame), not per repeated sample. For
     // MkvChain BEN files a frame can carry a repetition count > 1 — those repeats represent the
     // SAME assignment and therefore zero flips among themselves. So we count frames, not samples.
     let total_frames = count_frames(in_ben_file)?;
-    eprintln!("Found {} accepted plans in {:?}", total_frames, basename);
+    log::info!("Found {} accepted plans in {:?}", total_frames, basename);
 
     let line_count = max_accepted.unwrap_or(total_frames);
 
@@ -247,13 +247,13 @@ pub fn tally_and_save_changed_assignments(
     }
 
     let final_count = finalize_changed_counts(&diff_count, line_count, normalize);
-    eprintln!("Final count: {}", full_count);
-    eprintln!("Writing final output...");
+    log::info!("Final count: {}", full_count);
+    log::info!("Writing final output...");
 
     out.write_all(format!("{:?}", final_count).as_bytes())?;
     out.write_all(format!("\nTotal Accepted: {:?}", line_count).as_bytes())?;
 
-    eprintln!("Done!");
+    log::info!("Done!");
     Ok(())
 }
 

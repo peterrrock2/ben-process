@@ -7,7 +7,7 @@ pub fn run(args: Args) -> std::result::Result<(), Box<dyn std::error::Error>> {
         args.max_accepted,
         args.randomize_reassignments,
         args.seed,
-        !args.no_progress,
+        args.show_progress(),
         args.output_dir.as_deref(),
     )
 }

@@ -37,6 +37,7 @@ Common options:
 - `--output-dir <OUTPUT_DIR>`
 - `--no-progress`
 - `--high-compression`
+- `--quiet` (suppress status logging and the progress bar; errors still print. `RUST_LOG` overrides the level)
 
 Available modes:
 - `tally-keys`
@@ -188,6 +189,7 @@ Optional:
 - `--normalize`
 - `--max-accepted <MAX_ACCEPTED>`
 - `--randomize-reassignments`
+- `--seed <SEED>`
 
 Output:
 - `<ben_stem>_accept_<N>_changed_assignments.txt`
@@ -196,6 +198,7 @@ Notes:
 - `N` is the number of accepted frames considered
 - for MkvChain BEN files, this mode counts accepted frames, not repeated samples
 - `--randomize-reassignments` is only appropriate for merge-split MCMC runs
+- `--seed` makes `--randomize-reassignments` reproducible; without it the run is OS-seeded
 
 Examples:
 

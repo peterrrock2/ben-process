@@ -15,7 +15,7 @@ use std::io;
 struct TallyRow {
     sample_number: u64,
     n_reps: u32,
-    accepted_count: u32,
+    accepted_count: u64,
     totals: Vec<f64>,
     n_districts: u16,
     observed: u128,
@@ -155,7 +155,7 @@ pub fn tally_and_save_from_key_list(
         show_progress,
     )?;
 
-    eprintln!("Writing final output...");
+    log::info!("Writing final output...");
     let key_states = match key_states {
         Some(states) => states,
         None => {
@@ -178,7 +178,7 @@ pub fn tally_and_save_from_key_list(
     for state in key_states {
         state.finish()?;
     }
-    eprintln!("Done!");
+    log::info!("Done!");
     Ok(())
 }
 

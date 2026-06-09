@@ -12,13 +12,14 @@ pub fn run(args: Args) -> std::result::Result<(), Box<dyn std::error::Error>> {
             ..Default::default()
         },
     )?;
+    let show_progress = args.show_progress();
     let output_dir = args.output_dir.as_deref();
     metrics::tally_keys::tally_and_save_from_key_list(
         graph,
         &args.ben_file,
         output_dir,
         args.keys,
-        !args.no_progress,
+        show_progress,
         args.high_compression,
     )
 }

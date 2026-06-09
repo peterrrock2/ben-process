@@ -24,7 +24,7 @@ pub fn run(args: Args) -> std::result::Result<(), Box<dyn std::error::Error>> {
         graph,
         &args.ben_file,
         output_file.as_str(),
-        !args.no_progress,
+        args.show_progress(),
         args.high_compression,
     )
 }

@@ -149,10 +149,10 @@ pub fn tally_and_save_region_metric(
         show_progress,
     )?;
 
-    eprintln!("Writing final output...");
+    log::info!("Writing final output...");
     writer.finish()?;
 
-    eprintln!("Done!");
+    log::info!("Done!");
     Ok(())
 }
 

@@ -41,7 +41,7 @@ pub const PARQUET_BATCH_ROWS: usize = 512 * 512;
 const BATCH: usize = 256;
 
 pub struct AcceptedFrame {
-    pub accepted_count: u32,
+    pub accepted_count: u64,
     pub assignment: Vec<u16>,
     pub n_reps: u16,
 }
@@ -158,7 +158,7 @@ where
         let (assignment, n_reps) = record_res?;
         accepted_count += 1;
         on_frame(AcceptedFrame {
-            accepted_count: accepted_count as u32,
+            accepted_count,
             assignment,
             n_reps,
         })?;
@@ -211,7 +211,7 @@ pub fn run_pipeline<Row, P, F>(
 where
     Row: Send,
     P: Fn(&[u16], u16) -> io::Result<(u128, Row)> + Sync,
-    F: FnMut(u64, u32, u32, Row) -> io::Result<()>,
+    F: FnMut(u64, u32, u64, Row) -> io::Result<()>,
 {
     let ben_file = File::open(in_file)?;
 
@@ -219,7 +219,7 @@ where
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
-    eprintln!("Reading {:?}...", basename);
+    log::info!("Reading {:?}...", basename);
 
     let progress_bar = if show_progress {
         Some(make_progress_bar(count_samples(in_file)?))
@@ -231,7 +231,7 @@ where
     let mut frame_batch: Vec<BenFrame> = Vec::with_capacity(BATCH);
 
     let mut sample_count: u64 = 1;
-    let mut accepted_count: u32 = 1;
+    let mut accepted_count: u64 = 1;
     // The first frame's district label set; every later frame must match it when enforcing.
     let mut expected_district_set: Option<u128> = None;
 
@@ -432,8 +432,8 @@ mod tests {
 
         // Standard BEN never coalesces, so n_reps == 1 and both `step` and `accepted_count` run
         // 1..=n with no gaps or repeats, and the per-frame marker arrives strictly in input order.
-        let expected: Vec<(u64, u32, u32, u16)> = (0..n)
-            .map(|i| ((i + 1) as u64, 1u32, (i + 1) as u32, i as u16))
+        let expected: Vec<(u64, u32, u64, u16)> = (0..n)
+            .map(|i| ((i + 1) as u64, 1u32, (i + 1) as u64, i as u16))
             .collect();
         assert_eq!(rows, expected);
     }

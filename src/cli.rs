@@ -58,6 +58,17 @@ pub struct Args {
     /// worth it unless you're storage-bound.
     #[arg(long, default_value_t = false)]
     pub high_compression: bool,
+    /// Suppress status logging and the progress bar. Errors are still printed. `RUST_LOG`
+    /// overrides the log level.
+    #[arg(short, long, default_value_t = false)]
+    pub quiet: bool,
+}
+
+impl Args {
+    /// Whether to draw the progress bar: only when neither `--no-progress` nor `--quiet` is set.
+    pub fn show_progress(&self) -> bool {
+        !self.no_progress && !self.quiet
+    }
 }
 
 /// Build an output path next to (or alongside) `in_ben_file` by stripping the BEN extension and

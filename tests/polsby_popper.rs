@@ -35,7 +35,7 @@ fn polsby_popper_with_explicit_perimeter_key() {
     assert_f64_vec_close(&f64_col(&df, "district_2"), &expected_d2);
     assert_eq!(u64_col(&df, "step"), vec![1, 2]);
     assert_eq!(u32_col(&df, "n_reps"), vec![1, 1]);
-    assert_eq!(u32_col(&df, "accepted_count"), vec![1, 2]);
+    assert_eq!(u64_col(&df, "accepted_count"), vec![1, 2]);
 }
 
 #[test]
@@ -335,5 +335,5 @@ fn polsby_popper_mkvchain_step_advances_by_n_reps() {
     assert_f64_vec_close(&f64_col(&df, "district_2"), &expected_d2);
     assert_eq!(u64_col(&df, "step"), vec![1, 3]);
     assert_eq!(u32_col(&df, "n_reps"), vec![2, 1]);
-    assert_eq!(u32_col(&df, "accepted_count"), vec![1, 2]);
+    assert_eq!(u64_col(&df, "accepted_count"), vec![1, 2]);
 }

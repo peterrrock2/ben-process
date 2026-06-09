@@ -21,7 +21,7 @@ fn cut_edges_unweighted() {
     assert_eq!(f64_col(&df, "cut_edges"), vec![2.0, 6.0, 2.0]);
     assert_eq!(u64_col(&df, "step"), vec![1, 2, 3]);
     assert_eq!(u32_col(&df, "n_reps"), vec![1, 1, 1]);
-    assert_eq!(u32_col(&df, "accepted_count"), vec![1, 2, 3]);
+    assert_eq!(u64_col(&df, "accepted_count"), vec![1, 2, 3]);
 }
 
 #[test]
@@ -213,5 +213,5 @@ fn cut_edges_mkvchain_step_advances_by_n_reps() {
     assert_eq!(f64_col(&df, "cut_edges"), vec![2.0, 6.0]);
     assert_eq!(u64_col(&df, "step"), vec![1, 3]);
     assert_eq!(u32_col(&df, "n_reps"), vec![2, 1]);
-    assert_eq!(u32_col(&df, "accepted_count"), vec![1, 2]);
+    assert_eq!(u64_col(&df, "accepted_count"), vec![1, 2]);
 }
