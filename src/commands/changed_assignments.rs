@@ -9,5 +9,6 @@ pub fn run(args: Args) -> crate::error::Result<()> {
         args.seed,
         args.show_progress(),
         args.output_dir.as_deref(),
+        args.high_compression,
     )
 }

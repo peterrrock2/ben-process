@@ -101,8 +101,9 @@ fn unique_plans_handles_empty_ben_input() {
         f.dir.to_str().unwrap(),
         "--no-progress",
     ]);
-    let contents = std::fs::read_to_string(f.dir.join("plans_unique_plans.txt")).unwrap();
-    assert_eq!(contents, "unique_plans: 0\ntotal_accepted_frames: 0\n");
+    let df = read_parquet(&f.dir.join("plans_unique_plans.parquet"));
+    assert_eq!(u64_col(&df, "unique_plans"), vec![0]);
+    assert_eq!(u64_col(&df, "total_accepted_frames"), vec![0]);
 }
 
 /// `extract-unique-plans` on a zero-frame BEN should produce a valid, empty Standard BEN that

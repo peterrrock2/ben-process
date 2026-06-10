@@ -3,6 +3,15 @@ mod common;
 
 use common::*;
 
+/// Read the per-node `changed_assignments` column from the mode's Parquet output for
+/// `_accept_<n>_`.
+fn read_changed_assignments(dir: &std::path::Path, accept_n: u32) -> Vec<f64> {
+    let path = dir.join(format!(
+        "plans_accept_{accept_n}_changed_assignments.parquet"
+    ));
+    f64_col(&read_parquet(&path), "changed_assignments")
+}
+
 #[test]
 fn changed_assignments_single_plan_smoke() {
     let plans = vec![vec![1u16, 1, 1, 2, 2, 2]];
@@ -16,9 +25,9 @@ fn changed_assignments_single_plan_smoke() {
         f.dir.to_str().unwrap(),
         "--no-progress",
     ]);
-    let body =
-        std::fs::read_to_string(f.dir.join("plans_accept_1_changed_assignments.txt")).unwrap();
-    assert_eq!(body, "[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]\nTotal Accepted: 1");
+    let df = read_parquet(&f.dir.join("plans_accept_1_changed_assignments.parquet"));
+    assert_eq!(u32_col(&df, "node"), vec![0, 1, 2, 3, 4, 5]);
+    assert_eq!(f64_col(&df, "changed_assignments"), vec![0.0; 6]);
 }
 
 /// Multi-plan changed-assignments: with `--randomize-reassignments` default `false`, output is
@@ -39,9 +48,10 @@ fn changed_assignments_tri_plans_deterministic() {
         f.dir.to_str().unwrap(),
         "--no-progress",
     ]);
-    let body =
-        std::fs::read_to_string(f.dir.join("plans_accept_3_changed_assignments.txt")).unwrap();
-    assert_eq!(body, "[0.0, 2.0, 1.0, 0.0, 1.0, 1.0]\nTotal Accepted: 3");
+    assert_eq!(
+        read_changed_assignments(&f.dir, 3),
+        vec![0.0, 2.0, 1.0, 0.0, 1.0, 1.0]
+    );
 }
 
 /// MkvChain BEN with a repeated assignment collapses into a frame with `count > 1`.
@@ -80,9 +90,15 @@ fn changed_assignments_mkvchain_uses_frame_count() {
         dir.to_str().unwrap(),
         "--no-progress",
     ]);
-    let body = std::fs::read_to_string(dir.join("plans_accept_2_changed_assignments.txt"))
-        .expect("output file should use frame count (2), not sample count (3)");
-    assert_eq!(body, "[0.0, 1.0, 0.0, 0.0, 1.0, 0.0]\nTotal Accepted: 2");
+    let path = dir.join("plans_accept_2_changed_assignments.parquet");
+    assert!(
+        path.exists(),
+        "output file should use frame count (2), not sample count (3)"
+    );
+    assert_eq!(
+        f64_col(&read_parquet(&path), "changed_assignments"),
+        vec![0.0, 1.0, 0.0, 0.0, 1.0, 0.0]
+    );
 }
 
 /// Normalize divides each count by `line_count - 1` = 2.
@@ -99,9 +115,10 @@ fn changed_assignments_tri_plans_normalized() {
         "--normalize",
         "--no-progress",
     ]);
-    let body =
-        std::fs::read_to_string(f.dir.join("plans_accept_3_changed_assignments.txt")).unwrap();
-    assert_eq!(body, "[0.0, 1.0, 0.5, 0.0, 0.5, 0.5]\nTotal Accepted: 3");
+    assert_eq!(
+        read_changed_assignments(&f.dir, 3),
+        vec![0.0, 1.0, 0.5, 0.0, 0.5, 0.5]
+    );
 }
 
 #[test]
@@ -118,9 +135,10 @@ fn changed_assignments_respects_max_accepted() {
         "2",
         "--no-progress",
     ]);
-    let body =
-        std::fs::read_to_string(f.dir.join("plans_accept_2_changed_assignments.txt")).unwrap();
-    assert_eq!(body, "[0.0, 1.0, 0.0, 0.0, 1.0, 0.0]\nTotal Accepted: 2");
+    assert_eq!(
+        read_changed_assignments(&f.dir, 2),
+        vec![0.0, 1.0, 0.0, 0.0, 1.0, 0.0]
+    );
 }
 
 /// `--randomize-reassignments` uses a thread-local OS-seeded RNG, so we can't pin exact dif counts.
@@ -143,19 +161,9 @@ fn changed_assignments_with_randomize_reassignments_runs_and_writes_valid_output
         "--no-progress",
     ]);
 
-    let body =
-        std::fs::read_to_string(f.dir.join("plans_accept_2_changed_assignments.txt")).unwrap();
-    let (counts_line, total_line) = body.split_once('\n').expect("output should have two lines");
-    assert_eq!(total_line, "Total Accepted: 2");
-
-    let parsed: Vec<f64> = counts_line
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .split(", ")
-        .map(|s| s.parse::<f64>().unwrap())
-        .collect();
-    assert_eq!(parsed.len(), 4);
-    for v in parsed {
+    let counts = read_changed_assignments(&f.dir, 2);
+    assert_eq!(counts.len(), 4);
+    for v in counts {
         assert!(
             v == 0.0 || v == 1.0,
             "per-unit count under --randomize-reassignments must be 0 or 1, got {v}"
@@ -164,7 +172,7 @@ fn changed_assignments_with_randomize_reassignments_runs_and_writes_valid_output
 }
 
 /// `--seed` makes `--randomize-reassignments` reproducible: two runs with the same seed must
-/// produce byte-identical output. Without a seed the RNG is OS-seeded and runs can differ.
+/// produce identical per-node counts. Without a seed the RNG is OS-seeded and runs can differ.
 #[test]
 fn changed_assignments_seed_makes_randomization_reproducible() {
     let plans = vec![vec![1u16, 1, 2, 2], vec![2u16, 2, 1, 1]];
@@ -189,8 +197,8 @@ fn changed_assignments_seed_makes_randomization_reproducible() {
         ]);
     }
 
-    let a = std::fs::read_to_string(dir_a.join("plans_accept_2_changed_assignments.txt")).unwrap();
-    let b = std::fs::read_to_string(dir_b.join("plans_accept_2_changed_assignments.txt")).unwrap();
+    let a = read_changed_assignments(&dir_a, 2);
+    let b = read_changed_assignments(&dir_b, 2);
     assert_eq!(a, b, "same seed must produce identical randomized output");
 }
 

@@ -373,6 +373,43 @@ fn district_metric_batch_to_df(
     Ok(df)
 }
 
+/// Write the per-node changed-assignment counts as a two-column Parquet table (`node`,
+/// `changed_assignments`), one row per graph node. The total accepted-frame count is encoded in the
+/// output filename.
+pub(crate) fn write_changed_assignments(
+    file: File,
+    changed_assignments: &[f64],
+    compression: ParquetCompression,
+) -> crate::error::Result<()> {
+    let nodes: Vec<u32> = (0..changed_assignments.len() as u32).collect();
+    let mut df = DataFrame::new_infer_height(vec![
+        Series::new("node".into(), nodes).into(),
+        Series::new("changed_assignments".into(), changed_assignments.to_vec()).into(),
+    ])?;
+    ParquetWriter::new(file)
+        .with_compression(compression)
+        .finish(&mut df)?;
+    Ok(())
+}
+
+/// Write the unique-plan counts as a single-row Parquet table (`unique_plans`,
+/// `total_accepted_frames`).
+pub(crate) fn write_unique_plans(
+    file: File,
+    unique_plans: u64,
+    total_accepted_frames: u64,
+    compression: ParquetCompression,
+) -> crate::error::Result<()> {
+    let mut df = DataFrame::new_infer_height(vec![
+        Series::new("unique_plans".into(), vec![unique_plans]).into(),
+        Series::new("total_accepted_frames".into(), vec![total_accepted_frames]).into(),
+    ])?;
+    ParquetWriter::new(file)
+        .with_compression(compression)
+        .finish(&mut df)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::DistrictMetricWriter;

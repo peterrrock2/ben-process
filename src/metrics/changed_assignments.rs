@@ -1,11 +1,12 @@
 use crate::cli::build_output_path;
 use crate::district::{observed_assignment_districts, validate_district_set_unchanged};
 use crate::error::BenError;
-use crate::pipeline::{count_frames, run_sequential_accepted_frames};
+use crate::output::parquet::write_changed_assignments;
+use crate::pipeline::{count_frames, parquet_compression, run_sequential_accepted_frames};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use std::fs::File;
-use std::io::{self, Write};
+use std::io;
 use std::path::Path;
 
 fn find_first_disagreement_index(first: &[u16], second: &[u16]) -> Option<(usize, (u16, u16))> {
@@ -142,7 +143,8 @@ fn finalize_changed_counts(diff_count: &[u32], line_count: usize, normalize: boo
         .collect()
 }
 
-/// Tallies and saves the number of changed assignments (flips) to a text file.
+/// Tallies the number of changed assignments (flips) per node and saves them to a Parquet file with
+/// columns `node` and `changed_assignments`, one row per node.
 ///
 /// # Arguments
 ///
@@ -156,6 +158,8 @@ fn finalize_changed_counts(diff_count: &[u32], line_count: usize, normalize: boo
 ///   randomized run is not reproducible. Ignored unless `with_random_reassignments` is set.
 /// * `show_progress` - Draw an indicatif progress bar on stderr.
 /// * `output_dir` - Optional directory for the output file.
+/// * `high_compression` - Use Brotli instead of Snappy for the Parquet output.
+#[allow(clippy::too_many_arguments)]
 pub fn tally_and_save_changed_assignments(
     in_ben_file: &str,
     normalize: bool,
@@ -164,6 +168,7 @@ pub fn tally_and_save_changed_assignments(
     seed: Option<u64>,
     show_progress: bool,
     output_dir: Option<&str>,
+    high_compression: bool,
 ) -> crate::error::Result<()> {
     // A seed makes `--randomize-reassignments` reproducible; without one we seed from the
     // OS-backed thread RNG.
@@ -188,11 +193,11 @@ pub fn tally_and_save_changed_assignments(
 
     let out_file_name = build_output_path(
         in_ben_file,
-        format!("_accept_{}_changed_assignments.txt", line_count).as_str(),
+        format!("_accept_{}_changed_assignments.parquet", line_count).as_str(),
         output_dir,
     );
 
-    let mut out = File::create(&out_file_name).map_err(|e| {
+    let out = File::create(&out_file_name).map_err(|e| {
         io::Error::new(
             e.kind(),
             format!("could not create changed-assignments output file {out_file_name:?}: {e}"),
@@ -251,8 +256,7 @@ pub fn tally_and_save_changed_assignments(
     log::info!("Final count: {}", full_count);
     log::info!("Writing final output...");
 
-    out.write_all(format!("{:?}", final_count).as_bytes())?;
-    out.write_all(format!("\nTotal Accepted: {:?}", line_count).as_bytes())?;
+    write_changed_assignments(out, &final_count, parquet_compression(high_compression))?;
 
     log::info!("Done!");
     Ok(())

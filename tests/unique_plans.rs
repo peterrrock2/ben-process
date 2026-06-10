@@ -3,6 +3,15 @@ mod common;
 
 use common::*;
 
+/// Read the single-row unique-plans parquet and return `(unique_plans, total_accepted_frames)`.
+fn read_unique_plans(dir: &std::path::Path) -> (u64, u64) {
+    let df = read_parquet(&dir.join("plans_unique_plans.parquet"));
+    let unique = u64_col(&df, "unique_plans");
+    let total = u64_col(&df, "total_accepted_frames");
+    assert_eq!(unique.len(), 1, "expected exactly one row");
+    (unique[0], total[0])
+}
+
 /// All five frames are byte-identical → exactly one canonical partition.
 #[test]
 fn unique_plans_reports_one_when_every_frame_is_identical() {
@@ -17,8 +26,7 @@ fn unique_plans_reports_one_when_every_frame_is_identical() {
         f.dir.to_str().unwrap(),
         "--no-progress",
     ]);
-    let contents = std::fs::read_to_string(f.dir.join("plans_unique_plans.txt")).unwrap();
-    assert_eq!(contents, "unique_plans: 1\ntotal_accepted_frames: 5\n");
+    assert_eq!(read_unique_plans(&f.dir), (1, 5));
 }
 
 /// Five frames, every one a distinct partition (not just a label permutation of any other) → unique
@@ -42,8 +50,7 @@ fn unique_plans_reports_n_when_every_frame_is_distinct() {
         f.dir.to_str().unwrap(),
         "--no-progress",
     ]);
-    let contents = std::fs::read_to_string(f.dir.join("plans_unique_plans.txt")).unwrap();
-    assert_eq!(contents, "unique_plans: 5\ntotal_accepted_frames: 5\n");
+    assert_eq!(read_unique_plans(&f.dir), (5, 5));
 }
 
 #[test]
@@ -67,8 +74,5 @@ fn unique_plans_writes_distinct_partition_count_and_total_frames() {
         f.dir.to_str().unwrap(),
         "--no-progress",
     ]);
-
-    let out = f.dir.join("plans_unique_plans.txt");
-    let contents = std::fs::read_to_string(&out).unwrap();
-    assert_eq!(contents, "unique_plans: 3\ntotal_accepted_frames: 5\n");
+    assert_eq!(read_unique_plans(&f.dir), (3, 5));
 }

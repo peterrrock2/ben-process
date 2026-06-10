@@ -157,10 +157,10 @@ mod tests {
         assert_eq!(
             build_output_path(
                 "/tmp/runs/plans.jsonl.ben",
-                "_unique_plans.txt",
+                "_unique_plans.parquet",
                 Some("/tmp/out"),
             ),
-            "/tmp/out/plans_unique_plans.txt"
+            "/tmp/out/plans_unique_plans.parquet"
         );
     }
 

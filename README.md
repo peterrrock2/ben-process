@@ -192,7 +192,8 @@ Optional:
 - `--seed <SEED>`
 
 Output:
-- `<ben_stem>_accept_<N>_changed_assignments.txt`
+- `<ben_stem>_accept_<N>_changed_assignments.parquet`
+- columns: `node`, `changed_assignments` (one row per node)
 
 Notes:
 - `N` is the number of accepted frames considered
@@ -270,11 +271,9 @@ ben-process \
 Counts label-invariant unique partitions in a BEN file.
 
 Output:
-- `<ben_stem>_unique_plans.txt`
-
-The output text file contains:
-- `unique_plans: <count>`
-- `total_accepted_frames: <count>`
+- `<ben_stem>_unique_plans.parquet`
+- a single row with columns:
+  `unique_plans`, `total_accepted_frames`
 
 Example:
 
