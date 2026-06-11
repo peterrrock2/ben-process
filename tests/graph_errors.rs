@@ -92,6 +92,63 @@ fn tally_keys_reports_missing_graph_attribute_key() {
     );
 }
 
+/// A graph whose node ids don't match their `.nodes[]` positions must still load correctly —
+/// `.nodes[]` order is the true node order, and adjacency ids are resolved through the `id`
+/// labels — while warning the user about the mismatch.
+///
+/// The fixture is a 4-node path (by position: 0 - 1 - 2 - 3) with reversed ids [3, 2, 1, 0] and
+/// adjacency referencing those ids. With the plan [1, 1, 2, 2] the true cut-edge count is 1 (only
+/// the positional edge (1, 2) crosses). Misreading adjacency ids as positions would instead build
+/// edges {(0, 2), (1, 3)} and report 2 — so the asserted value pins the id resolution, not just
+/// the absence of an error.
+#[test]
+fn permuted_node_ids_warn_and_resolve_against_nodes_order() {
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let graph = dir.join("graph.json");
+    let ben = dir.join("plans.jsonl.ben");
+
+    let graph_json = serde_json::json!({
+        "directed": false,
+        "multigraph": false,
+        "graph": [],
+        "nodes": [
+            { "id": 3 },
+            { "id": 2 },
+            { "id": 1 },
+            { "id": 0 },
+        ],
+        "adjacency": [
+            [ { "id": 2 } ],
+            [ { "id": 3 }, { "id": 1 } ],
+            [ { "id": 2 }, { "id": 0 } ],
+            [ { "id": 1 } ]
+        ]
+    });
+    std::fs::write(&graph, graph_json.to_string()).unwrap();
+    write_fixture_ben(&ben, &[vec![1u16, 1, 2, 2]]);
+
+    let stderr = run_success_capture_stderr(&[
+        "--mode",
+        "cut-edges",
+        "--graph-file",
+        graph.to_str().unwrap(),
+        "--ben-file",
+        ben.to_str().unwrap(),
+        "--output-dir",
+        dir.to_str().unwrap(),
+        "--no-progress",
+    ]);
+
+    assert!(
+        stderr.contains("graph node ids do not match their positions"),
+        "stderr should warn about the id/position mismatch, got: {stderr}"
+    );
+
+    let df = read_parquet(&dir.join("plans_cut_edges.parquet"));
+    assert_eq!(f64_col(&df, "cut_edges"), vec![1.0]);
+}
+
 #[test]
 fn graph_backed_modes_report_assignment_length_mismatch() {
     let f = fixture(&[vec![1u16, 1, 2, 2]]);

@@ -176,6 +176,67 @@ fn parse_numeric_opt(value: &Value) -> Option<f64> {
     parsed.is_finite().then_some(parsed)
 }
 
+/// Resolve the optional node `id` labels into an id → position map.
+///
+/// Ids are keyed by their JSON text (`Value::to_string`), so integer and string ids both resolve
+/// exactly, with no numeric coercion. Returns `None` when no node carries an `id` field, in which
+/// case adjacency ids are interpreted as positional indices by the caller.
+///
+/// Ids on only some nodes, or two nodes sharing an id, make adjacency resolution ambiguous and are
+/// hard errors. A labeling that isn't the identity (`id != position`) is allowed but warned: the
+/// BEN assignment is assumed to follow `.nodes[]` order, and the warning surfaces that the ids do
+/// not.
+fn build_node_id_index(nodes: &[Value]) -> io::Result<Option<HashMap<String, u32>>> {
+    let nodes_with_id = nodes.iter().filter(|node| node.get("id").is_some()).count();
+    if nodes_with_id == 0 {
+        return Ok(None);
+    }
+    if nodes_with_id != nodes.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{} of {} graph nodes carry an \"id\" field; ids must be present on every node or \
+                 on none, otherwise adjacency references cannot be resolved",
+                nodes_with_id,
+                nodes.len()
+            ),
+        ));
+    }
+
+    let mut id_to_index: HashMap<String, u32> = HashMap::with_capacity(nodes.len());
+    let mut first_mismatch: Option<usize> = None;
+    for (node_index, node) in nodes.iter().enumerate() {
+        let id_value = node.get("id").expect("every node carries an id here");
+        if id_to_index
+            .insert(id_value.to_string(), node_index as u32)
+            .is_some()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "two graph nodes share the id {}; node ids must be unique",
+                    id_value
+                ),
+            ));
+        }
+        if first_mismatch.is_none() && id_value.as_u64() != Some(node_index as u64) {
+            first_mismatch = Some(node_index);
+        }
+    }
+
+    if let Some(position) = first_mismatch {
+        log::warn!(
+            "graph node ids do not match their positions in .nodes[] (first mismatch at position \
+             {}, id {}); treating .nodes[] order as the true node order: BEN assignment entry i is \
+             taken as nodes[i]'s district, and adjacency ids are resolved through the \"id\" field",
+            position,
+            nodes[position]["id"]
+        );
+    }
+
+    Ok(Some(id_to_index))
+}
+
 /// Load a graph and pre-compute exactly the columns / edge weights the caller will need. Anything
 /// not asked for is not parsed.
 ///
@@ -209,6 +270,14 @@ pub fn load_graph(file_path: &str, request: GraphLoadRequest) -> crate::error::R
         )
         .into());
     }
+
+    // `.nodes[]` order is the canonical node order everywhere in this tool: attribute columns,
+    // adjacency rows, and BEN assignment entries all align by position. Node `id` fields are
+    // labels only — networkx's adjacency format references neighbors by id, so when ids are
+    // present the edge loop below resolves them back to positions through this map (and a
+    // non-identity labeling warns, since BEN assignments follow `.nodes[]` order, not id order).
+    // When no node carries an id, adjacency ids are taken as positional indices directly.
+    let node_id_index = build_node_id_index(&graph_data.nodes)?;
 
     // --- numeric node attributes ---
     let mut attr_columns: Vec<Vec<f64>> =
@@ -308,31 +377,53 @@ pub fn load_graph(file_path: &str, request: GraphLoadRequest) -> crate::error::R
             )
         })?;
         for target_data in neighbors {
-            let target_id = target_data
-                .get("id")
-                .and_then(Value::as_u64)
-                .ok_or_else(|| {
+            let id_value = target_data.get("id").ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "graph adjacency entry {} has edge without id: {:?}",
+                        source_index, target_data
+                    ),
+                )
+            })?;
+            let target: u32 = match &node_id_index {
+                // Nodes carry id labels: resolve the neighbor's id to its `.nodes[]` position.
+                Some(id_to_index) => *id_to_index.get(&id_value.to_string()).ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!(
-                            "graph adjacency entry {} has edge without numeric id: {:?}",
-                            source_index, target_data
+                            "graph adjacency entry {} references id {} which is not the id of \
+                                 any node",
+                            source_index, id_value
                         ),
                     )
-                })?;
-            // Validate the full u64 against the node count *before* narrowing to u32, so a huge id
-            // can't wrap to a small in-range index and silently create the wrong edge.
-            if target_id >= node_count as u64 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "graph adjacency entry {} references node id {} but the graph has only {} nodes",
-                        source_index, target_id, node_count
-                    ),
-                )
-                .into());
-            }
-            let target = target_id as u32;
+                })?,
+                // No node ids: adjacency ids are positional indices. Validate the full u64 against
+                // the node count *before* narrowing to u32, so a huge id can't wrap to a small
+                // in-range index and silently create the wrong edge.
+                None => {
+                    let target_id = id_value.as_u64().ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "graph adjacency entry {} has edge without numeric id: {:?}",
+                                source_index, target_data
+                            ),
+                        )
+                    })?;
+                    if target_id >= node_count as u64 {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "graph adjacency entry {} references node id {} but the graph has only {} nodes",
+                                source_index, target_id, node_count
+                            ),
+                        )
+                        .into());
+                    }
+                    target_id as u32
+                }
+            };
             let edge = (source.min(target), source.max(target));
             edge_set.insert(edge);
 
@@ -687,6 +778,169 @@ mod tests {
         assert!(
             result.is_err(),
             "load_graph should reject an adjacency target id beyond the node count, got Ok"
+        );
+    }
+
+    #[test]
+    fn load_graph_accepts_node_ids_matching_their_position() {
+        // Real networkx exports carry an `id` per node; when ids equal positions the graph is
+        // aligned and must load.
+        let graph_json = json!({
+            "directed": false,
+            "multigraph": false,
+            "graph": [],
+            "nodes": [ { "id": 0, "pop": 1.0 }, { "id": 1, "pop": 2.0 } ],
+            "adjacency": [ [ { "id": 1 } ], [ { "id": 0 } ] ]
+        });
+        let graph_file = write_graph(graph_json);
+
+        let graph = load_graph(
+            graph_file.path().to_str().unwrap(),
+            GraphLoadRequest {
+                numeric_keys: vec!["pop".to_string()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(graph.node_count, 2);
+        assert_eq!(graph.edges, vec![(0, 1)]);
+    }
+
+    #[test]
+    fn load_graph_resolves_permuted_node_ids_to_positions() {
+        // `.nodes[]` order is the true node order; ids are labels that adjacency references. This
+        // 3-node path (by position: 0 - 1 - 2) carries permuted ids, so resolving adjacency ids
+        // positionally would instead produce a self-loop at 0 and the wrong edge set. The loader
+        // must map each neighbor id back to the position of the node carrying that id, while
+        // attribute columns stay in `.nodes[]` order.
+        let graph_json = json!({
+            "directed": false,
+            "multigraph": false,
+            "graph": [],
+            "nodes": [
+                { "id": 1, "pop": 10.0 },
+                { "id": 0, "pop": 20.0 },
+                { "id": 2, "pop": 30.0 },
+            ],
+            "adjacency": [
+                [ { "id": 0 } ],
+                [ { "id": 1 }, { "id": 2 } ],
+                [ { "id": 0 } ]
+            ]
+        });
+        let graph_file = write_graph(graph_json);
+
+        let graph = load_graph(
+            graph_file.path().to_str().unwrap(),
+            GraphLoadRequest {
+                numeric_keys: vec!["pop".to_string()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(graph.edges, vec![(0, 1), (1, 2)]);
+        assert_eq!(graph.attr_columns, vec![vec![10.0, 20.0, 30.0]]);
+    }
+
+    #[test]
+    fn load_graph_resolves_string_node_ids_to_positions() {
+        // GEOID-indexed graphs have string node ids; adjacency references them by the same
+        // strings. The id map resolves them to positions, so the graph loads with positional
+        // edges and columns.
+        let graph_json = json!({
+            "directed": false,
+            "multigraph": false,
+            "graph": [],
+            "nodes": [ { "id": "06037", "pop": 1.0 }, { "id": "06038", "pop": 2.0 } ],
+            "adjacency": [ [ { "id": "06038" } ], [ { "id": "06037" } ] ]
+        });
+        let graph_file = write_graph(graph_json);
+
+        let graph = load_graph(
+            graph_file.path().to_str().unwrap(),
+            GraphLoadRequest {
+                numeric_keys: vec!["pop".to_string()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(graph.node_count, 2);
+        assert_eq!(graph.edges, vec![(0, 1)]);
+        assert_eq!(graph.attr_columns, vec![vec![1.0, 2.0]]);
+    }
+
+    #[test]
+    fn load_graph_rejects_duplicate_node_ids() {
+        // Two nodes sharing an id make adjacency references ambiguous — there is no defensible
+        // resolution, so this stays a hard error.
+        let graph_json = json!({
+            "directed": false,
+            "multigraph": false,
+            "graph": [],
+            "nodes": [ { "id": 0, "pop": 1.0 }, { "id": 0, "pop": 2.0 } ],
+            "adjacency": [ [ { "id": 0 } ], [ { "id": 0 } ] ]
+        });
+        let graph_file = write_graph(graph_json);
+
+        let err = load_graph(
+            graph_file.path().to_str().unwrap(),
+            GraphLoadRequest::default(),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("two graph nodes share the id 0; node ids must be unique"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_graph_rejects_partial_node_ids() {
+        // Ids on some-but-not-all nodes leave adjacency references unresolvable for the unlabeled
+        // nodes; the all-or-none rule keeps the interpretation unambiguous.
+        let graph_json = json!({
+            "directed": false,
+            "multigraph": false,
+            "graph": [],
+            "nodes": [ { "id": 0, "pop": 1.0 }, { "pop": 2.0 } ],
+            "adjacency": [ [ { "id": 1 } ], [ { "id": 0 } ] ]
+        });
+        let graph_file = write_graph(graph_json);
+
+        let err = load_graph(
+            graph_file.path().to_str().unwrap(),
+            GraphLoadRequest::default(),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("ids must be present on every node or on none"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_graph_rejects_adjacency_id_not_matching_any_node() {
+        // When nodes carry ids, an adjacency reference to an id no node has is a broken graph —
+        // there is no position to resolve it to.
+        let graph_json = json!({
+            "directed": false,
+            "multigraph": false,
+            "graph": [],
+            "nodes": [ { "id": 0, "pop": 1.0 }, { "id": 1, "pop": 2.0 } ],
+            "adjacency": [ [ { "id": 9 } ], [ { "id": 0 } ] ]
+        });
+        let graph_file = write_graph(graph_json);
+
+        let err = load_graph(
+            graph_file.path().to_str().unwrap(),
+            GraphLoadRequest::default(),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("references id 9 which is not the id of any node"),
+            "unexpected error: {err}"
         );
     }
 

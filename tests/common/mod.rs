@@ -31,12 +31,12 @@ pub(crate) fn write_fixture_graph(path: &Path) {
         "multigraph": false,
         "graph": [],
         "nodes": [
-            { "pop": 10.0, "area": 1.0, "region": "A" },
-            { "pop": 20.0, "area": 2.0, "region": "A" },
-            { "pop": 30.0, "area": 3.0, "region": "B" },
-            { "pop": 40.0, "area": 4.0, "region": "B" },
-            { "pop": 50.0, "area": 5.0, "region": "A" },
-            { "pop": 60.0, "area": 6.0, "region": "A" },
+            { "id": 0, "pop": 10.0, "area": 1.0, "region": "A" },
+            { "id": 1, "pop": 20.0, "area": 2.0, "region": "A" },
+            { "id": 2, "pop": 30.0, "area": 3.0, "region": "B" },
+            { "id": 3, "pop": 40.0, "area": 4.0, "region": "B" },
+            { "id": 4, "pop": 50.0, "area": 5.0, "region": "A" },
+            { "id": 5, "pop": 60.0, "area": 6.0, "region": "A" },
         ],
         "adjacency": [
             [ { "id": 1, "weight": 2.0 }, { "id": 5, "weight": 3.0 } ],
@@ -259,6 +259,22 @@ pub(crate) fn run(args: &[&str]) {
         .status()
         .expect("failed to spawn ben-process");
     assert!(status.success(), "ben-process exited non-zero");
+}
+
+/// Like [`run`], but returns captured stderr so tests can assert on warnings/log output of a
+/// successful run.
+pub(crate) fn run_success_capture_stderr(args: &[&str]) -> String {
+    let output = Command::new(bin())
+        .args(args)
+        .output()
+        .expect("failed to spawn ben-process");
+    assert!(
+        output.status.success(),
+        "ben-process exited non-zero; stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
 pub(crate) fn run_failure(args: &[&str]) -> String {
