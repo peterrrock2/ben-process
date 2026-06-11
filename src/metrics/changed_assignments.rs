@@ -189,7 +189,10 @@ pub fn tally_and_save_changed_assignments(
     let total_frames = count_frames(in_ben_file)?;
     log::info!("Found {} accepted plans in {:?}", total_frames, basename);
 
-    let line_count = max_accepted.unwrap_or(total_frames);
+    // A `--max-accepted` beyond the file's frame count means "everything": clamp it so the
+    // normalization divisor below and the `_accept_N_` output filename both reflect the frames
+    // actually consumed, not the requested cap.
+    let line_count = max_accepted.map_or(total_frames, |cap| cap.min(total_frames));
 
     let out_file_name = build_output_path(
         in_ben_file,

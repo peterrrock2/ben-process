@@ -141,6 +141,31 @@ fn changed_assignments_respects_max_accepted() {
     );
 }
 
+/// A `--max-accepted` larger than the file's frame count means "everything": the normalization
+/// divisor and the `_accept_N_` output filename must both use the 3 frames actually present, not
+/// the requested 10. (Previously the divisor was `max_accepted - 1` = 9, silently deflating every
+/// normalized value; expected values here match `changed_assignments_tri_plans_normalized`.)
+#[test]
+fn changed_assignments_max_accepted_beyond_frame_count_normalizes_by_actual_frames() {
+    let f = fixture(&tri_plans());
+    run(&[
+        "--mode",
+        "changed-assignments",
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--max-accepted",
+        "10",
+        "--normalize",
+        "--no-progress",
+    ]);
+    assert_eq!(
+        read_changed_assignments(&f.dir, 3),
+        vec![0.0, 1.0, 0.5, 0.0, 0.5, 0.5]
+    );
+}
+
 /// `--randomize-reassignments` uses a thread-local OS-seeded RNG, so we can't pin exact dif counts.
 /// This is a smoke test: confirm the binary completes successfully, the output file uses the
 /// expected frame count, and the per-unit values are within the valid range. With two
