@@ -55,5 +55,19 @@ pub(super) fn require_keys(args: &Args, mode_name: &str) -> crate::error::Result
         .into());
     }
 
+    // Duplicate keys are never intentional, and for tally-keys they are actively harmful: each key
+    // derives an output path, so two writers would open the same file and interleave row groups
+    // into unreadable Parquet.
+    let mut seen = std::collections::HashSet::new();
+    for key in &args.keys {
+        if !seen.insert(key.as_str()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("duplicate key {:?} passed to --keys", key),
+            )
+            .into());
+        }
+    }
+
     Ok(())
 }

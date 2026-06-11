@@ -7,6 +7,32 @@
 
 use xxhash_rust::xxh3::Xxh3;
 
+/// Enforce that every assignment in a graph-free mode has the same length as the first one.
+///
+/// The unique-plan modes load no graph, so the pipeline's graph-length check doesn't apply to
+/// them; without this, frames of differing lengths within one BEN file — a corrupt ensemble —
+/// would simply hash as distinct plans. The first call establishes the expected length.
+pub(crate) fn validate_assignment_len(
+    expected_len: &mut Option<usize>,
+    actual: usize,
+) -> std::io::Result<()> {
+    match *expected_len {
+        None => {
+            *expected_len = Some(actual);
+            Ok(())
+        }
+        Some(expected) if expected != actual => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "assignment length changed from {} to {} within the BEN file; every plan in an \
+                 ensemble must assign the same node set",
+                expected, actual
+            ),
+        )),
+        Some(_) => Ok(()),
+    }
+}
+
 /// Hash an assignment vector by its partition (label-invariant).
 pub fn canonical_hash(assignment: &[u16]) -> u128 {
     let max_label = assignment.iter().copied().max().unwrap_or(0) as usize;

@@ -3,6 +3,27 @@ mod common;
 
 use common::*;
 
+/// Same corrupt-input guard as unique-plans: mixed assignment lengths within one file must error
+/// rather than being extracted as distinct plans.
+#[test]
+fn extract_unique_plans_rejects_mixed_assignment_lengths() {
+    let plans: Vec<Vec<u16>> = vec![vec![1, 1, 2, 2, 1, 1], vec![1, 1, 2, 2]];
+    let f = fixture(&plans);
+    let stderr = run_failure(&[
+        "--mode",
+        "extract-unique-plans",
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--no-progress",
+    ]);
+    assert!(
+        stderr.contains("assignment length changed from 6 to 4 within the BEN file"),
+        "stderr should report the length change, got: {stderr}"
+    );
+}
+
 /// Five input frames with three label-invariant partitions:
 ///   * P_A appears as itself and again with districts {1,2} swapped (label-perm)
 ///   * P_B appears as itself and again byte-identical

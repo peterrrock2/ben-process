@@ -3,6 +3,7 @@ use crate::graph::Graph;
 use crate::output::parquet::DistrictMetricWriter;
 use crate::pipeline::{parquet_compression, run_pipeline, PARQUET_BATCH_ROWS};
 use std::fs::File;
+use std::io;
 
 struct PolsbyRow {
     sample_number: u64,
@@ -58,6 +59,24 @@ fn polsby_popper_rows(
         let district_v = assignment[node_v as usize] as usize;
         if district_u == district_v {
             perimeter_by_district[district_u] -= 2.0 * shared_perimeters[edge_index];
+        }
+    }
+
+    // A real district cannot have a nonpositive perimeter; one here means the geometry data is
+    // wrong (e.g. a direct --perim-key inconsistent with shared_perim, or perimeter data missing
+    // for a district's nodes). Scoring it 0.0 would bury the data problem in plausible-looking
+    // output, so fail instead. Unobserved district ids (gaps in the label range) carry 0.0 but are
+    // never written, so only observed districts are checked.
+    for (district, &perimeter) in perimeter_by_district.iter().enumerate() {
+        if (observed & (1u128 << district)) != 0 && perimeter <= 0.0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "district {} has nonpositive perimeter {}; check the area/perimeter/shared-perimeter keys",
+                    district, perimeter
+                ),
+            )
+            .into());
         }
     }
 
@@ -204,6 +223,19 @@ mod tests {
             &[1.0, 1.0, 1.0],
         );
         assert_eq!(totals, vec![4.0, 4.0, 4.0, 4.0]);
+    }
+
+    #[test]
+    fn polsby_popper_rows_errors_on_nonpositive_district_perimeter() {
+        // Zero total perimeters with no edges → both observed districts compute perimeter 0.0,
+        // which is physically impossible for a real district and means the geometry keys are
+        // wrong. This must error, not score 0.0 into plausible-looking output.
+        let err = polsby_popper_rows(&[1, 2], &[1.0, 1.0], &[0.0, 0.0], &[], &[]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("district 1 has nonpositive perimeter 0"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

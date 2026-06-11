@@ -91,6 +91,18 @@ fn parse_region_id(node: &Value, key: &str) -> Option<String> {
             let numeric_value = number.as_f64()?;
             if numeric_value.is_nan() {
                 None
+            } else if let Some(integral) = number.as_i64() {
+                Some(integral.to_string())
+            } else if let Some(integral) = number.as_u64() {
+                Some(integral.to_string())
+            } else if numeric_value.is_finite()
+                && numeric_value.fract() == 0.0
+                && numeric_value.abs() <= 9_007_199_254_740_992.0
+            {
+                // Mixed int/float region columns (a pandas-export artifact) must intern 7 and 7.0
+                // as the same region, so integral floats within f64's exact-integer range (2^53)
+                // are normalized to their integer text.
+                Some(format!("{}", numeric_value as i64))
             } else {
                 Some(value.to_string())
             }
@@ -159,10 +171,6 @@ fn parse_numeric(node: &Value, key: &str) -> io::Result<f64> {
             ),
         ))
     }
-}
-
-fn parse_numeric_or_zero(value: &Value) -> f64 {
-    parse_numeric_opt(value).unwrap_or(0.0)
 }
 
 fn parse_numeric_opt(value: &Value) -> Option<f64> {
@@ -270,6 +278,18 @@ pub fn load_graph(file_path: &str, request: GraphLoadRequest) -> crate::error::R
         )
         .into());
     }
+    // The same dedup silently collapses a multigraph's parallel edges (and would keep only one of
+    // their weights), so reject those too.
+    if graph_data.multigraph {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "graph {:?} is marked multigraph; ben-process only supports simple undirected dual graphs",
+                file_path
+            ),
+        )
+        .into());
+    }
 
     // `.nodes[]` order is the canonical node order everywhere in this tool: attribute columns,
     // adjacency rows, and BEN assignment entries all align by position. Node `id` fields are
@@ -305,15 +325,31 @@ pub fn load_graph(file_path: &str, request: GraphLoadRequest) -> crate::error::R
         attr_columns.push(column);
     }
     for key in &request.partial_numeric_keys {
+        let mut matched_nodes = 0usize;
         let column: Vec<f64> = graph_data
             .nodes
             .iter()
-            .map(|node| {
-                node.get(key.as_str())
-                    .map(parse_numeric_or_zero)
-                    .unwrap_or(0.0)
-            })
+            .map(
+                |node| match node.get(key.as_str()).and_then(parse_numeric_opt) {
+                    Some(value) => {
+                        matched_nodes += 1;
+                        value
+                    }
+                    None => 0.0,
+                },
+            )
             .collect();
+        // Sparse data is the point of a partial key (e.g. boundary_perim only on boundary nodes),
+        // but a key that matches *nothing* is usually a typo — except for legitimately
+        // boundary-free graphs (grids), so this warns instead of erroring.
+        if matched_nodes == 0 && !graph_data.nodes.is_empty() {
+            log::warn!(
+                "numeric key {:?} yielded no usable value on any of the {} graph nodes; every \
+                 value defaults to 0 — check the key name if this is unexpected",
+                key,
+                graph_data.nodes.len()
+            );
+        }
         attr_index.insert(key.clone(), attr_columns.len());
         attr_columns.push(column);
     }
@@ -343,10 +379,12 @@ pub fn load_graph(file_path: &str, request: GraphLoadRequest) -> crate::error::R
     // --- flat dedup'd edges + (optionally) parallel weight vector ---
     //
     //   - `edge_set` tracks which (min, max) pairs exist.
-    //   - `edge_weights_map` only holds entries for edges that carry at least one *numerically
-    //     parseable* value for `edge_weight_key` on at least one endpoint. Missing or non-numeric
-    //     values are not stored; those edges fall back to the request's default at lookup time.
-    //   - `.insert()` (not `.or_insert()`) so the last valid weight for an edge wins.
+    //   - `edge_weights_map` only holds entries for edges that carry a value for `edge_weight_key`
+    //     on at least one direction. Absent (or JSON-null) values are not stored; those edges fall
+    //     back to the request's default at lookup time. A present-but-unparseable or non-finite
+    //     value is a hard error (it would otherwise silently become the default), as are the two
+    //     directions of an edge disagreeing (the graph is undirected, so both directions must carry
+    //     the same value).
     // `node_count` is the contract every assignment is later validated against (one entry per
     // node). The adjacency block must agree with it: one adjacency list per node, and every
     // edge endpoint a real node id. Otherwise an out-of-range id would index `assignment[id]`
@@ -424,13 +462,54 @@ pub fn load_graph(file_path: &str, request: GraphLoadRequest) -> crate::error::R
                     target_id as u32
                 }
             };
+            // A self-loop can never be cut and would corrupt Polsby-Popper (the same-district
+            // subtraction would remove 2x its shared perimeter from a district that gained
+            // nothing); a sane dual graph has none, so reject rather than guess.
+            if source == target {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "graph adjacency entry {} contains a self-loop on node {}; dual graphs must be simple",
+                        source_index, source
+                    ),
+                )
+                .into());
+            }
             let edge = (source.min(target), source.max(target));
             edge_set.insert(edge);
 
             if let Some(weight_key) = edge_weight_key {
-                if let Some(weight) = target_data.get(weight_key).and_then(parse_numeric_opt) {
-                    // .insert (overwrite) so the last valid weight wins.
-                    edge_weights_map.insert(edge, weight);
+                // JSON null is treated as absent (some exporters write null for missing data);
+                // anything else present must parse to a finite number.
+                if let Some(raw) = target_data.get(weight_key).filter(|v| !v.is_null()) {
+                    let weight = parse_numeric_opt(raw).ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "invalid value for edge weight key {:?} on adjacency entry {}: \
+                                 {:?}; a present edge weight must be a finite number (it would \
+                                 otherwise silently fall back to the default)",
+                                weight_key, source_index, raw
+                            ),
+                        )
+                    })?;
+                    match edge_weights_map.get(&edge) {
+                        Some(&existing) if existing != weight => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!(
+                                    "edge ({}, {}) carries conflicting {:?} values {} and {}; the \
+                                     graph is undirected, so both directions of an edge must agree",
+                                    edge.0, edge.1, weight_key, existing, weight
+                                ),
+                            )
+                            .into());
+                        }
+                        Some(_) => {}
+                        None => {
+                            edge_weights_map.insert(edge, weight);
+                        }
+                    }
                 }
             }
         }
@@ -438,6 +517,24 @@ pub fn load_graph(file_path: &str, request: GraphLoadRequest) -> crate::error::R
 
     let mut edges: Vec<(u32, u32)> = edge_set.into_iter().collect();
     edges.sort_unstable();
+    // A weight key that matched *zero* edges is almost certainly a typo, and the fallback would
+    // make the result silently wrong-but-plausible (cut-edges degrades to the unweighted count,
+    // Polsby-Popper to boundary-only perimeters). Edges missing the key on a graph where it
+    // matched at least once remain a legitimate sparse-data case handled by the default.
+    if let Some(edge_weight_request) = &request.edge_weight {
+        if !edges.is_empty() && edge_weights_map.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "edge weight key {:?} was not found on any of the {} graph edges; check the \
+                     key name",
+                    edge_weight_request.key,
+                    edges.len()
+                ),
+            )
+            .into());
+        }
+    }
     let edge_weights: Option<Vec<f64>> = request.edge_weight.map(|edge_weight_request| {
         edges
             .iter()
@@ -497,6 +594,24 @@ mod tests {
     }
 
     #[test]
+    fn parse_region_id_normalizes_integral_floats_to_integer_text() {
+        // Mixed int/float region columns are a common pandas-export artifact: county 7 written as
+        // 7 on one node and 7.0 on another must intern as the SAME region, or splits/pieces counts
+        // silently inflate. Genuinely fractional values keep their distinct text.
+        let node = json!({
+            "int": 7,
+            "float": 7.0,
+            "frac": 7.5,
+            "neg_float": -3.0,
+        });
+
+        assert_eq!(parse_region_id(&node, "int"), Some("7".to_string()));
+        assert_eq!(parse_region_id(&node, "float"), Some("7".to_string()));
+        assert_eq!(parse_region_id(&node, "frac"), Some("7.5".to_string()));
+        assert_eq!(parse_region_id(&node, "neg_float"), Some("-3".to_string()));
+    }
+
+    #[test]
     fn parse_numeric_accepts_numbers_and_numeric_strings() {
         assert_eq!(parse_numeric(&json!({ "pop": 3.5 }), "pop").unwrap(), 3.5);
         assert_eq!(
@@ -535,7 +650,7 @@ mod tests {
                 { "pop": 3.0, "region": " nan " },
             ],
             "adjacency": [
-                [ { "id": 1, "weight": 2.0 }, { "id": 2, "weight": "oops" } ],
+                [ { "id": 1, "weight": 4.5 }, { "id": 2, "weight": 9.0 } ],
                 [ { "id": 0, "weight": 4.5 }, { "id": 2 } ],
                 [ { "id": 0, "weight": 9.0 }, { "id": 1, "weight": "3.5" } ]
             ]
@@ -603,6 +718,8 @@ mod tests {
 
     #[test]
     fn load_graph_defaults_missing_weights_to_one() {
+        // Edge (1,2) carries no weight in either direction → request default. Edge (0,1) carries
+        // one so the key passes the matched-at-least-once check.
         let graph_json = json!({
             "directed": false,
             "multigraph": false,
@@ -610,10 +727,12 @@ mod tests {
             "nodes": [
                 { "pop": 1.0 },
                 { "pop": 2.0 },
+                { "pop": 3.0 },
             ],
             "adjacency": [
-                [ { "id": 1 } ],
-                [ { "id": 0, "weight": "oops" } ]
+                [ { "id": 1, "weight": 2.0 } ],
+                [ { "id": 0, "weight": 2.0 }, { "id": 2 } ],
+                [ { "id": 1 } ]
             ]
         });
         let graph_file = write_graph(graph_json);
@@ -630,8 +749,108 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(graph.edges, vec![(0, 1)]);
-        assert_eq!(graph.edge_weights, Some(vec![1.0]));
+        assert_eq!(graph.edges, vec![(0, 1), (1, 2)]);
+        assert_eq!(graph.edge_weights, Some(vec![2.0, 1.0]));
+    }
+
+    #[test]
+    fn load_graph_treats_null_edge_weight_as_absent() {
+        // Some exporters serialize missing data as JSON null; that is "no claim", not a parse
+        // error, so the edge falls back to the default like a fully absent key.
+        let graph_json = json!({
+            "directed": false,
+            "multigraph": false,
+            "graph": [],
+            "nodes": [ { "pop": 1.0 }, { "pop": 2.0 }, { "pop": 3.0 } ],
+            "adjacency": [
+                [ { "id": 1, "weight": 2.0 } ],
+                [ { "id": 0, "weight": 2.0 }, { "id": 2, "weight": null } ],
+                [ { "id": 1, "weight": null } ]
+            ]
+        });
+        let graph_file = write_graph(graph_json);
+
+        let graph = load_graph(
+            graph_file.path().to_str().unwrap(),
+            GraphLoadRequest {
+                edge_weight: Some(EdgeWeightRequest {
+                    key: "weight".to_string(),
+                    default_value: 1.0,
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(graph.edge_weights, Some(vec![2.0, 1.0]));
+    }
+
+    #[test]
+    fn load_graph_rejects_unparseable_edge_weight() {
+        // A present-but-garbage weight would previously fall back to the default silently — for
+        // cut-edges that makes the weighted result equal the unweighted count with no error.
+        let graph_json = json!({
+            "directed": false,
+            "multigraph": false,
+            "graph": [],
+            "nodes": [ { "pop": 1.0 }, { "pop": 2.0 } ],
+            "adjacency": [
+                [ { "id": 1, "weight": "oops" } ],
+                [ { "id": 0, "weight": "oops" } ]
+            ]
+        });
+        let graph_file = write_graph(graph_json);
+
+        let err = load_graph(
+            graph_file.path().to_str().unwrap(),
+            GraphLoadRequest {
+                edge_weight: Some(EdgeWeightRequest {
+                    key: "weight".to_string(),
+                    default_value: 1.0,
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("invalid value for edge weight key \"weight\""),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_graph_rejects_conflicting_edge_weights() {
+        // The graph is undirected, so the two directions of an edge must agree on the weight;
+        // last-wins would silently pick one of two contradictory values.
+        let graph_json = json!({
+            "directed": false,
+            "multigraph": false,
+            "graph": [],
+            "nodes": [ { "pop": 1.0 }, { "pop": 2.0 } ],
+            "adjacency": [
+                [ { "id": 1, "weight": 2.0 } ],
+                [ { "id": 0, "weight": 4.5 } ]
+            ]
+        });
+        let graph_file = write_graph(graph_json);
+
+        let err = load_graph(
+            graph_file.path().to_str().unwrap(),
+            GraphLoadRequest {
+                edge_weight: Some(EdgeWeightRequest {
+                    key: "weight".to_string(),
+                    default_value: 1.0,
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("edge (0, 1) carries conflicting \"weight\" values 2 and 4.5"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -671,7 +890,10 @@ mod tests {
     }
 
     #[test]
-    fn load_graph_uses_requested_edge_default_value() {
+    fn load_graph_errors_when_edge_weight_key_matches_no_edges() {
+        // A weight key found on zero edges is almost certainly a typo, and the per-edge default
+        // would make the run silently wrong-but-plausible (cut-edges degrades to the unweighted
+        // count, Polsby-Popper to boundary-only perimeters).
         let graph_json = json!({
             "directed": false,
             "multigraph": false,
@@ -687,7 +909,7 @@ mod tests {
         });
         let graph_file = write_graph(graph_json);
 
-        let graph = load_graph(
+        let err = load_graph(
             graph_file.path().to_str().unwrap(),
             GraphLoadRequest {
                 edge_weight: Some(EdgeWeightRequest {
@@ -697,10 +919,91 @@ mod tests {
                 ..Default::default()
             },
         )
-        .unwrap();
+        .unwrap_err();
+        assert!(
+            err.to_string().contains(
+                "edge weight key \"shared_perim\" was not found on any of the 1 graph edges"
+            ),
+            "unexpected error: {err}"
+        );
+    }
 
-        assert_eq!(graph.edges, vec![(0, 1)]);
-        assert_eq!(graph.edge_weights, Some(vec![0.0]));
+    #[test]
+    fn load_graph_rejects_multigraph() {
+        // Parallel edges would be silently collapsed by the (min,max) dedup, keeping only one
+        // weight — same argument as the directed rejection.
+        let graph_json = json!({
+            "directed": false,
+            "multigraph": true,
+            "graph": [],
+            "nodes": [ { "pop": 1.0 }, { "pop": 2.0 } ],
+            "adjacency": [ [ { "id": 1 } ], [ { "id": 0 } ] ]
+        });
+        let graph_file = write_graph(graph_json);
+
+        let err = load_graph(
+            graph_file.path().to_str().unwrap(),
+            GraphLoadRequest::default(),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("is marked multigraph"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_graph_rejects_self_loop() {
+        // A self-loop can never be cut and would corrupt Polsby-Popper's same-district shared
+        // perimeter subtraction; a sane dual graph has none.
+        let graph_json = json!({
+            "directed": false,
+            "multigraph": false,
+            "graph": [],
+            "nodes": [ { "pop": 1.0 }, { "pop": 2.0 } ],
+            "adjacency": [
+                [ { "id": 1 }, { "id": 0 } ],
+                [ { "id": 0 } ]
+            ]
+        });
+        let graph_file = write_graph(graph_json);
+
+        let err = load_graph(
+            graph_file.path().to_str().unwrap(),
+            GraphLoadRequest::default(),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("contains a self-loop on node 0"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_graph_loads_zeros_when_partial_key_matches_no_nodes() {
+        // Unlike edge weights, an all-absent partial key is legal (boundary-free grid graphs have
+        // no boundary_perim anywhere) — it loads as zeros and warns rather than erroring.
+        let graph_json = json!({
+            "directed": false,
+            "multigraph": false,
+            "graph": [],
+            "nodes": [ { "area": 1.0 }, { "area": 2.0 } ],
+            "adjacency": [ [ { "id": 1 } ], [ { "id": 0 } ] ]
+        });
+        let graph_file = write_graph(graph_json);
+
+        let graph = load_graph(
+            graph_file.path().to_str().unwrap(),
+            GraphLoadRequest {
+                partial_numeric_keys: vec!["boundary_perim".to_string()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            graph.attr_columns[graph.attr_index["boundary_perim"]],
+            vec![0.0, 0.0]
+        );
     }
 
     #[test]

@@ -3,13 +3,13 @@
 //! the assignment that gets written is the **first-seen original**, so labels in the output match
 //! how the plan first appeared in the input.
 
-use crate::metrics::canonical::canonical_hash;
+use crate::metrics::canonical::{canonical_hash, validate_assignment_len};
 use crate::pipeline::{count_frames, run_sequential_accepted_frames};
 use ben::encode::BenEncoder;
 use ben::BenVariant;
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::BufWriter;
+use std::io::{BufWriter, Write};
 use std::path::Path;
 
 pub fn extract_unique_plans(
@@ -32,9 +32,14 @@ pub fn extract_unique_plans(
 
     let mut seen: HashSet<u128> = HashSet::new();
     let mut written: u64 = 0;
+    // Frames of differing lengths within one file mean the ensemble is corrupt (no graph is loaded
+    // in this mode, so the pipeline's graph-length check doesn't apply); they would otherwise just
+    // hash as distinct plans.
+    let mut expected_len: Option<usize> = None;
 
     let total =
         run_sequential_accepted_frames(in_file_name, total_frames, None, show_progress, |frame| {
+            validate_assignment_len(&mut expected_len, frame.assignment.len())?;
             let hash = canonical_hash(&frame.assignment);
             if seen.insert(hash) {
                 encoder.write_assignment(frame.assignment)?;
@@ -45,6 +50,9 @@ pub fn extract_unique_plans(
 
     encoder.finish()?;
     drop(encoder);
+    // BufWriter's Drop flushes but swallows errors — an explicit flush makes a failed write (e.g.
+    // disk full) a hard error instead of a silently truncated output BEN.
+    writer.flush()?;
 
     log::info!(
         "Unique plans: {} (out of {} accepted frames)",

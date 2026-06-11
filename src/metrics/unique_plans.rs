@@ -4,7 +4,7 @@
 //! appearance, then hashed with xxh3-128. Plans that differ only by a permutation of district
 //! labels collide on the same digest and thus count as the same partition.
 
-use crate::metrics::canonical::canonical_hash;
+use crate::metrics::canonical::{canonical_hash, validate_assignment_len};
 use crate::output::parquet::write_unique_plans;
 use crate::pipeline::{parquet_compression, run_pipeline};
 use std::collections::HashSet;
@@ -18,6 +18,9 @@ pub fn count_and_save_unique_plans(
 ) -> crate::error::Result<()> {
     let mut unique: HashSet<u128> = HashSet::new();
     let mut total_frames: u64 = 0;
+    // No graph means no graph-length check; the first frame establishes the expected length so a
+    // corrupt mixed-length file errors instead of counting the odd frames as distinct plans.
+    let mut expected_len: Option<usize> = None;
 
     run_pipeline(
         in_file_name,
@@ -26,8 +29,9 @@ pub fn count_and_save_unique_plans(
         // the fixed district-set check is deliberately disabled (`None`) too.
         None,
         None,
-        |assignment, _n_reps| Ok((0u128, canonical_hash(assignment))),
-        |_step, _n_reps, _accepted, hash| {
+        |assignment, _n_reps| Ok((0u128, (assignment.len(), canonical_hash(assignment)))),
+        |_step, _n_reps, _accepted, (assignment_len, hash)| {
+            validate_assignment_len(&mut expected_len, assignment_len)?;
             unique.insert(hash);
             total_frames += 1;
             Ok(())

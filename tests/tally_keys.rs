@@ -218,3 +218,28 @@ fn tally_keys_mkvchain_step_advances_by_n_reps() {
     assert_eq!(u32_col(&df, "n_reps"), vec![2, 1]);
     assert_eq!(u64_col(&df, "accepted_count"), vec![1, 2]);
 }
+
+/// Duplicate keys would derive the same output path twice: two writers interleaving row groups
+/// into one file produces unreadable Parquet, so the CLI must reject the duplicate up front.
+#[test]
+fn tally_keys_rejects_duplicate_keys() {
+    let f = fixture(&tri_plans());
+    let stderr = run_failure(&[
+        "--mode",
+        "tally-keys",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--keys",
+        "pop",
+        "pop",
+        "--no-progress",
+    ]);
+    assert!(
+        stderr.contains("duplicate key \"pop\" passed to --keys"),
+        "stderr should report the duplicate key, got: {stderr}"
+    );
+}
