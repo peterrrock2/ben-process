@@ -1,7 +1,9 @@
 use crate::district::observe_district;
 use crate::graph::Graph;
 use crate::output::parquet::F64MetricWriter;
-use crate::pipeline::{parquet_compression, run_pipeline, PARQUET_BATCH_ROWS};
+use crate::pipeline::{
+    parquet_compression, run_pipeline, AssignmentLengthCheck, PARQUET_BATCH_ROWS,
+};
 use std::fs::File;
 
 /// Count cut edges for a single assignment, and capture the district label set in the same pass.
@@ -66,7 +68,7 @@ pub fn tally_and_save_cut_edges(
 
     run_pipeline(
         in_file_name,
-        Some(graph.node_count),
+        AssignmentLengthCheck::MatchesGraph(graph.node_count),
         Some("cut-edges"),
         |assignment, _n_reps| {
             let (cuts, observed) = cut_edges(&graph, assignment)?;

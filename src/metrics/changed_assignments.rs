@@ -1,8 +1,9 @@
 use crate::cli::build_output_path;
-use crate::district::{observed_assignment_districts, validate_district_set_unchanged};
 use crate::error::BenError;
 use crate::output::parquet::write_changed_assignments;
-use crate::pipeline::{count_frames, parquet_compression, run_sequential_accepted_frames};
+use crate::pipeline::{
+    count_frames, parquet_compression, run_sequential_accepted_frames, AssignmentLengthCheck,
+};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use std::fs::File;
@@ -203,24 +204,18 @@ pub fn tally_and_save_changed_assignments(
     let mut current_assignment: Option<Vec<u16>> = None;
     let mut current_permutation: Vec<u16> = Vec::new();
     let mut diff_count: Vec<u32> = Vec::new();
-    // The first frame's district label set; every later frame must use the same set, matching the
-    // fixed-district-set invariant the run_pipeline modes enforce centrally.
-    let mut expected_district_set: Option<u128> = None;
 
     let full_count = run_sequential_accepted_frames(
         in_ben_file,
         total_frames,
         Some(line_count),
+        // No graph is loaded, so the driver fixes the expected assignment length from the first
+        // frame (mixed lengths would silently zip-truncate the per-node diff below) and enforces
+        // the fixed-district-set invariant the run_pipeline modes get at the same chokepoint.
+        AssignmentLengthCheck::UniformWithinFile,
+        Some("changed-assignments"),
         show_progress,
         |frame| {
-            let observed = observed_assignment_districts(&frame.assignment)?.1;
-            match expected_district_set {
-                None => expected_district_set = Some(observed),
-                Some(expected) => {
-                    validate_district_set_unchanged(observed, expected, "changed-assignments")?
-                }
-            }
-
             if current_assignment.is_none() {
                 let max_assignment = *frame.assignment.iter().max().unwrap_or(&0);
                 current_permutation = (0..=max_assignment).collect();

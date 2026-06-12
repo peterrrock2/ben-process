@@ -3,8 +3,8 @@
 //! the assignment that gets written is the **first-seen original**, so labels in the output match
 //! how the plan first appeared in the input.
 
-use crate::metrics::canonical::{canonical_hash, validate_assignment_len};
-use crate::pipeline::{count_frames, run_sequential_accepted_frames};
+use crate::metrics::canonical::canonical_hash;
+use crate::pipeline::{count_frames, run_sequential_accepted_frames, AssignmentLengthCheck};
 use ben::encode::BenEncoder;
 use ben::BenVariant;
 use std::cell::RefCell;
@@ -58,14 +58,19 @@ pub fn extract_unique_plans(
     let mut sink: Option<Sink> = None;
     let mut seen: HashSet<u128> = HashSet::new();
     let mut written: u64 = 0;
-    // Frames of differing lengths within one file mean the ensemble is corrupt (no graph is loaded
-    // in this mode, so the pipeline's graph-length check doesn't apply); they would otherwise just
-    // hash as distinct plans.
-    let mut expected_len: Option<usize> = None;
 
-    let total =
-        run_sequential_accepted_frames(in_file_name, total_frames, None, show_progress, |frame| {
-            validate_assignment_len(&mut expected_len, frame.assignment.len())?;
+    let total = run_sequential_accepted_frames(
+        in_file_name,
+        total_frames,
+        None,
+        // No graph is loaded in this mode, so the driver establishes the expected assignment
+        // length from the first frame — mixed-length frames mean a corrupt ensemble and would
+        // otherwise just hash as distinct plans. The dedup is label-invariant by design, so the
+        // fixed district-set check stays off.
+        AssignmentLengthCheck::UniformWithinFile,
+        None,
+        show_progress,
+        |frame| {
             let hash = canonical_hash(&frame.assignment);
             if seen.insert(hash) {
                 if sink.is_none() {
@@ -78,7 +83,8 @@ pub fn extract_unique_plans(
                 written += 1;
             }
             Ok(())
-        })?;
+        },
+    )?;
 
     // A completed zero-frame run still emits a valid (header-only) Standard BEN.
     let (shared, mut encoder) = match sink {

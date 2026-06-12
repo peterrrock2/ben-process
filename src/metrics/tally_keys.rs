@@ -2,7 +2,9 @@ use crate::cli::{build_tally_output_dir, build_tally_output_path};
 use crate::district::observed_assignment_districts;
 use crate::graph::Graph;
 use crate::output::parquet::DistrictMetricWriter;
-use crate::pipeline::{parquet_compression, run_pipeline, PARQUET_BATCH_ROWS};
+use crate::pipeline::{
+    parquet_compression, run_pipeline, AssignmentLengthCheck, PARQUET_BATCH_ROWS,
+};
 use std::fs::{create_dir_all, File};
 
 /// Hot loop: flat index into pre-parsed attribute columns, accumulate into a flat per-district
@@ -70,7 +72,7 @@ pub fn tally_and_save_from_key_list(
 
     run_pipeline(
         in_file_name,
-        Some(graph.node_count),
+        AssignmentLengthCheck::MatchesGraph(graph.node_count),
         // The pipeline enforces that the district set is identical for every plan, so the schema
         // each writer fixes from its first row holds for the whole run.
         Some("tally"),

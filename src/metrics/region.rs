@@ -1,7 +1,9 @@
 use crate::district::observed_assignment_districts;
 use crate::graph::Graph;
 use crate::output::parquet::U32KeyedMetricWriter;
-use crate::pipeline::{parquet_compression, run_pipeline, PARQUET_BATCH_ROWS};
+use crate::pipeline::{
+    parquet_compression, run_pipeline, AssignmentLengthCheck, PARQUET_BATCH_ROWS,
+};
 use std::fs::File;
 use std::io;
 
@@ -115,7 +117,7 @@ pub fn tally_and_save_region_metric(
 
     run_pipeline(
         in_file_name,
-        Some(graph.node_count),
+        AssignmentLengthCheck::MatchesGraph(graph.node_count),
         // The pipeline enforces a fixed district set across the ensemble for region modes too.
         Some(metric_column_name),
         |assignment, _n_reps| {

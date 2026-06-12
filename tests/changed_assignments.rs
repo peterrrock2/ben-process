@@ -276,3 +276,27 @@ fn changed_assignments_fails_when_later_frame_drops_a_district() {
         "stderr should explain the dropped-district failure, got: {stderr}"
     );
 }
+
+/// Mixed assignment lengths within one BEN file are a corrupt ensemble: the per-node diff would
+/// silently zip-truncate to the shorter frame. The driver's uniform-length contract must reject
+/// the file instead.
+#[test]
+fn changed_assignments_fails_on_mixed_assignment_lengths() {
+    let plans = vec![vec![1u16, 1, 2, 2, 1, 1], vec![1u16, 1, 2, 2]];
+    let f = fixture(&plans);
+
+    let stderr = run_failure(&[
+        "--mode",
+        "changed-assignments",
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--no-progress",
+    ]);
+
+    assert!(
+        stderr.contains("assignment length changed from 6 to 4 within the BEN file"),
+        "stderr should explain the mixed-length failure, got: {stderr}"
+    );
+}
