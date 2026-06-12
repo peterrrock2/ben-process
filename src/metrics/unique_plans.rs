@@ -6,7 +6,7 @@
 
 use crate::metrics::canonical::canonical_hash;
 use crate::output::parquet::write_unique_plans;
-use crate::pipeline::{parquet_compression, run_pipeline, AssignmentLengthCheck};
+use crate::pipeline::{parquet_compression, run_label_invariant_pipeline, AssignmentLengthCheck};
 use std::collections::HashSet;
 use std::fs::File;
 
@@ -19,16 +19,15 @@ pub fn count_and_save_unique_plans(
     let mut unique: HashSet<u128> = HashSet::new();
     let mut total_frames: u64 = 0;
 
-    run_pipeline(
+    run_label_invariant_pipeline(
         in_file_name,
         // No graph is loaded for this mode — there is no node count to validate against, so the
         // pipeline establishes the expected length from the first frame and a corrupt
         // mixed-length file errors instead of counting the odd frames as distinct plans. The
-        // partition is label-invariant by design, so the fixed district-set check is deliberately
-        // disabled (`None`).
+        // partition is label-invariant by design, hence this entry point: no fixed district-set
+        // check applies.
         AssignmentLengthCheck::UniformWithinFile,
-        None,
-        |assignment, _n_reps| Ok((0u128, canonical_hash(assignment))),
+        |assignment, _n_reps| Ok(canonical_hash(assignment)),
         |_step, _n_reps, _accepted, hash| {
             unique.insert(hash);
             total_frames += 1;

@@ -75,7 +75,7 @@ pub fn tally_and_save_from_key_list(
         AssignmentLengthCheck::MatchesGraph(graph.node_count),
         // The pipeline enforces that the district set is identical for every plan, so the schema
         // each writer fixes from its first row holds for the whole run.
-        Some("tally"),
+        "tally",
         |assignment, _n_reps| {
             let (totals, n_districts, observed) =
                 tally_keys(&graph, assignment, &attr_column_indices)?;

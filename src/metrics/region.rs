@@ -119,7 +119,7 @@ pub fn tally_and_save_region_metric(
         in_file_name,
         AssignmentLengthCheck::MatchesGraph(graph.node_count),
         // The pipeline enforces a fixed district set across the ensemble for region modes too.
-        Some(metric_column_name),
+        metric_column_name,
         |assignment, _n_reps| {
             // One pass yields both the observed district set (for the pipeline's fixed-set check)
             // and `max_district`, which every per-key bitset below is sized from.

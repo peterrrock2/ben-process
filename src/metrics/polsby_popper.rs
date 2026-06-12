@@ -131,7 +131,7 @@ pub fn tally_and_save_polsby_popper(
         AssignmentLengthCheck::MatchesGraph(graph.node_count),
         // The pipeline enforces a fixed district set, so the schema fixed from the first row
         // holds.
-        Some("polsby-popper"),
+        "polsby-popper",
         |assignment, _n_reps| {
             let (scores, _n_districts, observed) = polsby_popper_rows(
                 assignment,

@@ -69,7 +69,7 @@ pub fn tally_and_save_cut_edges(
     run_pipeline(
         in_file_name,
         AssignmentLengthCheck::MatchesGraph(graph.node_count),
-        Some("cut-edges"),
+        "cut-edges",
         |assignment, _n_reps| {
             let (cuts, observed) = cut_edges(&graph, assignment)?;
             Ok((observed, cuts))

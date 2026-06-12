@@ -280,31 +280,82 @@ where
 /// Run a per-sample `process` closure over every record in `in_file`, with frame extraction serial
 /// on the caller thread and RLE-decode + `process` fused in parallel across a rayon pool.
 ///
+/// This is the entry point for modes whose output schema depends on district labels. `process`
+/// must return `(district_set, row)` — the `u128` is the observed district label set for this
+/// assignment, folded into the pass the metric already makes — and the pipeline enforces that the
+/// set stays fixed across the ensemble, failing with an error naming `district_set_label` on any
+/// add/drop. This is the single chokepoint that enforces "every plan in the ensemble uses the
+/// same district labels" for every graph-driven mode at once. Modes that don't care about labels
+/// use [`run_label_invariant_pipeline`] instead, which neither asks for nor checks district sets;
+/// there is no way to request the label check without supplying the observed set, or vice versa.
+///
 /// `on_row` is called in BEN-file order with `(sample_count, n_reps, accepted_count, row)` —
 /// `sample_count` advances by `n_reps` (MkvChain frames can carry >1), `accepted_count` by 1.
 ///
 /// `process` takes `(&[u16], u16)` = `(assignment, n_reps)` and is invoked inside the rayon pool;
-/// it must be `Sync` and produce `Send` rows. It returns `(district_set, row)`: the `u128` is the
-/// observed district label set for this assignment (folded into the pass the metric already makes),
-/// or `0` for label-invariant modes that opt out of the fixed-set check.
+/// it must be `Sync` and produce `Send` rows.
 ///
 /// `length_check` is [`AssignmentLengthCheck::MatchesGraph`] (the graph's node count) for
 /// graph-driven modes — every decoded assignment is asserted to match it before `process` runs, so
 /// a BEN file that disagrees with the graph fails loudly instead of mistallying — or
-/// [`AssignmentLengthCheck::UniformWithinFile`] for modes that don't tie assignments to a graph
-/// (e.g. unique plans, which only hashes the raw assignment); there, the first frame fixes the
-/// expected length and the check runs before each row reaches `on_row`.
-///
-/// `district_set_label` enables the fixed-district-set invariant: when `Some(label)`, the first
-/// frame's district label set is captured and every later frame's `district_set` must match it
-/// exactly, otherwise the run fails with an error naming `label`. This is the single chokepoint
-/// that enforces "every plan in the ensemble uses the same district labels" for every graph-driven
-/// mode at once. Pass `None` for label-invariant modes (unique plans), which must not be
-/// constrained this way.
+/// [`AssignmentLengthCheck::UniformWithinFile`] for modes that don't tie assignments to a graph;
+/// there, the first frame fixes the expected length and the check runs before each row reaches
+/// `on_row`.
 ///
 /// The total sample count needed to size the progress bar is computed here (a single extra pass
 /// over the file) only when `show_progress` is set, so `--no-progress` runs never pay for it.
 pub fn run_pipeline<Row, P, F>(
+    in_file: &str,
+    length_check: AssignmentLengthCheck,
+    district_set_label: &str,
+    process: P,
+    on_row: F,
+    show_progress: bool,
+) -> Result<()>
+where
+    Row: Send,
+    P: Fn(&[u16], u16) -> Result<(u128, Row)> + Sync,
+    F: FnMut(u64, u32, u64, Row) -> Result<()>,
+{
+    run_pipeline_core(
+        in_file,
+        length_check,
+        Some(district_set_label),
+        process,
+        on_row,
+        show_progress,
+    )
+}
+
+/// [`run_pipeline`] for label-invariant modes (unique plans): `process` returns just the row, and
+/// no fixed-district-set check applies — a changing district set must NOT error for these modes,
+/// and the type signature makes it impossible to half-opt-in.
+pub fn run_label_invariant_pipeline<Row, P, F>(
+    in_file: &str,
+    length_check: AssignmentLengthCheck,
+    process: P,
+    on_row: F,
+    show_progress: bool,
+) -> Result<()>
+where
+    Row: Send,
+    P: Fn(&[u16], u16) -> Result<Row> + Sync,
+    F: FnMut(u64, u32, u64, Row) -> Result<()>,
+{
+    run_pipeline_core(
+        in_file,
+        length_check,
+        None,
+        // The unchecked district set: `DistrictSetGuard` ignores it when no label is given.
+        move |assignment, n_reps| Ok((0u128, process(assignment, n_reps)?)),
+        on_row,
+        show_progress,
+    )
+}
+
+/// Shared driver behind the two public faces above. Private so the invalid pairings (a label
+/// without an observed set, an observed set without a label) stay unrepresentable to callers.
+fn run_pipeline_core<Row, P, F>(
     in_file: &str,
     length_check: AssignmentLengthCheck,
     district_set_label: Option<&str>,
@@ -347,13 +398,11 @@ where
     let mut length_guard = LengthGuard::new(length_check);
     let mut district_guard = DistrictSetGuard::new(district_set_label);
 
-    for frame_res in frames {
-        frame_batch.push(frame_res?);
-        if frame_batch.len() < BATCH {
-            continue;
-        }
+    // Single drain used for both the full mid-stream batches and the trailing partial batch, so
+    // the guard checks, row forwarding, and counter accounting can never diverge between the two.
+    let mut drain_batch = |frame_batch: &mut Vec<BenFrame>| -> Result<()> {
         for (n_reps, assignment_len, observed, row) in
-            process_batch(&process, graph_node_count, &frame_batch)?
+            process_batch(&process, graph_node_count, frame_batch)?
         {
             length_guard.check(assignment_len)?;
             district_guard.check(observed)?;
@@ -366,22 +415,17 @@ where
             }
         }
         frame_batch.clear();
-    }
+        Ok(())
+    };
 
-    if !frame_batch.is_empty() {
-        for (n_reps, assignment_len, observed, row) in
-            process_batch(&process, graph_node_count, &frame_batch)?
-        {
-            length_guard.check(assignment_len)?;
-            district_guard.check(observed)?;
-            on_row(sample_count, n_reps as u32, accepted_count, row)?;
-            sample_count += n_reps as u64;
-            accepted_count += 1;
-            if let Some(progress_bar) = &progress_bar {
-                progress_bar.inc(n_reps as u64);
-            }
+    for frame_res in frames {
+        frame_batch.push(frame_res?);
+        if frame_batch.len() == BATCH {
+            drain_batch(&mut frame_batch)?;
         }
     }
+    // Trailing partial batch; a no-op when the frame count was an exact multiple of BATCH.
+    drain_batch(&mut frame_batch)?;
 
     if let Some(progress_bar) = progress_bar {
         progress_bar.finish_and_clear();
@@ -392,8 +436,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        count_frames, count_samples, run_pipeline, run_sequential_accepted_frames,
-        AssignmentLengthCheck,
+        count_frames, count_samples, run_label_invariant_pipeline, run_pipeline,
+        run_sequential_accepted_frames, AssignmentLengthCheck,
     };
     use ben::encode::BenEncoder;
     use ben::BenVariant;
@@ -429,11 +473,10 @@ mod tests {
         );
 
         let mut rows = Vec::new();
-        run_pipeline(
+        run_label_invariant_pipeline(
             ben_file.path().to_str().unwrap(),
             AssignmentLengthCheck::MatchesGraph(4),
-            None,
-            |assignment, n_reps| Ok((0u128, (assignment[0], n_reps))),
+            |assignment, n_reps| Ok((assignment[0], n_reps)),
             |step, n_reps, accepted, row| {
                 rows.push((step, n_reps, accepted, row));
                 Ok(())
@@ -476,11 +519,10 @@ mod tests {
     /// that the contract is exact equality, not "at least this long".
     fn run_pipeline_with_expected_len(expected_len: usize) -> crate::error::Result<()> {
         let ben_file = write_ben_file(BenVariant::Standard, &[vec![0, 1, 2, 1]]);
-        run_pipeline(
+        run_label_invariant_pipeline(
             ben_file.path().to_str().unwrap(),
             AssignmentLengthCheck::MatchesGraph(expected_len),
-            None,
-            |assignment, _n_reps| Ok((0u128, assignment.len())),
+            |assignment, _n_reps| Ok(assignment.len()),
             |_step, _n_reps, _accepted, _row| Ok(()),
             false,
         )
@@ -513,11 +555,10 @@ mod tests {
         // forwarded to the mode.
         let ben_file = write_ben_file(BenVariant::Standard, &[vec![1, 1, 2, 2], vec![1, 2, 2]]);
         let mut seen = 0usize;
-        let err = run_pipeline(
+        let err = run_label_invariant_pipeline(
             ben_file.path().to_str().unwrap(),
             AssignmentLengthCheck::UniformWithinFile,
-            None,
-            |_assignment, _n_reps| Ok((0u128, ())),
+            |_assignment, _n_reps| Ok(()),
             |_step, _n_reps, _accepted, _row| {
                 seen += 1;
                 Ok(())
@@ -547,11 +588,10 @@ mod tests {
         let ben_file = write_ben_file(BenVariant::Standard, &assignments);
 
         let mut rows = Vec::new();
-        run_pipeline(
+        run_label_invariant_pipeline(
             ben_file.path().to_str().unwrap(),
             AssignmentLengthCheck::MatchesGraph(2),
-            None,
-            |assignment, _n_reps| Ok((0u128, assignment[0])),
+            |assignment, _n_reps| Ok(assignment[0]),
             |step, n_reps, accepted, marker| {
                 rows.push((step, n_reps, accepted, marker));
                 Ok(())
@@ -579,7 +619,7 @@ mod tests {
         let err = run_pipeline(
             ben_file.path().to_str().unwrap(),
             AssignmentLengthCheck::MatchesGraph(4),
-            Some("cut-edges"),
+            "cut-edges",
             |assignment, _n_reps| {
                 let mut observed = 0u128;
                 for &d in assignment {
@@ -599,16 +639,16 @@ mod tests {
     }
 
     #[test]
-    fn run_pipeline_skips_district_set_check_when_unlabelled() {
-        // Label-invariant modes (unique plans) pass `None` and a `0` district set: a changing set
-        // must NOT error. Both frames below would violate the labelled invariant if it applied.
+    fn run_label_invariant_pipeline_never_checks_district_sets() {
+        // Label-invariant modes (unique plans) use the entry point that neither asks for nor
+        // checks district sets: a changing set must NOT error. Both frames below would violate
+        // the labelled invariant if it applied.
         let ben_file = write_ben_file(BenVariant::Standard, &[vec![1, 1, 2, 2], vec![3, 3, 1, 1]]);
         let mut seen = 0usize;
-        run_pipeline(
+        run_label_invariant_pipeline(
             ben_file.path().to_str().unwrap(),
             AssignmentLengthCheck::UniformWithinFile,
-            None,
-            |_assignment, _n_reps| Ok((0u128, ())),
+            |_assignment, _n_reps| Ok(()),
             |_step, _n_reps, _accepted, _row| {
                 seen += 1;
                 Ok(())
