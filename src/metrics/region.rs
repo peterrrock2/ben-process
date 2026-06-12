@@ -94,21 +94,24 @@ pub fn tally_and_save_region_metric(
         .collect();
 
     let metric_column_name = region_metric_column_name(metric);
-    let file = File::create(out_file_name).map_err(|e| {
-        io::Error::new(
-            e.kind(),
-            format!("failed to create region output file {out_file_name:?}: {e}"),
-        )
-    })?;
-
+    // The output file is created lazily on the first decoded assignment (or at finish for a
+    // zero-frame run), so a run that fails before producing data leaves nothing on disk.
+    let out_path = out_file_name.to_string();
     let batch_capacity = PARQUET_BATCH_ROWS * key_list.len();
     let mut writer = U32KeyedMetricWriter::new(
-        file,
+        Box::new(move || {
+            File::create(&out_path).map_err(|e| {
+                io::Error::new(
+                    e.kind(),
+                    format!("failed to create region output file {out_path:?}: {e}"),
+                )
+            })
+        }),
         "region_key",
         metric_column_name,
         parquet_compression(high_compression),
         batch_capacity,
-    )?;
+    );
 
     run_pipeline(
         in_file_name,
@@ -262,15 +265,15 @@ mod tests {
     #[test]
     fn region_batched_writer_appends_multiple_batches() {
         let file = NamedTempFile::new().unwrap();
+        let path = file.path().to_path_buf();
         let metric_column_name = region_metric_column_name(RegionMetric::Splits);
         let mut writer = U32KeyedMetricWriter::new(
-            File::create(file.path()).unwrap(),
+            Box::new(move || File::create(path)),
             "region_key",
             metric_column_name,
             parquet_compression(false),
             2,
-        )
-        .unwrap();
+        );
 
         writer.push(1, 1, 1, "county", 2).unwrap();
         writer.push(2, 1, 2, "county", 3).unwrap();

@@ -101,6 +101,12 @@ Required:
 Optional:
 - `--edge-weight-key <EDGE_WEIGHT_KEY>`
 
+Notes:
+- with `--edge-weight-key`, edges missing the key (or carrying JSON `null`) fall back to a
+  default weight of 1.0; a key that matches **zero** edges, a present value that doesn't parse
+  to a finite number, or two directions of an edge that disagree on the value are all hard
+  errors rather than silent fallbacks
+
 Output:
 - `<ben_stem>_cut_edges.parquet`
 - columns:
@@ -150,6 +156,13 @@ Notes:
   that column instead
 - the first assignment fixes the output district columns; if later plans
   introduce unseen district ids, the run fails fast
+- a shared-perimeter key that matches zero edges is a hard error (it would
+  silently produce boundary-only perimeters); a boundary-perimeter key that
+  matches zero nodes warns but proceeds (legitimate for boundary-free grid
+  graphs)
+- a district whose computed perimeter is zero or negative fails the run —
+  that means the geometry keys are wrong, and scoring it 0.0 would bury the
+  data problem in plausible-looking output
 
 Examples:
 
@@ -270,6 +283,15 @@ ben-process \
 
 Counts label-invariant unique partitions in a BEN file.
 
+Notes:
+- deduplication is hash-based: each plan is canonically relabeled (districts numbered in order
+  of first appearance) and hashed with xxh3-128, so two distinct partitions colliding on a
+  digest would be silently counted as one. The xxh3-128 birthday bound makes this negligible
+  for real ensembles — at 10^9 distinct plans the collision probability is ~1.5e-21 — but
+  xxh3 is not cryptographic, so adversarially constructed inputs could collide deliberately
+- all plans in the file must have the same assignment length; a mixed-length file is rejected
+  as corrupt (this mode loads no graph, so the usual graph-length check does not apply)
+
 Output:
 - `<ben_stem>_unique_plans.parquet`
 - a single row with columns:
@@ -287,6 +309,9 @@ ben-process \
 ### `extract-unique-plans`
 
 Extracts the first occurrence of each label-invariant unique partition and writes them back out as a Standard BEN file.
+
+Notes:
+- the same hash-based deduplication and mixed-length rejection as `unique-plans` apply
 
 Output:
 - `<ben_stem>_unique.jsonl.ben`

@@ -7,10 +7,39 @@ use crate::metrics::canonical::{canonical_hash, validate_assignment_len};
 use crate::pipeline::{count_frames, run_sequential_accepted_frames};
 use ben::encode::BenEncoder;
 use ben::BenVariant;
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::{self, BufWriter, Write};
 use std::path::Path;
+use std::rc::Rc;
+
+/// `Write` handle sharing one `BufWriter<File>` between the [`BenEncoder`] (which must own its
+/// writer) and this module (which must flush explicitly at the end — `BufWriter`'s `Drop` flushes
+/// but swallows errors, and a swallowed disk-full would mean a silently truncated output BEN).
+struct SharedWriter(Rc<RefCell<BufWriter<File>>>);
+
+impl Write for SharedWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.borrow_mut().write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.borrow_mut().flush()
+    }
+}
+
+type Sink = (Rc<RefCell<BufWriter<File>>>, BenEncoder<SharedWriter>);
+
+/// Open the output file and wrap it in an encoder. `BenEncoder::new` writes the BEN header
+/// immediately, so this must not run before the first assignment decodes successfully (or until a
+/// zero-frame run has completed) — a failed run must leave no output file.
+fn make_sink(out_file_name: &str) -> io::Result<Sink> {
+    let file = File::create(out_file_name)?;
+    let shared = Rc::new(RefCell::new(BufWriter::new(file)));
+    let encoder = BenEncoder::new(SharedWriter(Rc::clone(&shared)), BenVariant::Standard);
+    Ok((shared, encoder))
+}
 
 pub fn extract_unique_plans(
     in_file_name: &str,
@@ -26,10 +55,7 @@ pub fn extract_unique_plans(
     let total_frames = count_frames(in_file_name)?;
     log::info!("Found {} accepted plans in {:?}", total_frames, basename);
 
-    let out_file = File::create(out_file_name)?;
-    let mut writer = BufWriter::new(out_file);
-    let mut encoder = BenEncoder::new(&mut writer, BenVariant::Standard);
-
+    let mut sink: Option<Sink> = None;
     let mut seen: HashSet<u128> = HashSet::new();
     let mut written: u64 = 0;
     // Frames of differing lengths within one file mean the ensemble is corrupt (no graph is loaded
@@ -42,17 +68,26 @@ pub fn extract_unique_plans(
             validate_assignment_len(&mut expected_len, frame.assignment.len())?;
             let hash = canonical_hash(&frame.assignment);
             if seen.insert(hash) {
+                if sink.is_none() {
+                    sink = Some(make_sink(out_file_name)?);
+                }
+                let (_, encoder) = sink
+                    .as_mut()
+                    .expect("sink should be initialized before the first unique plan is written");
                 encoder.write_assignment(frame.assignment)?;
                 written += 1;
             }
             Ok(())
         })?;
 
+    // A completed zero-frame run still emits a valid (header-only) Standard BEN.
+    let (shared, mut encoder) = match sink {
+        Some(sink) => sink,
+        None => make_sink(out_file_name)?,
+    };
     encoder.finish()?;
     drop(encoder);
-    // BufWriter's Drop flushes but swallows errors — an explicit flush makes a failed write (e.g.
-    // disk full) a hard error instead of a silently truncated output BEN.
-    writer.flush()?;
+    shared.borrow_mut().flush()?;
 
     log::info!(
         "Unique plans: {} (out of {} accepted frames)",

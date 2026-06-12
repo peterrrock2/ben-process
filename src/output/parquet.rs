@@ -1,9 +1,25 @@
+//! Batched Parquet writers for the per-plan metric modes.
+//!
+//! All writers create their output file **lazily**: construction takes a file factory and performs
+//! no I/O, the file is created when the first row is pushed (i.e. after the first assignment has
+//! decoded successfully), and `finish` creates it then if no row ever arrived so a successful
+//! zero-frame run still leaves a readable, empty-schema output. A run that fails before the first
+//! decoded assignment therefore leaves no output file behind.
+
+use crate::district::sorted_district_ids;
 use polars::io::parquet::write::BatchedWriter;
 use polars::prelude::*;
 use std::fs::File;
+use std::io;
+
+/// Deferred output-file constructor. Invoked at most once, on the first pushed row (or at
+/// `finish` for a zero-row run). The factory owns any directory creation its path needs.
+pub(crate) type FileFactory = Box<dyn FnOnce() -> io::Result<File>>;
 
 pub(crate) struct F64MetricWriter {
-    writer: BatchedWriter<File>,
+    make_file: Option<FileFactory>,
+    writer: Option<BatchedWriter<File>>,
+    compression: ParquetCompression,
     metric_column_name: String,
     batch_rows: usize,
     sample_numbers: Vec<u64>,
@@ -13,7 +29,9 @@ pub(crate) struct F64MetricWriter {
 }
 
 pub(crate) struct U32KeyedMetricWriter {
-    writer: BatchedWriter<File>,
+    make_file: Option<FileFactory>,
+    writer: Option<BatchedWriter<File>>,
+    compression: ParquetCompression,
     key_column_name: String,
     metric_column_name: String,
     batch_rows: usize,
@@ -24,8 +42,16 @@ pub(crate) struct U32KeyedMetricWriter {
     metric_values: Vec<u32>,
 }
 
+/// Streaming writer for per-district metric tables (`step`, `n_reps`, `accepted_count`, plus one
+/// `district_N` column per observed district).
+///
+/// The district-column schema is fixed from the **first pushed row's** observed set; callers never
+/// pass district ids. This is sound because `run_pipeline` enforces a fixed district set across
+/// the ensemble, so the first row's set is every row's set.
 pub(crate) struct DistrictMetricWriter {
-    writer: BatchedWriter<File>,
+    make_file: Option<FileFactory>,
+    writer: Option<BatchedWriter<File>>,
+    compression: ParquetCompression,
     district_ids: Vec<u16>,
     batch_rows: usize,
     sample_numbers: Vec<u64>,
@@ -36,26 +62,37 @@ pub(crate) struct DistrictMetricWriter {
 
 impl F64MetricWriter {
     pub(crate) fn new(
-        file: File,
+        make_file: FileFactory,
         metric_column_name: impl Into<String>,
         compression: ParquetCompression,
         batch_rows: usize,
-    ) -> crate::error::Result<Self> {
-        let metric_column_name = metric_column_name.into();
-        let empty_df = empty_f64_metric_df(&metric_column_name)?;
-        let writer = ParquetWriter::new(file)
-            .with_compression(compression)
-            .batched(empty_df.schema())?;
-
-        Ok(Self {
-            writer,
-            metric_column_name,
+    ) -> Self {
+        Self {
+            make_file: Some(make_file),
+            writer: None,
+            compression,
+            metric_column_name: metric_column_name.into(),
             batch_rows,
             sample_numbers: Vec::with_capacity(batch_rows),
             n_reps_numbers: Vec::with_capacity(batch_rows),
             accepted_numbers: Vec::with_capacity(batch_rows),
             metric_values: Vec::with_capacity(batch_rows),
-        })
+        }
+    }
+
+    fn create_writer(&mut self) -> crate::error::Result<()> {
+        let make_file = self
+            .make_file
+            .take()
+            .expect("output file factory should be unconsumed before the writer exists");
+        let file = make_file()?;
+        let empty_df = empty_f64_metric_df(&self.metric_column_name)?;
+        self.writer = Some(
+            ParquetWriter::new(file)
+                .with_compression(self.compression)
+                .batched(empty_df.schema())?,
+        );
+        Ok(())
     }
 
     pub(crate) fn push(
@@ -65,6 +102,10 @@ impl F64MetricWriter {
         accepted_count: u64,
         value: f64,
     ) -> crate::error::Result<()> {
+        if self.writer.is_none() {
+            self.create_writer()?;
+        }
+
         self.sample_numbers.push(step);
         self.n_reps_numbers.push(n_reps);
         self.accepted_numbers.push(accepted_count);
@@ -78,8 +119,15 @@ impl F64MetricWriter {
     }
 
     pub(crate) fn finish(mut self) -> crate::error::Result<()> {
+        if self.writer.is_none() {
+            // Zero rows pushed but the run completed: emit the empty-schema output now.
+            self.create_writer()?;
+        }
         self.flush()?;
-        self.writer.finish()?;
+        self.writer
+            .take()
+            .expect("writer should exist after create_writer")
+            .finish()?;
         Ok(())
     }
 
@@ -95,7 +143,10 @@ impl F64MetricWriter {
             &mut self.accepted_numbers,
             &mut self.metric_values,
         )?;
-        self.writer.write_batch(&df)?;
+        self.writer
+            .as_mut()
+            .expect("writer should exist once rows are buffered")
+            .write_batch(&df)?;
         self.reset_buffers();
 
         Ok(())
@@ -111,30 +162,40 @@ impl F64MetricWriter {
 
 impl U32KeyedMetricWriter {
     pub(crate) fn new(
-        file: File,
+        make_file: FileFactory,
         key_column_name: impl Into<String>,
         metric_column_name: impl Into<String>,
         compression: ParquetCompression,
         batch_rows: usize,
-    ) -> crate::error::Result<Self> {
-        let key_column_name = key_column_name.into();
-        let metric_column_name = metric_column_name.into();
-        let empty_df = empty_u32_keyed_metric_df(&key_column_name, &metric_column_name)?;
-        let writer = ParquetWriter::new(file)
-            .with_compression(compression)
-            .batched(empty_df.schema())?;
-
-        Ok(Self {
-            writer,
-            key_column_name,
-            metric_column_name,
+    ) -> Self {
+        Self {
+            make_file: Some(make_file),
+            writer: None,
+            compression,
+            key_column_name: key_column_name.into(),
+            metric_column_name: metric_column_name.into(),
             batch_rows,
             sample_numbers: Vec::with_capacity(batch_rows),
             n_reps_numbers: Vec::with_capacity(batch_rows),
             accepted_numbers: Vec::with_capacity(batch_rows),
             metric_keys: Vec::with_capacity(batch_rows),
             metric_values: Vec::with_capacity(batch_rows),
-        })
+        }
+    }
+
+    fn create_writer(&mut self) -> crate::error::Result<()> {
+        let make_file = self
+            .make_file
+            .take()
+            .expect("output file factory should be unconsumed before the writer exists");
+        let file = make_file()?;
+        let empty_df = empty_u32_keyed_metric_df(&self.key_column_name, &self.metric_column_name)?;
+        self.writer = Some(
+            ParquetWriter::new(file)
+                .with_compression(self.compression)
+                .batched(empty_df.schema())?,
+        );
+        Ok(())
     }
 
     pub(crate) fn push(
@@ -145,6 +206,10 @@ impl U32KeyedMetricWriter {
         key: impl Into<String>,
         value: u32,
     ) -> crate::error::Result<()> {
+        if self.writer.is_none() {
+            self.create_writer()?;
+        }
+
         self.sample_numbers.push(step);
         self.n_reps_numbers.push(n_reps);
         self.accepted_numbers.push(accepted_count);
@@ -159,8 +224,14 @@ impl U32KeyedMetricWriter {
     }
 
     pub(crate) fn finish(mut self) -> crate::error::Result<()> {
+        if self.writer.is_none() {
+            self.create_writer()?;
+        }
         self.flush()?;
-        self.writer.finish()?;
+        self.writer
+            .take()
+            .expect("writer should exist after create_writer")
+            .finish()?;
         Ok(())
     }
 
@@ -178,7 +249,10 @@ impl U32KeyedMetricWriter {
             &mut self.metric_keys,
             &mut self.metric_values,
         )?;
-        self.writer.write_batch(&df)?;
+        self.writer
+            .as_mut()
+            .expect("writer should exist once rows are buffered")
+            .write_batch(&df)?;
         self.reset_buffers();
 
         Ok(())
@@ -195,43 +269,66 @@ impl U32KeyedMetricWriter {
 
 impl DistrictMetricWriter {
     pub(crate) fn new(
-        file: File,
-        district_ids: Vec<u16>,
+        make_file: FileFactory,
         compression: ParquetCompression,
         batch_rows: usize,
-    ) -> crate::error::Result<Self> {
-        let empty_df = empty_district_metric_df(&district_ids)?;
-        let writer = ParquetWriter::new(file)
-            .with_compression(compression)
-            .batched(empty_df.schema())?;
-
-        Ok(Self {
-            writer,
-            district_columns: district_ids
-                .iter()
-                .map(|_| Vec::with_capacity(batch_rows))
-                .collect(),
-            district_ids,
+    ) -> Self {
+        Self {
+            make_file: Some(make_file),
+            writer: None,
+            compression,
+            district_ids: Vec::new(),
             batch_rows,
             sample_numbers: Vec::with_capacity(batch_rows),
             n_reps_numbers: Vec::with_capacity(batch_rows),
             accepted_numbers: Vec::with_capacity(batch_rows),
-        })
+            district_columns: Vec::new(),
+        }
     }
 
-    pub(crate) fn push_row_with(
+    fn create_writer(&mut self) -> crate::error::Result<()> {
+        let make_file = self
+            .make_file
+            .take()
+            .expect("output file factory should be unconsumed before the writer exists");
+        let file = make_file()?;
+        let empty_df = empty_district_metric_df(&self.district_ids)?;
+        self.writer = Some(
+            ParquetWriter::new(file)
+                .with_compression(self.compression)
+                .batched(empty_df.schema())?,
+        );
+        Ok(())
+    }
+
+    /// Push one plan's row. `values` is indexed by district label (`values[d]` is district `d`'s
+    /// value, length `max observed label + 1`); the writer selects the observed labels itself.
+    ///
+    /// The first call fixes the schema from `observed` and creates the output file.
+    pub(crate) fn push_row(
         &mut self,
         step: u64,
         n_reps: u32,
         accepted_count: u64,
-        mut value_for_district: impl FnMut(u16) -> Option<f64>,
+        observed: u128,
+        values: &[f64],
     ) -> crate::error::Result<()> {
+        if self.writer.is_none() {
+            self.district_ids = sorted_district_ids(observed);
+            self.district_columns = self
+                .district_ids
+                .iter()
+                .map(|_| Vec::with_capacity(self.batch_rows))
+                .collect();
+            self.create_writer()?;
+        }
+
         self.sample_numbers.push(step);
         self.n_reps_numbers.push(n_reps);
         self.accepted_numbers.push(accepted_count);
 
         for (column_index, &district_id) in self.district_ids.iter().enumerate() {
-            self.district_columns[column_index].push(value_for_district(district_id));
+            self.district_columns[column_index].push(values.get(district_id as usize).copied());
         }
 
         if self.sample_numbers.len() >= self.batch_rows {
@@ -242,8 +339,16 @@ impl DistrictMetricWriter {
     }
 
     pub(crate) fn finish(mut self) -> crate::error::Result<()> {
+        if self.writer.is_none() {
+            // Zero rows pushed but the run completed: emit the empty-schema output (no district
+            // columns) now.
+            self.create_writer()?;
+        }
         self.flush()?;
-        self.writer.finish()?;
+        self.writer
+            .take()
+            .expect("writer should exist after create_writer")
+            .finish()?;
         Ok(())
     }
 
@@ -259,7 +364,10 @@ impl DistrictMetricWriter {
             &mut self.accepted_numbers,
             &mut self.district_columns,
         )?;
-        self.writer.write_batch(&df)?;
+        self.writer
+            .as_mut()
+            .expect("writer should exist once rows are buffered")
+            .write_batch(&df)?;
         self.reset_buffers();
 
         Ok(())
@@ -416,45 +524,44 @@ mod tests {
     use crate::pipeline::parquet_compression;
     use polars::prelude::{ParquetReader, SerReader};
     use std::fs::File;
-    use tempfile::NamedTempFile;
+    use tempfile::tempdir;
+
+    fn writer_for(path: std::path::PathBuf, batch_rows: usize) -> DistrictMetricWriter {
+        DistrictMetricWriter::new(
+            Box::new(move || File::create(path)),
+            parquet_compression(false),
+            batch_rows,
+        )
+    }
 
     #[test]
-    fn district_metric_writer_appends_multiple_batches() {
-        let file = NamedTempFile::new().unwrap();
-        let mut writer = DistrictMetricWriter::new(
-            File::create(file.path()).unwrap(),
-            vec![1, 2],
-            parquet_compression(false),
-            2,
-        )
-        .unwrap();
+    fn district_metric_writer_fixes_schema_from_first_row_and_appends_batches() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("out.parquet");
+        let mut writer = writer_for(path.clone(), 2);
 
+        // No I/O happens at construction: the file must not exist until the first row arrives.
+        assert!(!path.exists(), "no output file before the first pushed row");
+
+        let observed = (1u128 << 1) | (1u128 << 2);
+        // values[d] is district d's value; district 0 is unobserved and must not get a column.
         writer
-            .push_row_with(1, 1, 1, |district| match district {
-                1 => Some(0.1),
-                2 => Some(0.3),
-                _ => unreachable!(),
-            })
+            .push_row(1, 1, 1, observed, &[9.9, 0.1, 0.3])
             .unwrap();
+        assert!(path.exists(), "first pushed row creates the output file");
         writer
-            .push_row_with(2, 1, 2, |district| match district {
-                1 => Some(0.2),
-                2 => Some(0.4),
-                _ => unreachable!(),
-            })
+            .push_row(2, 1, 2, observed, &[9.9, 0.2, 0.4])
             .unwrap();
-        writer
-            .push_row_with(3, 2, 3, |district| match district {
-                1 => Some(0.5),
-                2 => None,
-                _ => unreachable!(),
-            })
-            .unwrap();
+        writer.push_row(3, 2, 3, observed, &[9.9, 0.5]).unwrap();
         writer.finish().unwrap();
 
-        let df = ParquetReader::new(&mut File::open(file.path()).unwrap())
+        let df = ParquetReader::new(&mut File::open(&path).unwrap())
             .finish()
             .unwrap();
+        assert!(
+            df.column("district_0").is_err(),
+            "unobserved district 0 must not appear in the schema"
+        );
         assert_eq!(
             df.column("step")
                 .unwrap()
@@ -473,6 +580,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![Some(0.1), Some(0.2), Some(0.5)]
         );
+        // The third row's values slice is too short for district 2 → a null cell, not a panic.
         assert_eq!(
             df.column("district_2")
                 .unwrap()
@@ -481,6 +589,25 @@ mod tests {
                 .into_iter()
                 .collect::<Vec<_>>(),
             vec![Some(0.3), Some(0.4), None]
+        );
+    }
+
+    #[test]
+    fn district_metric_writer_emits_empty_schema_file_when_no_rows_arrive() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("empty.parquet");
+        let writer = writer_for(path.clone(), 2);
+
+        assert!(!path.exists());
+        writer.finish().unwrap();
+
+        let df = ParquetReader::new(&mut File::open(&path).unwrap())
+            .finish()
+            .unwrap();
+        assert_eq!(df.height(), 0);
+        assert_eq!(
+            df.get_column_names(),
+            vec!["step", "n_reps", "accepted_count"]
         );
     }
 }

@@ -1,27 +1,16 @@
 use crate::cli::{build_tally_output_dir, build_tally_output_path};
-use crate::district::{observed_assignment_districts, sorted_district_ids};
+use crate::district::observed_assignment_districts;
 use crate::graph::Graph;
 use crate::output::parquet::DistrictMetricWriter;
 use crate::pipeline::{parquet_compression, run_pipeline, PARQUET_BATCH_ROWS};
 use std::fs::{create_dir_all, File};
 
-/// Per-sample tally result.
+/// Hot loop: flat index into pre-parsed attribute columns, accumulate into a flat per-district
+/// totals vector. No HashMap work inside the inner loop.
 ///
 /// `totals` is a flat `Vec<f64>` of shape `[n_keys * n_districts]`, where
 /// `n_districts = max(assignment) + 1`. `observed` has bit `d` set iff district `d` appeared in
-/// this sample's assignment. Keeping `observed` lets the writer emit columns only for districts
-/// that actually show up in the first assignment, which fixes the per-key parquet schemas.
-struct TallyRow {
-    sample_number: u64,
-    n_reps: u32,
-    accepted_count: u64,
-    totals: Vec<f64>,
-    n_districts: u16,
-    observed: u128,
-}
-
-/// Hot loop: flat index into pre-parsed attribute columns, accumulate into a flat per-district
-/// totals vector. No HashMap work inside the inner loop.
+/// this sample's assignment.
 fn tally_keys(
     graph: &Graph,
     assignment: &[u16],
@@ -43,23 +32,6 @@ fn tally_keys(
     Ok((totals, n_districts as u16, observed))
 }
 
-fn make_key_writer_state(
-    ben_file_name: &str,
-    output_dir: Option<&str>,
-    key: &str,
-    district_ids: &[u16],
-    high_compression: bool,
-) -> crate::error::Result<DistrictMetricWriter> {
-    let output_path = build_tally_output_path(ben_file_name, key, output_dir);
-    let file = File::create(output_path)?;
-    DistrictMetricWriter::new(
-        file,
-        district_ids.to_vec(),
-        parquet_compression(high_compression),
-        PARQUET_BATCH_ROWS,
-    )
-}
-
 pub fn tally_and_save_from_key_list(
     graph: Graph,
     in_file_name: &str,
@@ -77,73 +49,46 @@ pub fn tally_and_save_from_key_list(
         })
         .collect();
 
-    create_dir_all(build_tally_output_dir(in_file_name, output_dir))?;
-
-    let mut key_states: Option<Vec<DistrictMetricWriter>> = None;
-    let mut district_ids: Vec<u16> = Vec::new();
+    // One writer per key, each owning its output path. No file (and no tallies directory) is
+    // created here: the writer defers that to the first decoded assignment, so a run that fails
+    // before producing data leaves nothing on disk.
+    let mut writers: Vec<DistrictMetricWriter> = key_list
+        .iter()
+        .map(|key| {
+            let tally_dir = build_tally_output_dir(in_file_name, output_dir);
+            let output_path = build_tally_output_path(in_file_name, key, output_dir);
+            DistrictMetricWriter::new(
+                Box::new(move || {
+                    create_dir_all(&tally_dir)?;
+                    File::create(output_path)
+                }),
+                parquet_compression(high_compression),
+                PARQUET_BATCH_ROWS,
+            )
+        })
+        .collect();
 
     run_pipeline(
         in_file_name,
         Some(graph.node_count),
-        // The pipeline enforces that this district set is identical for every plan, so the schema
-        // fixed from the first row below holds for the whole run.
+        // The pipeline enforces that the district set is identical for every plan, so the schema
+        // each writer fixes from its first row holds for the whole run.
         Some("tally"),
         |assignment, _n_reps| {
             let (totals, n_districts, observed) =
                 tally_keys(&graph, assignment, &attr_column_indices)?;
             Ok((observed, (totals, n_districts, observed)))
         },
-        |step, n_reps, accepted, row| {
-            let (totals, n_districts, observed) = row;
-            let row = TallyRow {
-                sample_number: step,
-                n_reps,
-                accepted_count: accepted,
-                totals,
-                n_districts,
-                observed,
-            };
-
-            if key_states.is_none() {
-                district_ids = sorted_district_ids(row.observed);
-                key_states = Some(
-                    key_list
-                        .iter()
-                        .map(|key| {
-                            make_key_writer_state(
-                                in_file_name,
-                                output_dir,
-                                key,
-                                &district_ids,
-                                high_compression,
-                            )
-                        })
-                        .collect::<Result<Vec<_>, _>>()?,
-                );
-            }
-
-            for (key_index, state) in key_states
-                .as_mut()
-                .expect("writers should exist before writing tallies")
-                .iter_mut()
-                .enumerate()
-            {
-                let n_districts = row.n_districts as usize;
+        |step, n_reps, accepted, (totals, n_districts, observed)| {
+            let n_districts = n_districts as usize;
+            for (key_index, writer) in writers.iter_mut().enumerate() {
                 let offset = key_index * n_districts;
-                state.push_row_with(
-                    row.sample_number,
-                    row.n_reps,
-                    row.accepted_count,
-                    |district| {
-                        let district_index = district as usize;
-                        let present = district_index < n_districts
-                            && (row.observed & (1u128 << district)) != 0;
-                        if present {
-                            Some(row.totals[offset + district_index])
-                        } else {
-                            None
-                        }
-                    },
+                writer.push_row(
+                    step,
+                    n_reps,
+                    accepted,
+                    observed,
+                    &totals[offset..offset + n_districts],
                 )?;
             }
             Ok(())
@@ -152,27 +97,8 @@ pub fn tally_and_save_from_key_list(
     )?;
 
     log::info!("Writing final output...");
-    let key_states = match key_states {
-        Some(states) => states,
-        None => {
-            district_ids = vec![];
-            key_list
-                .iter()
-                .map(|key| {
-                    make_key_writer_state(
-                        in_file_name,
-                        output_dir,
-                        key,
-                        &district_ids,
-                        high_compression,
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()?
-        }
-    };
-
-    for state in key_states {
-        state.finish()?;
+    for writer in writers {
+        writer.finish()?;
     }
     log::info!("Done!");
     Ok(())

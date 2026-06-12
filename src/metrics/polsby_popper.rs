@@ -1,18 +1,9 @@
-use crate::district::{observed_assignment_districts, sorted_district_ids};
+use crate::district::observed_assignment_districts;
 use crate::graph::Graph;
 use crate::output::parquet::DistrictMetricWriter;
 use crate::pipeline::{parquet_compression, run_pipeline, PARQUET_BATCH_ROWS};
 use std::fs::File;
 use std::io;
-
-struct PolsbyRow {
-    sample_number: u64,
-    n_reps: u32,
-    accepted_count: u64,
-    scores: Vec<f64>,
-    n_districts: u16,
-    observed: u128,
-}
 
 #[inline]
 fn polsby_popper_score(area: f64, perimeter: f64) -> f64 {
@@ -124,8 +115,14 @@ pub fn tally_and_save_polsby_popper(
         derive_total_perimeters(boundary_perimeters, &graph.edges, shared_perimeters)
     };
 
-    let mut file = Some(File::create(out_file_name)?);
-    let mut writer_state: Option<DistrictMetricWriter> = None;
+    // The writer fixes its district-column schema from the first row's observed set and creates
+    // the output file at that point; a run that fails before decoding a plan leaves no file.
+    let out_path = out_file_name.to_string();
+    let mut writer = DistrictMetricWriter::new(
+        Box::new(move || File::create(out_path)),
+        parquet_compression(high_compression),
+        PARQUET_BATCH_ROWS,
+    );
 
     run_pipeline(
         in_file_name,
@@ -134,73 +131,23 @@ pub fn tally_and_save_polsby_popper(
         // holds.
         Some("polsby-popper"),
         |assignment, _n_reps| {
-            let (scores, n_districts, observed) = polsby_popper_rows(
+            let (scores, _n_districts, observed) = polsby_popper_rows(
                 assignment,
                 area_values,
                 &total_perimeters,
                 &graph.edges,
                 shared_perimeters,
             )?;
-            Ok((observed, (scores, n_districts, observed)))
+            Ok((observed, (scores, observed)))
         },
-        |step, n_reps, accepted, row| {
-            let (scores, n_districts, observed) = row;
-            let row = PolsbyRow {
-                sample_number: step,
-                n_reps,
-                accepted_count: accepted,
-                scores,
-                n_districts,
-                observed,
-            };
-
-            if writer_state.is_none() {
-                let district_ids = sorted_district_ids(row.observed);
-                writer_state = Some(DistrictMetricWriter::new(
-                    file.take()
-                        .expect("output file should be available when initializing writer"),
-                    district_ids.clone(),
-                    parquet_compression(high_compression),
-                    PARQUET_BATCH_ROWS,
-                )?);
-            }
-
-            let state = writer_state
-                .as_mut()
-                .expect("writer should exist before writing polsby-popper rows");
-            let n_districts = row.n_districts as usize;
-            state.push_row_with(
-                row.sample_number,
-                row.n_reps,
-                row.accepted_count,
-                |district| {
-                    let district_index = district as usize;
-                    let present =
-                        district_index < n_districts && (row.observed & (1u128 << district)) != 0;
-                    if present {
-                        Some(row.scores[district_index])
-                    } else {
-                        None
-                    }
-                },
-            )?;
-            Ok(())
+        |step, n_reps, accepted, (scores, observed)| {
+            writer.push_row(step, n_reps, accepted, observed, &scores)
         },
         show_progress,
     )?;
 
     log::info!("Writing final output...");
-    let writer_state = match writer_state {
-        Some(state) => state,
-        None => DistrictMetricWriter::new(
-            file.take()
-                .expect("output file should be available when initializing empty writer"),
-            vec![],
-            parquet_compression(high_compression),
-            PARQUET_BATCH_ROWS,
-        )?,
-    };
-    writer_state.finish()?;
+    writer.finish()?;
     log::info!("Done!");
     Ok(())
 }

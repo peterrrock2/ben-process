@@ -85,6 +85,12 @@ fn changed_assignments_fails_on_empty_ben_input() {
         stderr.contains("No data found"),
         "changed-assignments should report no data on empty input, got: {stderr}"
     );
+    assert!(
+        !f.dir
+            .join("plans_accept_0_changed_assignments.parquet")
+            .exists(),
+        "failed run must not leave an output file behind"
+    );
 }
 
 /// `unique-plans` on a zero-frame BEN should report zero of both counts.

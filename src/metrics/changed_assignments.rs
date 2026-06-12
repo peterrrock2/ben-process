@@ -200,13 +200,6 @@ pub fn tally_and_save_changed_assignments(
         output_dir,
     );
 
-    let out = File::create(&out_file_name).map_err(|e| {
-        io::Error::new(
-            e.kind(),
-            format!("could not create changed-assignments output file {out_file_name:?}: {e}"),
-        )
-    })?;
-
     let mut current_assignment: Option<Vec<u16>> = None;
     let mut current_permutation: Vec<u16> = Vec::new();
     let mut diff_count: Vec<u32> = Vec::new();
@@ -259,6 +252,14 @@ pub fn tally_and_save_changed_assignments(
     log::info!("Final count: {}", full_count);
     log::info!("Writing final output...");
 
+    // Created only now, after the whole ensemble processed cleanly: a failed run (including the
+    // empty-input NoData error above) leaves no output file behind.
+    let out = File::create(&out_file_name).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("could not create changed-assignments output file {out_file_name:?}: {e}"),
+        )
+    })?;
     write_changed_assignments(out, &final_count, parquet_compression(high_compression))?;
 
     log::info!("Done!");
