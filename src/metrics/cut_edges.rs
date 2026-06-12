@@ -72,7 +72,7 @@ pub fn tally_and_save_cut_edges(
             let (cuts, observed) = cut_edges(&graph, assignment)?;
             Ok((observed, cuts))
         },
-        |step, n_reps, accepted, cuts| writer.push(step, n_reps, accepted, cuts),
+        |step, n_reps, accepted, cuts| writer.push_row(step, n_reps, accepted, cuts),
         show_progress,
     )?;
 
@@ -193,9 +193,9 @@ mod tests {
             2,
         );
 
-        writer.push(1, 1, 1, 3.0).unwrap();
-        writer.push(2, 1, 2, 4.0).unwrap();
-        writer.push(3, 2, 3, 9.5).unwrap();
+        writer.push_row(1, 1, 1, 3.0).unwrap();
+        writer.push_row(2, 1, 2, 4.0).unwrap();
+        writer.push_row(3, 2, 3, 9.5).unwrap();
         writer.finish().unwrap();
 
         let df = ParquetReader::new(&mut File::open(file.path()).unwrap())

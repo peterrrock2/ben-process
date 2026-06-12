@@ -143,7 +143,7 @@ pub fn tally_and_save_region_metric(
         },
         |step, n_reps, accepted, counts| {
             for (key, count) in counts {
-                writer.push(step, n_reps, accepted, key, count)?;
+                writer.push_row(step, n_reps, accepted, (key, count))?;
             }
             Ok(())
         },
@@ -275,9 +275,9 @@ mod tests {
             2,
         );
 
-        writer.push(1, 1, 1, "county", 2).unwrap();
-        writer.push(2, 1, 2, "county", 3).unwrap();
-        writer.push(3, 2, 3, "county", 4).unwrap();
+        writer.push_row(1, 1, 1, ("county".into(), 2)).unwrap();
+        writer.push_row(2, 1, 2, ("county".into(), 3)).unwrap();
+        writer.push_row(3, 2, 3, ("county".into(), 4)).unwrap();
         writer.finish().unwrap();
 
         let df = ParquetReader::new(&mut File::open(file.path()).unwrap())

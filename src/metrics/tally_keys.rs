@@ -87,8 +87,7 @@ pub fn tally_and_save_from_key_list(
                     step,
                     n_reps,
                     accepted,
-                    observed,
-                    &totals[offset..offset + n_districts],
+                    (observed, &totals[offset..offset + n_districts]),
                 )?;
             }
             Ok(())

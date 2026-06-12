@@ -1,5 +1,11 @@
 //! Batched Parquet writers for the per-plan metric modes.
 //!
+//! One writer, [`BatchedMetricWriter`], owns the whole output lifecycle — lazy file creation,
+//! the shared `step` / `n_reps` / `accepted_count` prefix columns, batch flushing, and the
+//! zero-row fallback. What varies per mode is only the metric columns, supplied as a
+//! [`MetricColumns`] implementation; the three column shapes in use are aliased as
+//! [`F64MetricWriter`], [`U32KeyedMetricWriter`], and [`DistrictMetricWriter`].
+//!
 //! All writers create their output file **lazily**: construction takes a file factory and performs
 //! no I/O, the file is created when the first row is pushed (i.e. after the first assignment has
 //! decoded successfully), and `finish` creates it then if no row ever arrived so a successful
@@ -11,72 +17,66 @@ use polars::io::parquet::write::BatchedWriter;
 use polars::prelude::*;
 use std::fs::File;
 use std::io;
+use std::mem;
 
 /// Deferred output-file constructor. Invoked at most once, on the first pushed row (or at
 /// `finish` for a zero-row run). The factory owns any directory creation its path needs.
 pub(crate) type FileFactory = Box<dyn FnOnce() -> io::Result<File>>;
 
-pub(crate) struct F64MetricWriter {
-    make_file: Option<FileFactory>,
-    writer: Option<BatchedWriter<File>>,
-    compression: ParquetCompression,
-    metric_column_name: String,
-    batch_rows: usize,
-    sample_numbers: Vec<u64>,
-    n_reps_numbers: Vec<u32>,
-    accepted_numbers: Vec<u64>,
-    metric_values: Vec<f64>,
-}
-
-pub(crate) struct U32KeyedMetricWriter {
-    make_file: Option<FileFactory>,
-    writer: Option<BatchedWriter<File>>,
-    compression: ParquetCompression,
-    key_column_name: String,
-    metric_column_name: String,
-    batch_rows: usize,
-    sample_numbers: Vec<u64>,
-    n_reps_numbers: Vec<u32>,
-    accepted_numbers: Vec<u64>,
-    metric_keys: Vec<String>,
-    metric_values: Vec<u32>,
-}
-
-/// Streaming writer for per-district metric tables (`step`, `n_reps`, `accepted_count`, plus one
-/// `district_N` column per observed district).
+/// The metric-column part of an output table: everything to the right of the shared
+/// `step` / `n_reps` / `accepted_count` prefix.
 ///
-/// The district-column schema is fixed from the **first pushed row's** observed set; callers never
-/// pass district ids. This is sound because `run_pipeline` enforces a fixed district set across
-/// the ensemble, so the first row's set is every row's set.
-pub(crate) struct DistrictMetricWriter {
+/// Implementations buffer one cell set per [`push`](Self::push) and surrender the buffered
+/// columns at each batch flush. The buffers must stay row-aligned with the writer's prefix
+/// buffers — exactly one `push` per writer row.
+pub(crate) trait MetricColumns {
+    /// Per-row payload accepted by [`BatchedMetricWriter::push_row`].
+    type Row<'a>;
+
+    /// Fix schema-affecting state from the first row. Called exactly once, right before the
+    /// output file and its schema are created; shapes with a static schema use the default no-op.
+    fn fix_schema(&mut self, _first_row: &Self::Row<'_>, _batch_rows: usize) {}
+
+    /// The metric columns of the empty-schema dataframe (zero rows each).
+    fn empty_columns(&self) -> Vec<Column>;
+
+    /// Buffer one row's metric cells.
+    fn push(&mut self, row: Self::Row<'_>);
+
+    /// Drain the buffered cells into columns for one batch, leaving fresh buffers with
+    /// `batch_rows` capacity behind.
+    fn take_columns(&mut self, batch_rows: usize) -> Vec<Column>;
+}
+
+/// Streaming Parquet writer for per-plan metric tables: the shared prefix columns plus whatever
+/// metric columns `C` contributes. See the module docs for the lazy file-creation contract.
+pub(crate) struct BatchedMetricWriter<C: MetricColumns> {
+    columns: C,
     make_file: Option<FileFactory>,
     writer: Option<BatchedWriter<File>>,
     compression: ParquetCompression,
-    district_ids: Vec<u16>,
     batch_rows: usize,
     sample_numbers: Vec<u64>,
     n_reps_numbers: Vec<u32>,
     accepted_numbers: Vec<u64>,
-    district_columns: Vec<Vec<Option<f64>>>,
 }
 
-impl F64MetricWriter {
-    pub(crate) fn new(
+impl<C: MetricColumns> BatchedMetricWriter<C> {
+    fn with_columns(
+        columns: C,
         make_file: FileFactory,
-        metric_column_name: impl Into<String>,
         compression: ParquetCompression,
         batch_rows: usize,
     ) -> Self {
         Self {
+            columns,
             make_file: Some(make_file),
             writer: None,
             compression,
-            metric_column_name: metric_column_name.into(),
             batch_rows,
             sample_numbers: Vec::with_capacity(batch_rows),
             n_reps_numbers: Vec::with_capacity(batch_rows),
             accepted_numbers: Vec::with_capacity(batch_rows),
-            metric_values: Vec::with_capacity(batch_rows),
         }
     }
 
@@ -86,7 +86,9 @@ impl F64MetricWriter {
             .take()
             .expect("output file factory should be unconsumed before the writer exists");
         let file = make_file()?;
-        let empty_df = empty_f64_metric_df(&self.metric_column_name)?;
+        let mut schema_columns = prefix_columns(Vec::new(), Vec::new(), Vec::new());
+        schema_columns.extend(self.columns.empty_columns());
+        let empty_df = DataFrame::new_infer_height(schema_columns)?;
         self.writer = Some(
             ParquetWriter::new(file)
                 .with_compression(self.compression)
@@ -95,21 +97,24 @@ impl F64MetricWriter {
         Ok(())
     }
 
-    pub(crate) fn push(
+    /// Push one plan's row. The first call fixes the schema (for shapes that derive it from the
+    /// first row) and creates the output file.
+    pub(crate) fn push_row(
         &mut self,
         step: u64,
         n_reps: u32,
         accepted_count: u64,
-        value: f64,
+        row: C::Row<'_>,
     ) -> crate::error::Result<()> {
         if self.writer.is_none() {
+            self.columns.fix_schema(&row, self.batch_rows);
             self.create_writer()?;
         }
 
         self.sample_numbers.push(step);
         self.n_reps_numbers.push(n_reps);
         self.accepted_numbers.push(accepted_count);
-        self.metric_values.push(value);
+        self.columns.push(row);
 
         if self.sample_numbers.len() >= self.batch_rows {
             self.flush()?;
@@ -136,29 +141,122 @@ impl F64MetricWriter {
             return Ok(());
         }
 
-        let df = f64_metric_batch_to_df(
-            &self.metric_column_name,
-            &mut self.sample_numbers,
-            &mut self.n_reps_numbers,
-            &mut self.accepted_numbers,
-            &mut self.metric_values,
-        )?;
+        let cap = self.batch_rows;
+        let mut batch_columns = prefix_columns(
+            mem::replace(&mut self.sample_numbers, Vec::with_capacity(cap)),
+            mem::replace(&mut self.n_reps_numbers, Vec::with_capacity(cap)),
+            mem::replace(&mut self.accepted_numbers, Vec::with_capacity(cap)),
+        );
+        batch_columns.extend(self.columns.take_columns(cap));
+        let df = DataFrame::new_infer_height(batch_columns)?;
         self.writer
             .as_mut()
             .expect("writer should exist once rows are buffered")
             .write_batch(&df)?;
-        self.reset_buffers();
 
         Ok(())
     }
+}
 
-    fn reset_buffers(&mut self) {
-        self.sample_numbers = Vec::with_capacity(self.batch_rows);
-        self.n_reps_numbers = Vec::with_capacity(self.batch_rows);
-        self.accepted_numbers = Vec::with_capacity(self.batch_rows);
-        self.metric_values = Vec::with_capacity(self.batch_rows);
+fn prefix_columns(
+    sample_numbers: Vec<u64>,
+    n_reps_numbers: Vec<u32>,
+    accepted_numbers: Vec<u64>,
+) -> Vec<Column> {
+    vec![
+        Series::new("step".into(), sample_numbers).into(),
+        Series::new("n_reps".into(), n_reps_numbers).into(),
+        Series::new("accepted_count".into(), accepted_numbers).into(),
+    ]
+}
+
+/// One named `f64` column; rows are the bare value.
+pub(crate) struct F64Column {
+    name: String,
+    values: Vec<f64>,
+}
+
+impl MetricColumns for F64Column {
+    type Row<'a> = f64;
+
+    fn empty_columns(&self) -> Vec<Column> {
+        vec![Series::new(self.name.as_str().into(), Vec::<f64>::new()).into()]
+    }
+
+    fn push(&mut self, value: f64) {
+        self.values.push(value);
+    }
+
+    fn take_columns(&mut self, batch_rows: usize) -> Vec<Column> {
+        vec![Series::new(
+            self.name.as_str().into(),
+            mem::replace(&mut self.values, Vec::with_capacity(batch_rows)),
+        )
+        .into()]
     }
 }
+
+pub(crate) type F64MetricWriter = BatchedMetricWriter<F64Column>;
+
+impl F64MetricWriter {
+    pub(crate) fn new(
+        make_file: FileFactory,
+        metric_column_name: impl Into<String>,
+        compression: ParquetCompression,
+        batch_rows: usize,
+    ) -> Self {
+        Self::with_columns(
+            F64Column {
+                name: metric_column_name.into(),
+                values: Vec::with_capacity(batch_rows),
+            },
+            make_file,
+            compression,
+            batch_rows,
+        )
+    }
+}
+
+/// A string key column plus a named `u32` column; rows are `(key, value)`.
+pub(crate) struct U32KeyedColumns {
+    key_name: String,
+    metric_name: String,
+    keys: Vec<String>,
+    values: Vec<u32>,
+}
+
+impl MetricColumns for U32KeyedColumns {
+    type Row<'a> = (String, u32);
+
+    fn empty_columns(&self) -> Vec<Column> {
+        vec![
+            Series::new(self.key_name.as_str().into(), Vec::<String>::new()).into(),
+            Series::new(self.metric_name.as_str().into(), Vec::<u32>::new()).into(),
+        ]
+    }
+
+    fn push(&mut self, (key, value): (String, u32)) {
+        self.keys.push(key);
+        self.values.push(value);
+    }
+
+    fn take_columns(&mut self, batch_rows: usize) -> Vec<Column> {
+        vec![
+            Series::new(
+                self.key_name.as_str().into(),
+                mem::replace(&mut self.keys, Vec::with_capacity(batch_rows)),
+            )
+            .into(),
+            Series::new(
+                self.metric_name.as_str().into(),
+                mem::replace(&mut self.values, Vec::with_capacity(batch_rows)),
+            )
+            .into(),
+        ]
+    }
+}
+
+pub(crate) type U32KeyedMetricWriter = BatchedMetricWriter<U32KeyedColumns>;
 
 impl U32KeyedMetricWriter {
     pub(crate) fn new(
@@ -168,104 +266,79 @@ impl U32KeyedMetricWriter {
         compression: ParquetCompression,
         batch_rows: usize,
     ) -> Self {
-        Self {
-            make_file: Some(make_file),
-            writer: None,
+        Self::with_columns(
+            U32KeyedColumns {
+                key_name: key_column_name.into(),
+                metric_name: metric_column_name.into(),
+                keys: Vec::with_capacity(batch_rows),
+                values: Vec::with_capacity(batch_rows),
+            },
+            make_file,
             compression,
-            key_column_name: key_column_name.into(),
-            metric_column_name: metric_column_name.into(),
             batch_rows,
-            sample_numbers: Vec::with_capacity(batch_rows),
-            n_reps_numbers: Vec::with_capacity(batch_rows),
-            accepted_numbers: Vec::with_capacity(batch_rows),
-            metric_keys: Vec::with_capacity(batch_rows),
-            metric_values: Vec::with_capacity(batch_rows),
-        }
-    }
-
-    fn create_writer(&mut self) -> crate::error::Result<()> {
-        let make_file = self
-            .make_file
-            .take()
-            .expect("output file factory should be unconsumed before the writer exists");
-        let file = make_file()?;
-        let empty_df = empty_u32_keyed_metric_df(&self.key_column_name, &self.metric_column_name)?;
-        self.writer = Some(
-            ParquetWriter::new(file)
-                .with_compression(self.compression)
-                .batched(empty_df.schema())?,
-        );
-        Ok(())
-    }
-
-    pub(crate) fn push(
-        &mut self,
-        step: u64,
-        n_reps: u32,
-        accepted_count: u64,
-        key: impl Into<String>,
-        value: u32,
-    ) -> crate::error::Result<()> {
-        if self.writer.is_none() {
-            self.create_writer()?;
-        }
-
-        self.sample_numbers.push(step);
-        self.n_reps_numbers.push(n_reps);
-        self.accepted_numbers.push(accepted_count);
-        self.metric_keys.push(key.into());
-        self.metric_values.push(value);
-
-        if self.sample_numbers.len() >= self.batch_rows {
-            self.flush()?;
-        }
-
-        Ok(())
-    }
-
-    pub(crate) fn finish(mut self) -> crate::error::Result<()> {
-        if self.writer.is_none() {
-            self.create_writer()?;
-        }
-        self.flush()?;
-        self.writer
-            .take()
-            .expect("writer should exist after create_writer")
-            .finish()?;
-        Ok(())
-    }
-
-    fn flush(&mut self) -> crate::error::Result<()> {
-        if self.sample_numbers.is_empty() {
-            return Ok(());
-        }
-
-        let df = u32_keyed_metric_batch_to_df(
-            &self.key_column_name,
-            &self.metric_column_name,
-            &mut self.sample_numbers,
-            &mut self.n_reps_numbers,
-            &mut self.accepted_numbers,
-            &mut self.metric_keys,
-            &mut self.metric_values,
-        )?;
-        self.writer
-            .as_mut()
-            .expect("writer should exist once rows are buffered")
-            .write_batch(&df)?;
-        self.reset_buffers();
-
-        Ok(())
-    }
-
-    fn reset_buffers(&mut self) {
-        self.sample_numbers = Vec::with_capacity(self.batch_rows);
-        self.n_reps_numbers = Vec::with_capacity(self.batch_rows);
-        self.accepted_numbers = Vec::with_capacity(self.batch_rows);
-        self.metric_keys = Vec::with_capacity(self.batch_rows);
-        self.metric_values = Vec::with_capacity(self.batch_rows);
+        )
     }
 }
+
+/// One nullable `district_N` column per observed district; rows are `(observed, values)` where
+/// `values` is indexed by district label (`values[d]` is district `d`'s value, length
+/// `max observed label + 1`) — the shape selects the observed labels itself.
+///
+/// The district-column schema is fixed from the **first pushed row's** observed set; callers
+/// never pass district ids. This is sound because `run_pipeline` enforces a fixed district set
+/// across the ensemble, so the first row's set is every row's set.
+pub(crate) struct DistrictColumns {
+    district_ids: Vec<u16>,
+    columns: Vec<Vec<Option<f64>>>,
+}
+
+impl MetricColumns for DistrictColumns {
+    type Row<'a> = (u128, &'a [f64]);
+
+    fn fix_schema(&mut self, &(observed, _values): &Self::Row<'_>, batch_rows: usize) {
+        self.district_ids = sorted_district_ids(observed);
+        self.columns = self
+            .district_ids
+            .iter()
+            .map(|_| Vec::with_capacity(batch_rows))
+            .collect();
+    }
+
+    fn empty_columns(&self) -> Vec<Column> {
+        self.district_ids
+            .iter()
+            .map(|district_id| {
+                Series::new(
+                    format!("district_{}", district_id).into(),
+                    Vec::<Option<f64>>::new(),
+                )
+                .into()
+            })
+            .collect()
+    }
+
+    fn push(&mut self, (_observed, values): (u128, &[f64])) {
+        for (column_index, &district_id) in self.district_ids.iter().enumerate() {
+            self.columns[column_index].push(values.get(district_id as usize).copied());
+        }
+    }
+
+    fn take_columns(&mut self, batch_rows: usize) -> Vec<Column> {
+        self.district_ids
+            .iter()
+            .zip(self.columns.iter_mut())
+            .map(|(district_id, column)| {
+                Series::new(
+                    format!("district_{}", district_id).into(),
+                    mem::replace(column, Vec::with_capacity(batch_rows)),
+                )
+                .into()
+            })
+            .collect()
+    }
+}
+
+pub(crate) type DistrictMetricWriter = BatchedMetricWriter<DistrictColumns>;
 
 impl DistrictMetricWriter {
     pub(crate) fn new(
@@ -273,212 +346,16 @@ impl DistrictMetricWriter {
         compression: ParquetCompression,
         batch_rows: usize,
     ) -> Self {
-        Self {
-            make_file: Some(make_file),
-            writer: None,
+        Self::with_columns(
+            DistrictColumns {
+                district_ids: Vec::new(),
+                columns: Vec::new(),
+            },
+            make_file,
             compression,
-            district_ids: Vec::new(),
             batch_rows,
-            sample_numbers: Vec::with_capacity(batch_rows),
-            n_reps_numbers: Vec::with_capacity(batch_rows),
-            accepted_numbers: Vec::with_capacity(batch_rows),
-            district_columns: Vec::new(),
-        }
+        )
     }
-
-    fn create_writer(&mut self) -> crate::error::Result<()> {
-        let make_file = self
-            .make_file
-            .take()
-            .expect("output file factory should be unconsumed before the writer exists");
-        let file = make_file()?;
-        let empty_df = empty_district_metric_df(&self.district_ids)?;
-        self.writer = Some(
-            ParquetWriter::new(file)
-                .with_compression(self.compression)
-                .batched(empty_df.schema())?,
-        );
-        Ok(())
-    }
-
-    /// Push one plan's row. `values` is indexed by district label (`values[d]` is district `d`'s
-    /// value, length `max observed label + 1`); the writer selects the observed labels itself.
-    ///
-    /// The first call fixes the schema from `observed` and creates the output file.
-    pub(crate) fn push_row(
-        &mut self,
-        step: u64,
-        n_reps: u32,
-        accepted_count: u64,
-        observed: u128,
-        values: &[f64],
-    ) -> crate::error::Result<()> {
-        if self.writer.is_none() {
-            self.district_ids = sorted_district_ids(observed);
-            self.district_columns = self
-                .district_ids
-                .iter()
-                .map(|_| Vec::with_capacity(self.batch_rows))
-                .collect();
-            self.create_writer()?;
-        }
-
-        self.sample_numbers.push(step);
-        self.n_reps_numbers.push(n_reps);
-        self.accepted_numbers.push(accepted_count);
-
-        for (column_index, &district_id) in self.district_ids.iter().enumerate() {
-            self.district_columns[column_index].push(values.get(district_id as usize).copied());
-        }
-
-        if self.sample_numbers.len() >= self.batch_rows {
-            self.flush()?;
-        }
-
-        Ok(())
-    }
-
-    pub(crate) fn finish(mut self) -> crate::error::Result<()> {
-        if self.writer.is_none() {
-            // Zero rows pushed but the run completed: emit the empty-schema output (no district
-            // columns) now.
-            self.create_writer()?;
-        }
-        self.flush()?;
-        self.writer
-            .take()
-            .expect("writer should exist after create_writer")
-            .finish()?;
-        Ok(())
-    }
-
-    fn flush(&mut self) -> crate::error::Result<()> {
-        if self.sample_numbers.is_empty() {
-            return Ok(());
-        }
-
-        let df = district_metric_batch_to_df(
-            &self.district_ids,
-            &mut self.sample_numbers,
-            &mut self.n_reps_numbers,
-            &mut self.accepted_numbers,
-            &mut self.district_columns,
-        )?;
-        self.writer
-            .as_mut()
-            .expect("writer should exist once rows are buffered")
-            .write_batch(&df)?;
-        self.reset_buffers();
-
-        Ok(())
-    }
-
-    fn reset_buffers(&mut self) {
-        self.sample_numbers = Vec::with_capacity(self.batch_rows);
-        self.n_reps_numbers = Vec::with_capacity(self.batch_rows);
-        self.accepted_numbers = Vec::with_capacity(self.batch_rows);
-        self.district_columns = self
-            .district_ids
-            .iter()
-            .map(|_| Vec::with_capacity(self.batch_rows))
-            .collect();
-    }
-}
-
-fn empty_f64_metric_df(metric_column_name: &str) -> PolarsResult<DataFrame> {
-    DataFrame::new_infer_height(vec![
-        Series::new("step".into(), Vec::<u64>::new()).into(),
-        Series::new("n_reps".into(), Vec::<u32>::new()).into(),
-        Series::new("accepted_count".into(), Vec::<u64>::new()).into(),
-        Series::new(metric_column_name.into(), Vec::<f64>::new()).into(),
-    ])
-}
-
-fn empty_district_metric_df(district_ids: &[u16]) -> PolarsResult<DataFrame> {
-    let mut df = DataFrame::new_infer_height(vec![
-        Series::new("step".into(), Vec::<u64>::new()).into(),
-        Series::new("n_reps".into(), Vec::<u32>::new()).into(),
-        Series::new("accepted_count".into(), Vec::<u64>::new()).into(),
-    ])?;
-
-    for &district_id in district_ids {
-        df.with_column(
-            Series::new(
-                format!("district_{}", district_id).into(),
-                Vec::<Option<f64>>::new(),
-            )
-            .into(),
-        )?;
-    }
-
-    Ok(df)
-}
-
-fn f64_metric_batch_to_df(
-    metric_column_name: &str,
-    sample_numbers: &mut Vec<u64>,
-    n_reps_numbers: &mut Vec<u32>,
-    accepted_numbers: &mut Vec<u64>,
-    metric_values: &mut Vec<f64>,
-) -> PolarsResult<DataFrame> {
-    DataFrame::new_infer_height(vec![
-        Series::new("step".into(), std::mem::take(sample_numbers)).into(),
-        Series::new("n_reps".into(), std::mem::take(n_reps_numbers)).into(),
-        Series::new("accepted_count".into(), std::mem::take(accepted_numbers)).into(),
-        Series::new(metric_column_name.into(), std::mem::take(metric_values)).into(),
-    ])
-}
-
-fn empty_u32_keyed_metric_df(
-    key_column_name: &str,
-    metric_column_name: &str,
-) -> PolarsResult<DataFrame> {
-    DataFrame::new_infer_height(vec![
-        Series::new("step".into(), Vec::<u64>::new()).into(),
-        Series::new("n_reps".into(), Vec::<u32>::new()).into(),
-        Series::new("accepted_count".into(), Vec::<u64>::new()).into(),
-        Series::new(key_column_name.into(), Vec::<String>::new()).into(),
-        Series::new(metric_column_name.into(), Vec::<u32>::new()).into(),
-    ])
-}
-
-fn u32_keyed_metric_batch_to_df(
-    key_column_name: &str,
-    metric_column_name: &str,
-    sample_numbers: &mut Vec<u64>,
-    n_reps_numbers: &mut Vec<u32>,
-    accepted_numbers: &mut Vec<u64>,
-    metric_keys: &mut Vec<String>,
-    metric_values: &mut Vec<u32>,
-) -> PolarsResult<DataFrame> {
-    DataFrame::new_infer_height(vec![
-        Series::new("step".into(), std::mem::take(sample_numbers)).into(),
-        Series::new("n_reps".into(), std::mem::take(n_reps_numbers)).into(),
-        Series::new("accepted_count".into(), std::mem::take(accepted_numbers)).into(),
-        Series::new(key_column_name.into(), std::mem::take(metric_keys)).into(),
-        Series::new(metric_column_name.into(), std::mem::take(metric_values)).into(),
-    ])
-}
-
-fn district_metric_batch_to_df(
-    district_ids: &[u16],
-    sample_numbers: &mut Vec<u64>,
-    n_reps_numbers: &mut Vec<u32>,
-    accepted_numbers: &mut Vec<u64>,
-    district_columns: &mut [Vec<Option<f64>>],
-) -> PolarsResult<DataFrame> {
-    let mut df = DataFrame::new_infer_height(vec![
-        Series::new("step".into(), std::mem::take(sample_numbers)).into(),
-        Series::new("n_reps".into(), std::mem::take(n_reps_numbers)).into(),
-        Series::new("accepted_count".into(), std::mem::take(accepted_numbers)).into(),
-    ])?;
-
-    for (column_index, &district_id) in district_ids.iter().enumerate() {
-        let column = std::mem::take(&mut district_columns[column_index]);
-        df.with_column(Series::new(format!("district_{}", district_id).into(), column).into())?;
-    }
-
-    Ok(df)
 }
 
 /// Write the per-node changed-assignment counts as a two-column Parquet table (`node`,
@@ -546,13 +423,13 @@ mod tests {
         let observed = (1u128 << 1) | (1u128 << 2);
         // values[d] is district d's value; district 0 is unobserved and must not get a column.
         writer
-            .push_row(1, 1, 1, observed, &[9.9, 0.1, 0.3])
+            .push_row(1, 1, 1, (observed, &[9.9, 0.1, 0.3]))
             .unwrap();
         assert!(path.exists(), "first pushed row creates the output file");
         writer
-            .push_row(2, 1, 2, observed, &[9.9, 0.2, 0.4])
+            .push_row(2, 1, 2, (observed, &[9.9, 0.2, 0.4]))
             .unwrap();
-        writer.push_row(3, 2, 3, observed, &[9.9, 0.5]).unwrap();
+        writer.push_row(3, 2, 3, (observed, &[9.9, 0.5])).unwrap();
         writer.finish().unwrap();
 
         let df = ParquetReader::new(&mut File::open(&path).unwrap())

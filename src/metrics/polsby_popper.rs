@@ -141,7 +141,7 @@ pub fn tally_and_save_polsby_popper(
             Ok((observed, (scores, observed)))
         },
         |step, n_reps, accepted, (scores, observed)| {
-            writer.push_row(step, n_reps, accepted, observed, &scores)
+            writer.push_row(step, n_reps, accepted, (observed, &scores))
         },
         show_progress,
     )?;
