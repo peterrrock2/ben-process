@@ -1,4 +1,4 @@
-use crate::district::observe_district;
+use crate::district::observed_assignment_districts;
 use crate::graph::Graph;
 use crate::output::parquet::F64MetricWriter;
 use crate::pipeline::{
@@ -6,27 +6,24 @@ use crate::pipeline::{
 };
 use std::fs::File;
 
-/// Count cut edges for a single assignment, and capture the district label set in the same pass.
+/// Count cut edges for a single assignment, and capture the district label set.
 ///
 /// `graph.edges` is a flat `Vec<(u32, u32)>` and — when the caller asked for a weighted tally —
 /// `graph.edge_weights` is a parallel `Vec<f64>` resolved once at load time. The hot loop is a
 /// straight pass over both, with no hashing and no per-sample string lookups.
 ///
-/// Returns `(cut_value, observed_districts)`. The observed mask is folded in from the edge
-/// endpoints this loop already reads, so the pipeline can enforce a fixed district set without a
-/// second pass. Note this captures districts that touch at least one edge; an isolated node (degree
-/// 0, not present in a GerryChain dual graph) would not be reflected.
+/// Returns `(cut_value, observed_districts)`. The observed mask is taken from the assignment
+/// itself, not the edge endpoints: an isolated node (degree 0) never appears as an endpoint, so an
+/// edge-derived set would let such a node change districts without tripping the pipeline's
+/// fixed-district-set check. The assignment pass is also cheaper — one `observe_district` per node
+/// instead of two per edge.
 fn cut_edges(graph: &Graph, assignment: &[u16]) -> crate::error::Result<(f64, u128)> {
-    let mut observed: u128 = 0;
+    let (_n_districts, observed) = observed_assignment_districts(assignment)?;
     let cut_value = match &graph.edge_weights {
         Some(weights) => {
             let mut total = 0.0f64;
             for (edge_index, &(node_u, node_v)) in graph.edges.iter().enumerate() {
-                let district_u = assignment[node_u as usize];
-                let district_v = assignment[node_v as usize];
-                observe_district(&mut observed, district_u)?;
-                observe_district(&mut observed, district_v)?;
-                if district_u != district_v {
+                if assignment[node_u as usize] != assignment[node_v as usize] {
                     total += weights[edge_index];
                 }
             }
@@ -35,11 +32,7 @@ fn cut_edges(graph: &Graph, assignment: &[u16]) -> crate::error::Result<(f64, u1
         None => {
             let mut count: u64 = 0;
             for &(node_u, node_v) in graph.edges.iter() {
-                let district_u = assignment[node_u as usize];
-                let district_v = assignment[node_v as usize];
-                observe_district(&mut observed, district_u)?;
-                observe_district(&mut observed, district_v)?;
-                if district_u != district_v {
+                if assignment[node_u as usize] != assignment[node_v as usize] {
                     count += 1;
                 }
             }
@@ -150,18 +143,38 @@ mod tests {
     fn cut_edges_returns_zero_for_empty_edge_list() {
         // No edges → no crossings, regardless of assignment. Both the weighted and unweighted code
         // paths must return 0.0 cleanly (no panic on the zip with weights, no negative-length iter
-        // issues). The district set is captured from edge endpoints, so with no edges it is empty
-        // (0) — pinning that the cut-edges set is edge-derived, not node-derived.
+        // issues). The district set is captured from the assignment, not the edge endpoints, so it
+        // is full even with no edges — pinning that the cut-edges set is node-derived.
+        let d123 = (1u128 << 1) | (1u128 << 2) | (1u128 << 3);
         let unweighted = graph_with_explicit_edges(vec![], None);
         let weighted = graph_with_explicit_edges(vec![], Some(vec![]));
-        assert_eq!(cut_edges(&unweighted, &[1, 2, 3]).unwrap(), (0.0, 0u128));
-        assert_eq!(cut_edges(&weighted, &[1, 2, 3]).unwrap(), (0.0, 0u128));
+        assert_eq!(cut_edges(&unweighted, &[1, 2, 3]).unwrap(), (0.0, d123));
+        assert_eq!(cut_edges(&weighted, &[1, 2, 3]).unwrap(), (0.0, d123));
+    }
+
+    #[test]
+    fn cut_edges_observes_isolated_node_districts() {
+        // Node 2 has no incident edges. Its district must still appear in the observed set, or the
+        // pipeline's fixed-district-set guard could never see it change across frames.
+        let graph = Graph {
+            node_count: 3,
+            attr_columns: vec![],
+            attr_index: HashMap::new(),
+            region_columns: vec![],
+            region_index: HashMap::new(),
+            region_id_counts: vec![],
+            edges: vec![(0, 1)],
+            edge_weights: None,
+        };
+        let d125 = (1u128 << 1) | (1u128 << 2) | (1u128 << 5);
+        assert_eq!(cut_edges(&graph, &[1, 2, 5]).unwrap(), (1.0, d125));
     }
 
     #[test]
     fn cut_edges_errors_on_district_beyond_limit() {
-        // A district id >= 128 can't fit the u128 observed bitmask. cut_edges captures the set in
-        // its edge loop, so it must surface a clean error rather than silently wrapping the shift.
+        // A district id >= 128 can't fit the u128 observed bitmask. cut_edges captures the set
+        // from the assignment, so it must surface a clean error rather than silently wrapping the
+        // shift.
         let graph = graph_with_edges(None);
         let err = cut_edges(&graph, &[1, 1, 2, 128]).unwrap_err();
         assert!(
