@@ -32,8 +32,8 @@ ben-process [OPTIONS] --ben-file <BEN_FILE>
 
 Common options:
 - `--mode <MODE>`
-- `--ben-file <BEN_FILE>`
-- `--graph-file <GRAPH_FILE>`
+- `--ben-file <BEN_FILE>` (`.ben`, `.xben`, or `.bendl`; detected by content, not extension)
+- `--graph-file <GRAPH_FILE>` (optional when the input is a `.bendl` that embeds a graph)
 - `--output-dir <OUTPUT_DIR>`
 - `--no-progress`
 - `--high-compression`
@@ -48,6 +48,23 @@ Available modes:
 - `region-pieces`
 - `unique-plans`
 - `extract-unique-plans`
+
+## Input formats
+
+`--ben-file` accepts three inputs, detected by their contents (the file extension is ignored, so any
+name works):
+
+- a **plain BEN** file, including all three encodings (`Standard`, `MkvChain`, and the newer
+  `TwoDelta`);
+- an **XBEN** file (xz-compressed BEN); and
+- a **`.bendl` bundle**, which packages the assignment stream together with its dual graph
+  (`graph.json`) and metadata in one seekable, checksummed file.
+
+When the input is a `.bendl` that carries a `graph.json`, the graph-driven modes (`tally-keys`,
+`cut-edges`, `polsby-popper`, `region-splits`, `region-pieces`) use that embedded graph, so
+`--graph-file` becomes optional. An explicit `--graph-file` always takes precedence over the embedded
+graph. Output file names derive from the input's base name (`plans.bendl` →
+`plans_cut_edges.parquet`), never from the stream inside the bundle.
 
 ## Modes
 

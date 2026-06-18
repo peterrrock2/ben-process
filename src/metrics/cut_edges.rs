@@ -1,5 +1,6 @@
 use crate::district::observed_assignment_districts;
 use crate::graph::Graph;
+use crate::input::BenSource;
 use crate::output::parquet::F64MetricWriter;
 use crate::pipeline::{
     parquet_compression, run_pipeline, AssignmentLengthCheck, PARQUET_BATCH_ROWS,
@@ -44,7 +45,7 @@ fn cut_edges(graph: &Graph, assignment: &[u16]) -> crate::error::Result<(f64, u1
 
 pub fn tally_and_save_cut_edges(
     graph: Graph,
-    in_file_name: &str,
+    source: &BenSource,
     out_file_name: &str,
     show_progress: bool,
     high_compression: bool,
@@ -60,7 +61,7 @@ pub fn tally_and_save_cut_edges(
     );
 
     run_pipeline(
-        in_file_name,
+        source,
         AssignmentLengthCheck::MatchesGraph(graph.node_count),
         "cut-edges",
         |assignment, _n_reps| {

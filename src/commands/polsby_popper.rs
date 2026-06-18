@@ -1,6 +1,7 @@
 use crate::cli::{build_output_path, Args};
-use crate::commands::graph_file;
-use crate::graph::{load_graph, EdgeWeightRequest, GraphLoadRequest};
+use crate::commands::resolve_graph;
+use crate::graph::{EdgeWeightRequest, GraphLoadRequest};
+use crate::input;
 use crate::metrics;
 
 pub fn run(args: Args) -> crate::error::Result<()> {
@@ -32,8 +33,10 @@ pub fn run(args: Args) -> crate::error::Result<()> {
         partial_numeric_keys.push(boundary_perim_key.clone());
     }
 
-    let graph = load_graph(
-        graph_file(&args)?,
+    let resolved = input::resolve(&args.ben_file)?;
+    let graph = resolve_graph(
+        &args,
+        &resolved,
         GraphLoadRequest {
             numeric_keys,
             partial_numeric_keys,
@@ -52,7 +55,7 @@ pub fn run(args: Args) -> crate::error::Result<()> {
 
     metrics::polsby_popper::tally_and_save_polsby_popper(
         graph,
-        &args.ben_file,
+        &resolved.source,
         output_file.as_str(),
         area_key.as_str(),
         perim_key.as_deref(),

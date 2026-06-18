@@ -1,7 +1,9 @@
 use crate::cli::{build_output_path, Args};
+use crate::input;
 use crate::metrics;
 
 pub fn run(args: Args) -> crate::error::Result<()> {
+    let resolved = input::resolve(&args.ben_file)?;
     let output_file = build_output_path(
         &args.ben_file,
         "_unique.jsonl.ben",
@@ -9,7 +11,7 @@ pub fn run(args: Args) -> crate::error::Result<()> {
     );
 
     metrics::extract_unique_plans::extract_unique_plans(
-        &args.ben_file,
+        &resolved.source,
         output_file.as_str(),
         args.show_progress(),
     )

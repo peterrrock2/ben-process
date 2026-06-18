@@ -128,7 +128,7 @@ fn extract_unique_plans_handles_empty_ben_input() {
         "--no-progress",
     ]);
     let out = f.dir.join("plans_unique.jsonl.ben");
-    let decoder = BenDecoder::new(File::open(&out).unwrap()).unwrap();
+    let decoder = BenStreamReader::from_ben(File::open(&out).unwrap()).unwrap();
     let extracted: Vec<Vec<u16>> = decoder.map(|r| r.unwrap().0).collect();
     assert!(
         extracted.is_empty(),

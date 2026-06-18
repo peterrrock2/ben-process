@@ -1,5 +1,6 @@
 use crate::district::observed_assignment_districts;
 use crate::graph::Graph;
+use crate::input::BenSource;
 use crate::output::parquet::DistrictMetricWriter;
 use crate::pipeline::{
     parquet_compression, run_pipeline, AssignmentLengthCheck, PARQUET_BATCH_ROWS,
@@ -84,7 +85,7 @@ fn polsby_popper_rows(
 #[allow(clippy::too_many_arguments)]
 pub fn tally_and_save_polsby_popper(
     graph: Graph,
-    in_file_name: &str,
+    source: &BenSource,
     out_file_name: &str,
     area_key: &str,
     perim_key: Option<&str>,
@@ -127,7 +128,7 @@ pub fn tally_and_save_polsby_popper(
     );
 
     run_pipeline(
-        in_file_name,
+        source,
         AssignmentLengthCheck::MatchesGraph(graph.node_count),
         // The pipeline enforces a fixed district set, so the schema fixed from the first row
         // holds.

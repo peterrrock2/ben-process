@@ -1,14 +1,12 @@
 use crate::cli::build_output_path;
 use crate::error::BenError;
+use crate::input::BenSource;
 use crate::output::parquet::write_changed_assignments;
-use crate::pipeline::{
-    count_frames, parquet_compression, run_sequential_accepted_frames, AssignmentLengthCheck,
-};
+use crate::pipeline::{parquet_compression, run_sequential_accepted_frames, AssignmentLengthCheck};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use std::fs::File;
 use std::io;
-use std::path::Path;
 
 fn find_first_disagreement_index(first: &[u16], second: &[u16]) -> Option<(usize, (u16, u16))> {
     first
@@ -162,7 +160,7 @@ fn finalize_changed_counts(diff_count: &[u32], line_count: usize, normalize: boo
 /// * `high_compression` - Use Brotli instead of Snappy for the Parquet output.
 #[allow(clippy::too_many_arguments)]
 pub fn tally_and_save_changed_assignments(
-    in_ben_file: &str,
+    source: &BenSource,
     normalize: bool,
     max_accepted: Option<usize>,
     with_random_reassignments: bool,
@@ -178,7 +176,8 @@ pub fn tally_and_save_changed_assignments(
         None => StdRng::from_rng(&mut rand::rng()),
     };
 
-    let basename = Path::new(in_ben_file)
+    let basename = source
+        .path()
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
@@ -187,7 +186,7 @@ pub fn tally_and_save_changed_assignments(
     // Changed-assignments works per *accepted record* (frame), not per repeated sample. For
     // MkvChain BEN files a frame can carry a repetition count > 1 — those repeats represent the
     // SAME assignment and therefore zero flips among themselves. So we count frames, not samples.
-    let total_frames = count_frames(in_ben_file)?;
+    let total_frames = source.count_frames()?;
     log::info!("Found {} accepted plans in {:?}", total_frames, basename);
 
     // A `--max-accepted` beyond the file's frame count means "everything": clamp it so the
@@ -196,7 +195,7 @@ pub fn tally_and_save_changed_assignments(
     let line_count = max_accepted.map_or(total_frames, |cap| cap.min(total_frames));
 
     let out_file_name = build_output_path(
-        in_ben_file,
+        &source.path().to_string_lossy(),
         format!("_accept_{}_changed_assignments.parquet", line_count).as_str(),
         output_dir,
     );
@@ -206,7 +205,7 @@ pub fn tally_and_save_changed_assignments(
     let mut diff_count: Vec<u32> = Vec::new();
 
     let full_count = run_sequential_accepted_frames(
-        in_ben_file,
+        source,
         total_frames,
         Some(line_count),
         // No graph is loaded, so the driver fixes the expected assignment length from the first

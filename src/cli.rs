@@ -115,6 +115,8 @@ fn ben_stem(in_ben_file: &str) -> String {
     base_name
         .strip_suffix(".jsonl.ben")
         .or_else(|| base_name.strip_suffix(".ben"))
+        .or_else(|| base_name.strip_suffix(".xben"))
+        .or_else(|| base_name.strip_suffix(".bendl"))
         .unwrap_or(&base_name)
         .to_string()
 }

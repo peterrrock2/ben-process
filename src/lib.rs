@@ -8,6 +8,7 @@ mod commands;
 mod district;
 pub mod error;
 pub mod graph;
+pub mod input;
 pub mod metrics;
 mod output;
 pub mod pipeline;

@@ -1,6 +1,7 @@
 use crate::cli::{build_output_path, Args};
-use crate::commands::{graph_file, require_keys};
-use crate::graph::{load_graph, GraphLoadRequest};
+use crate::commands::{require_keys, resolve_graph};
+use crate::graph::GraphLoadRequest;
+use crate::input;
 use crate::metrics;
 use crate::metrics::region::RegionMetric;
 
@@ -29,8 +30,10 @@ fn run(
     mode_name: &str,
 ) -> crate::error::Result<()> {
     require_keys(&args, mode_name)?;
-    let graph = load_graph(
-        graph_file(&args)?,
+    let resolved = input::resolve(&args.ben_file)?;
+    let graph = resolve_graph(
+        &args,
+        &resolved,
         GraphLoadRequest {
             region_keys: args.keys.clone(),
             ..Default::default()
@@ -41,7 +44,7 @@ fn run(
 
     metrics::region::tally_and_save_region_metric(
         graph,
-        &args.ben_file,
+        &resolved.source,
         output_file.as_str(),
         args.keys,
         metric,

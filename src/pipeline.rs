@@ -1,9 +1,11 @@
 //! Frame-parallel decode pipeline shared by the batched, per-sample metric modes (`tally-keys`,
 //! `cut-edges`, `polsby-popper`, `region-*`, and `unique-plans`).
 //!
-//! The key insight: `binary-ensemble`'s `BenDecoder::next` does two things per record — a cheap
-//! byte-level frame pop AND an expensive RLE expansion into a `Vec<u16>` assignment. The two can be
-//! separated via `BenDecoder::into_frames()` + `decode_ben_line` + `rle_to_vec`, all public API.
+//! The key insight: `binary-ensemble`'s record iterator does two things per record: a cheap
+//! byte-level frame pop AND an expensive RLE expansion into a `Vec<u16>` assignment. The two are
+//! separated via `BenStreamReader::into_frames()` (the serial pop, yielding self-contained
+//! `DecodeFrame`s) plus `DecodeFrame::expand_self_contained()` (the parallel expand), all public
+//! API.
 //!
 //! `run_pipeline` pops frames serially on the caller thread (fast), then hands each batch of frames
 //! to rayon for parallel RLE decode + metric compute in one fused pass. Results come back in
@@ -18,14 +20,12 @@
 
 use crate::district::{observed_assignment_districts, validate_district_set_unchanged};
 use crate::error::{BenError, Result};
-use ben::decode::{count_samples_from_file, decode_ben_line, BenDecoder, BenFrame};
-use ben::utils::rle_to_vec;
+use crate::input::BenSource;
+use ben::io::reader::DecodeFrame;
 use indicatif::{ProgressBar, ProgressStyle};
 use polars::prelude::ParquetCompression;
 use rayon::prelude::*;
-use std::fs::File;
-use std::io::{self, Cursor};
-use std::path::Path;
+use std::io;
 
 /// Parquet compression to write with. Snappy is fast and plenty compact for tally outputs; Brotli
 /// only pays off when storage is the bottleneck.
@@ -151,18 +151,11 @@ fn make_progress_bar(total_samples: usize) -> ProgressBar {
     progress_bar
 }
 
-fn decode_frame(frame: &BenFrame) -> io::Result<Vec<u16>> {
-    decode_ben_line(
-        Cursor::new(&frame.raw_data),
-        frame.max_val_bits,
-        frame.max_len_bits,
-        frame.n_bytes,
-    )
-    .map(rle_to_vec)
-    .map_err(|e| {
+fn decode_frame(frame: &DecodeFrame) -> io::Result<Vec<u16>> {
+    frame.expand_self_contained().map_err(|e| {
         io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("failed to decode BEN frame: {e:?}"),
+            format!("failed to decode BEN frame: {e}"),
         )
     })
 }
@@ -170,7 +163,7 @@ fn decode_frame(frame: &BenFrame) -> io::Result<Vec<u16>> {
 fn process_batch<Row, P>(
     process: &P,
     graph_node_count: Option<usize>,
-    frames: &[BenFrame],
+    frames: &[(DecodeFrame, u16)],
 ) -> Result<Vec<(u16, usize, u128, Row)>>
 where
     Row: Send,
@@ -178,7 +171,7 @@ where
 {
     frames
         .par_iter()
-        .map(|frame| -> Result<(u16, usize, u128, Row)> {
+        .map(|(frame, count)| -> Result<(u16, usize, u128, Row)> {
             let assignment = decode_frame(frame)?;
             if let Some(expected) = graph_node_count {
                 // The `MatchesGraph` half of the length contract must hold BEFORE the metric
@@ -197,33 +190,12 @@ where
             // `process` returns its own district label set (folded into the single pass it already
             // makes over the assignment/edges), so `run_pipeline` can enforce the set stays fixed
             // across the ensemble without a second pass. Label-invariant modes return `0`.
-            let (observed, row) = process(&assignment, frame.count)?;
-            Ok((frame.count, assignment.len(), observed, row))
+            let (observed, row) = process(&assignment, *count)?;
+            Ok((*count, assignment.len(), observed, row))
         })
         .collect::<Vec<_>>()
         .into_iter()
         .collect()
-}
-
-/// Walk the BEN file once (fast — just counts frames) and return the total sample count (sum of
-/// `frame.count` across all frames). Useful for Vec preallocation before calling `run_pipeline`.
-pub fn count_samples(in_file: &str) -> io::Result<usize> {
-    count_samples_from_file(Path::new(in_file), "ben")
-}
-
-/// Walk the BEN file once and return the number of **frames** (accepted records), independent of
-/// repetition counts. For Standard BEN this equals the sample count; for MkvChain BEN it is ≤ the
-/// sample count. Needed by modes (like changed-assignments) whose progress and output-sizing are
-/// per-accepted-step, not per-sample.
-pub fn count_frames(in_file: &str) -> io::Result<usize> {
-    let file = File::open(in_file)?;
-    let frames = BenDecoder::new(file)?.into_frames();
-    let mut frame_count = 0usize;
-    for frame in frames {
-        frame?;
-        frame_count += 1;
-    }
-    Ok(frame_count)
 }
 
 /// Drive `on_frame` over every accepted frame in order, with the same first-frame contracts as
@@ -232,7 +204,7 @@ pub fn count_frames(in_file: &str) -> io::Result<usize> {
 /// checks run BEFORE `on_frame`, so a mode's cross-frame state never sees a contract-violating
 /// assignment.
 pub fn run_sequential_accepted_frames<F>(
-    in_file: &str,
+    source: &BenSource,
     total_frames: usize,
     max_frames: Option<usize>,
     length_check: AssignmentLengthCheck,
@@ -246,8 +218,7 @@ where
     let frame_limit = max_frames.unwrap_or(total_frames);
     let progress_bar = show_progress.then(|| make_progress_bar(frame_limit));
 
-    let file = File::open(in_file)?;
-    let decoder = BenDecoder::new(file).map_err(io::Error::from)?;
+    let decoder = source.open_reader()?;
     let mut accepted_count = 0u64;
     let mut length_guard = LengthGuard::new(length_check);
     let mut district_guard = DistrictSetGuard::new(district_set_label);
@@ -277,7 +248,7 @@ where
     Ok(accepted_count)
 }
 
-/// Run a per-sample `process` closure over every record in `in_file`, with frame extraction serial
+/// Run a per-sample `process` closure over every record in `source`, with frame extraction serial
 /// on the caller thread and RLE-decode + `process` fused in parallel across a rayon pool.
 ///
 /// This is the entry point for modes whose output schema depends on district labels. `process`
@@ -305,7 +276,7 @@ where
 /// The total sample count needed to size the progress bar is computed here (a single extra pass
 /// over the file) only when `show_progress` is set, so `--no-progress` runs never pay for it.
 pub fn run_pipeline<Row, P, F>(
-    in_file: &str,
+    source: &BenSource,
     length_check: AssignmentLengthCheck,
     district_set_label: &str,
     process: P,
@@ -318,7 +289,7 @@ where
     F: FnMut(u64, u32, u64, Row) -> Result<()>,
 {
     run_pipeline_core(
-        in_file,
+        source,
         length_check,
         Some(district_set_label),
         process,
@@ -331,7 +302,7 @@ where
 /// no fixed-district-set check applies — a changing district set must NOT error for these modes,
 /// and the type signature makes it impossible to half-opt-in.
 pub fn run_label_invariant_pipeline<Row, P, F>(
-    in_file: &str,
+    source: &BenSource,
     length_check: AssignmentLengthCheck,
     process: P,
     on_row: F,
@@ -343,7 +314,7 @@ where
     F: FnMut(u64, u32, u64, Row) -> Result<()>,
 {
     run_pipeline_core(
-        in_file,
+        source,
         length_check,
         None,
         // The unchecked district set: `DistrictSetGuard` ignores it when no label is given.
@@ -356,7 +327,7 @@ where
 /// Shared driver behind the two public faces above. Private so the invalid pairings (a label
 /// without an observed set, an observed set without a label) stay unrepresentable to callers.
 fn run_pipeline_core<Row, P, F>(
-    in_file: &str,
+    source: &BenSource,
     length_check: AssignmentLengthCheck,
     district_set_label: Option<&str>,
     process: P,
@@ -368,24 +339,21 @@ where
     P: Fn(&[u16], u16) -> Result<(u128, Row)> + Sync,
     F: FnMut(u64, u32, u64, Row) -> Result<()>,
 {
-    let ben_file = File::open(in_file)?;
-
-    let basename = Path::new(in_file)
+    let basename = source
+        .path()
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
     log::info!("Reading {:?}...", basename);
 
     let progress_bar = if show_progress {
-        Some(make_progress_bar(count_samples(in_file)?))
+        Some(make_progress_bar(source.count_samples()?))
     } else {
         None
     };
 
-    let frames = BenDecoder::new(&ben_file)
-        .map_err(io::Error::from)?
-        .into_frames();
-    let mut frame_batch: Vec<BenFrame> = Vec::with_capacity(BATCH);
+    let frames = source.open_frames()?;
+    let mut frame_batch: Vec<(DecodeFrame, u16)> = Vec::with_capacity(BATCH);
 
     let mut sample_count: u64 = 1;
     let mut accepted_count: u64 = 1;
@@ -400,7 +368,7 @@ where
 
     // Single drain used for both the full mid-stream batches and the trailing partial batch, so
     // the guard checks, row forwarding, and counter accounting can never diverge between the two.
-    let mut drain_batch = |frame_batch: &mut Vec<BenFrame>| -> Result<()> {
+    let mut drain_batch = |frame_batch: &mut Vec<(DecodeFrame, u16)>| -> Result<()> {
         for (n_reps, assignment_len, observed, row) in
             process_batch(&process, graph_node_count, frame_batch)?
         {
@@ -436,17 +404,27 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        count_frames, count_samples, run_label_invariant_pipeline, run_pipeline,
-        run_sequential_accepted_frames, AssignmentLengthCheck,
+        run_label_invariant_pipeline, run_pipeline, run_sequential_accepted_frames,
+        AssignmentLengthCheck,
     };
-    use ben::encode::BenEncoder;
+    use crate::input::BenSource;
+    use ben::io::reader::BenWireFormat;
+    use ben::io::writer::BenStreamWriter;
     use ben::BenVariant;
     use tempfile::NamedTempFile;
+
+    /// Wrap a temp BEN file as a plain-BEN `BenSource`, the shape every driver now takes.
+    fn ben_source(file: &NamedTempFile) -> BenSource {
+        BenSource::File {
+            path: file.path().to_path_buf(),
+            wire: BenWireFormat::Ben,
+        }
+    }
 
     fn write_ben_file(variant: BenVariant, assignments: &[Vec<u16>]) -> NamedTempFile {
         let file = NamedTempFile::new().unwrap();
         let writer = std::fs::File::create(file.path()).unwrap();
-        let mut encoder = BenEncoder::new(writer, variant);
+        let mut encoder = BenStreamWriter::for_ben(writer, variant).unwrap();
         for assignment in assignments {
             encoder.write_assignment(assignment.clone()).unwrap();
         }
@@ -461,8 +439,9 @@ mod tests {
             &[vec![1, 1, 2, 2], vec![1, 1, 2, 2], vec![2, 2, 1, 1]],
         );
 
-        assert_eq!(count_samples(ben_file.path().to_str().unwrap()).unwrap(), 3);
-        assert_eq!(count_frames(ben_file.path().to_str().unwrap()).unwrap(), 2);
+        let source = ben_source(&ben_file);
+        assert_eq!(source.count_samples().unwrap(), 3);
+        assert_eq!(source.count_frames().unwrap(), 2);
     }
 
     #[test]
@@ -474,7 +453,7 @@ mod tests {
 
         let mut rows = Vec::new();
         run_label_invariant_pipeline(
-            ben_file.path().to_str().unwrap(),
+            &ben_source(&ben_file),
             AssignmentLengthCheck::MatchesGraph(4),
             |assignment, n_reps| Ok((assignment[0], n_reps)),
             |step, n_reps, accepted, row| {
@@ -497,7 +476,7 @@ mod tests {
 
         let mut rows = Vec::new();
         let consumed = run_sequential_accepted_frames(
-            ben_file.path().to_str().unwrap(),
+            &ben_source(&ben_file),
             2,
             Some(1),
             AssignmentLengthCheck::UniformWithinFile,
@@ -520,7 +499,7 @@ mod tests {
     fn run_pipeline_with_expected_len(expected_len: usize) -> crate::error::Result<()> {
         let ben_file = write_ben_file(BenVariant::Standard, &[vec![0, 1, 2, 1]]);
         run_label_invariant_pipeline(
-            ben_file.path().to_str().unwrap(),
+            &ben_source(&ben_file),
             AssignmentLengthCheck::MatchesGraph(expected_len),
             |assignment, _n_reps| Ok(assignment.len()),
             |_step, _n_reps, _accepted, _row| Ok(()),
@@ -556,7 +535,7 @@ mod tests {
         let ben_file = write_ben_file(BenVariant::Standard, &[vec![1, 1, 2, 2], vec![1, 2, 2]]);
         let mut seen = 0usize;
         let err = run_label_invariant_pipeline(
-            ben_file.path().to_str().unwrap(),
+            &ben_source(&ben_file),
             AssignmentLengthCheck::UniformWithinFile,
             |_assignment, _n_reps| Ok(()),
             |_step, _n_reps, _accepted, _row| {
@@ -589,7 +568,7 @@ mod tests {
 
         let mut rows = Vec::new();
         run_label_invariant_pipeline(
-            ben_file.path().to_str().unwrap(),
+            &ben_source(&ben_file),
             AssignmentLengthCheck::MatchesGraph(2),
             |assignment, _n_reps| Ok(assignment[0]),
             |step, n_reps, accepted, marker| {
@@ -617,7 +596,7 @@ mod tests {
         // their own validation code.
         let ben_file = write_ben_file(BenVariant::Standard, &[vec![1, 1, 2, 2], vec![1, 1, 1, 1]]);
         let err = run_pipeline(
-            ben_file.path().to_str().unwrap(),
+            &ben_source(&ben_file),
             AssignmentLengthCheck::MatchesGraph(4),
             "cut-edges",
             |assignment, _n_reps| {
@@ -646,7 +625,7 @@ mod tests {
         let ben_file = write_ben_file(BenVariant::Standard, &[vec![1, 1, 2, 2], vec![3, 3, 1, 1]]);
         let mut seen = 0usize;
         run_label_invariant_pipeline(
-            ben_file.path().to_str().unwrap(),
+            &ben_source(&ben_file),
             AssignmentLengthCheck::UniformWithinFile,
             |_assignment, _n_reps| Ok(()),
             |_step, _n_reps, _accepted, _row| {
@@ -666,7 +645,7 @@ mod tests {
         let ben_file = write_ben_file(BenVariant::Standard, &[vec![1, 1, 2, 2], vec![1, 2, 2]]);
         let mut seen = 0usize;
         let err = run_sequential_accepted_frames(
-            ben_file.path().to_str().unwrap(),
+            &ben_source(&ben_file),
             2,
             None,
             AssignmentLengthCheck::UniformWithinFile,
@@ -693,7 +672,7 @@ mod tests {
         let ben_file = write_ben_file(BenVariant::Standard, &[vec![1, 1, 2, 2], vec![1, 1, 1, 1]]);
         let mut seen = 0usize;
         let err = run_sequential_accepted_frames(
-            ben_file.path().to_str().unwrap(),
+            &ben_source(&ben_file),
             2,
             None,
             AssignmentLengthCheck::UniformWithinFile,
@@ -720,7 +699,7 @@ mod tests {
         let ben_file = write_ben_file(BenVariant::Standard, &[vec![1, 1, 2, 2], vec![3, 3, 1, 1]]);
         let mut seen = 0usize;
         run_sequential_accepted_frames(
-            ben_file.path().to_str().unwrap(),
+            &ben_source(&ben_file),
             2,
             None,
             AssignmentLengthCheck::UniformWithinFile,

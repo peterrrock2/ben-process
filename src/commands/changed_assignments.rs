@@ -1,8 +1,10 @@
 use crate::cli::Args;
+use crate::input;
 
 pub fn run(args: Args) -> crate::error::Result<()> {
+    let resolved = input::resolve(&args.ben_file)?;
     crate::metrics::changed_assignments::tally_and_save_changed_assignments(
-        &args.ben_file,
+        &resolved.source,
         args.normalize,
         args.max_accepted,
         args.randomize_reassignments,

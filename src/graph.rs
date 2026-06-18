@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, BufReader};
+use std::io::{self, BufReader, Read};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct JsonGraphData {
@@ -258,11 +258,20 @@ pub fn load_graph(file_path: &str, request: GraphLoadRequest) -> crate::error::R
             format!("failed to open graph file {:?}: {}", file_path, e),
         )
     })?;
-    let reader = BufReader::new(file);
+    load_graph_from_reader(BufReader::new(file), request)
+}
+
+/// [`load_graph`] minus the file open: parse `JsonGraphData` from any reader and build the `Graph`.
+/// The `.bendl` input path uses this over an in-memory `Cursor` of the embedded `graph.json`, so
+/// its error messages carry no file-path context (the file-open error in `load_graph` does).
+pub fn load_graph_from_reader(
+    reader: impl Read,
+    request: GraphLoadRequest,
+) -> crate::error::Result<Graph> {
     let graph_data: JsonGraphData = serde_json::from_reader(reader).map_err(|e| {
         io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("failed to parse graph JSON {:?}: {}", file_path, e),
+            format!("failed to parse graph JSON: {}", e),
         )
     })?;
 
@@ -271,10 +280,7 @@ pub fn load_graph(file_path: &str, request: GraphLoadRequest) -> crate::error::R
     if graph_data.directed {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!(
-                "graph {:?} is marked directed; ben-process only supports undirected dual graphs",
-                file_path
-            ),
+            "graph is marked directed; ben-process only supports undirected dual graphs",
         )
         .into());
     }
@@ -283,10 +289,7 @@ pub fn load_graph(file_path: &str, request: GraphLoadRequest) -> crate::error::R
     if graph_data.multigraph {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!(
-                "graph {:?} is marked multigraph; ben-process only supports simple undirected dual graphs",
-                file_path
-            ),
+            "graph is marked multigraph; ben-process only supports simple undirected dual graphs",
         )
         .into());
     }

@@ -1,11 +1,14 @@
 use crate::cli::{build_output_path, Args};
-use crate::commands::graph_file;
-use crate::graph::{load_graph, EdgeWeightRequest, GraphLoadRequest};
+use crate::commands::resolve_graph;
+use crate::graph::{EdgeWeightRequest, GraphLoadRequest};
+use crate::input;
 use crate::metrics;
 
 pub fn run(args: Args) -> crate::error::Result<()> {
-    let graph = load_graph(
-        graph_file(&args)?,
+    let resolved = input::resolve(&args.ben_file)?;
+    let graph = resolve_graph(
+        &args,
+        &resolved,
         GraphLoadRequest {
             edge_weight: args.edge_weight_key.clone().map(|key| EdgeWeightRequest {
                 key,
@@ -22,7 +25,7 @@ pub fn run(args: Args) -> crate::error::Result<()> {
 
     metrics::cut_edges::tally_and_save_cut_edges(
         graph,
-        &args.ben_file,
+        &resolved.source,
         output_file.as_str(),
         args.show_progress(),
         args.high_compression,

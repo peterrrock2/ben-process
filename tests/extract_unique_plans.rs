@@ -52,7 +52,7 @@ fn extract_unique_plans_dedups_label_permutations() {
     ]);
 
     let out = f.dir.join("plans_unique.jsonl.ben");
-    let decoder = BenDecoder::new(File::open(&out).unwrap()).unwrap();
+    let decoder = BenStreamReader::from_ben(File::open(&out).unwrap()).unwrap();
     let extracted: Vec<Vec<u16>> = decoder.map(|r| r.unwrap().0).collect();
 
     assert_eq!(
@@ -65,10 +65,10 @@ fn extract_unique_plans_dedups_label_permutations() {
     );
 }
 
-/// `extract-unique-plans` opens the input via `BenDecoder::new` after a `count_frames` pass, both
-/// of which return errors that propagate via `?`. Feed it a non-BEN file and assert the binary
-/// exits non-zero rather than silently producing an empty/corrupt output. This guards the error
-/// path in src/metrics/extract_unique_plans.rs and src/pipeline.rs (count_frames).
+/// `extract-unique-plans` opens the input via `BenStreamReader::from_ben` after a `count_frames`
+/// pass, both of which return errors that propagate via `?`. Feed it a non-BEN file and assert the
+/// binary exits non-zero rather than silently producing an empty/corrupt output. This guards the
+/// error path in src/metrics/extract_unique_plans.rs and src/pipeline.rs (count_frames).
 #[test]
 fn extract_unique_plans_fails_on_corrupted_ben_input() {
     let tmp = tempdir().unwrap();

@@ -11,8 +11,10 @@ pub(crate) use std::io::Write;
 pub(crate) use std::path::{Path, PathBuf};
 pub(crate) use std::process::Command;
 
-pub(crate) use ben::decode::BenDecoder;
-pub(crate) use ben::encode::BenEncoder;
+pub(crate) use ben::io::bundle::format::{AssignmentFormat, ASSET_TYPE_GRAPH};
+pub(crate) use ben::io::bundle::BendlWriter;
+pub(crate) use ben::io::reader::BenStreamReader;
+pub(crate) use ben::io::writer::{BenStreamWriter, XzEncodeOptions};
 pub(crate) use ben::BenVariant;
 use polars::prelude::*;
 pub(crate) use tempfile::{tempdir, TempDir};
@@ -25,8 +27,8 @@ pub(crate) fn bin() -> &'static str {
 //     0 - 1 - 2 - 3 - 4 - 5 - 0
 // with "pop" = 10 * (idx + 1), "area" = idx + 1, and "region" = A/A/B/B/A/A. Edge "weight" varies
 // per edge so we can exercise --edge-weight-key.
-pub(crate) fn write_fixture_graph(path: &Path) {
-    let graph_json = serde_json::json!({
+pub(crate) fn fixture_graph_bytes() -> Vec<u8> {
+    serde_json::json!({
         "directed": false,
         "multigraph": false,
         "graph": [],
@@ -46,9 +48,16 @@ pub(crate) fn write_fixture_graph(path: &Path) {
             [ { "id": 3, "weight": 4.0 }, { "id": 5, "weight": 6.0 } ],
             [ { "id": 0, "weight": 3.0 }, { "id": 4, "weight": 6.0 } ],
         ]
-    });
-    let mut f = File::create(path).unwrap();
-    f.write_all(graph_json.to_string().as_bytes()).unwrap();
+    })
+    .to_string()
+    .into_bytes()
+}
+
+pub(crate) fn write_fixture_graph(path: &Path) {
+    File::create(path)
+        .unwrap()
+        .write_all(&fixture_graph_bytes())
+        .unwrap();
 }
 
 // Four-node path:
@@ -134,7 +143,7 @@ pub(crate) fn write_polsby_missing_shared_perim_graph(path: &Path) {
 
 pub(crate) fn write_fixture_ben(path: &Path, plans: &[Vec<u16>]) {
     let f = File::create(path).unwrap();
-    let mut enc = BenEncoder::new(f, BenVariant::Standard);
+    let mut enc = BenStreamWriter::for_ben(f, BenVariant::Standard).unwrap();
     for p in plans {
         enc.write_assignment(p.clone()).unwrap();
     }
@@ -146,11 +155,82 @@ pub(crate) fn write_fixture_ben(path: &Path, plans: &[Vec<u16>]) {
 /// counting.
 pub(crate) fn write_fixture_ben_mkv(path: &Path, plans: &[Vec<u16>]) {
     let f = File::create(path).unwrap();
-    let mut enc = BenEncoder::new(f, BenVariant::MkvChain);
+    let mut enc = BenStreamWriter::for_ben(f, BenVariant::MkvChain).unwrap();
     for p in plans {
         enc.write_assignment(p.clone()).unwrap();
     }
     enc.finish().unwrap();
+}
+
+/// Encode `plans` with an explicit `BenVariant` (used to mint a `TwoDelta` fixture).
+pub(crate) fn write_fixture_ben_variant(path: &Path, plans: &[Vec<u16>], variant: BenVariant) {
+    let f = File::create(path).unwrap();
+    let mut enc = BenStreamWriter::for_ben(f, variant).unwrap();
+    for p in plans {
+        enc.write_assignment(p.clone()).unwrap();
+    }
+    enc.finish().unwrap();
+}
+
+/// Write a `.bendl` bundle: an optional `graph.json` asset plus an assignment stream (BEN or XBEN),
+/// finalized with the header sample count set to `sample_count`.
+fn write_bendl(
+    path: &Path,
+    graph: Option<&[u8]>,
+    plans: &[Vec<u16>],
+    xben: bool,
+    sample_count: i64,
+) {
+    let format = if xben {
+        AssignmentFormat::Xben
+    } else {
+        AssignmentFormat::Ben
+    };
+    let mut writer = BendlWriter::new(File::create(path).unwrap(), format).unwrap();
+    if let Some(graph) = graph {
+        writer
+            .add_json_asset(ASSET_TYPE_GRAPH, "graph.json", graph)
+            .unwrap();
+    }
+    let mut session = writer.into_stream_session().unwrap();
+    if xben {
+        let mut enc =
+            BenStreamWriter::for_xben(&mut session, BenVariant::Standard, XzEncodeOptions::new())
+                .unwrap();
+        for p in plans {
+            enc.write_assignment(p.clone()).unwrap();
+        }
+        enc.finish().unwrap();
+    } else {
+        let mut enc = BenStreamWriter::for_ben(&mut session, BenVariant::Standard).unwrap();
+        for p in plans {
+            enc.write_assignment(p.clone()).unwrap();
+        }
+        enc.finish().unwrap();
+    }
+    let writer = session.finish_into_writer(sample_count);
+    writer.finish().unwrap();
+}
+
+/// A finalized `.bendl` with a BEN stream and (optionally) an embedded `graph.json`.
+pub(crate) fn write_bendl_ben(path: &Path, graph: Option<&[u8]>, plans: &[Vec<u16>]) {
+    write_bendl(path, graph, plans, false, plans.len() as i64);
+}
+
+/// A finalized `.bendl` with an XBEN (xz-compressed) stream.
+pub(crate) fn write_bendl_xben(path: &Path, graph: Option<&[u8]>, plans: &[Vec<u16>]) {
+    write_bendl(path, graph, plans, true, plans.len() as i64);
+}
+
+/// A finalized BEN `.bendl` with a deliberately chosen header sample count, for the
+/// resolution-time count-validation test.
+pub(crate) fn write_bendl_ben_sample_count(
+    path: &Path,
+    graph: Option<&[u8]>,
+    plans: &[Vec<u16>],
+    sample_count: i64,
+) {
+    write_bendl(path, graph, plans, false, sample_count);
 }
 
 pub(crate) struct Fixture {

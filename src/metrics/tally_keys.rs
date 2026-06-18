@@ -1,6 +1,7 @@
 use crate::cli::{build_tally_output_dir, build_tally_output_path};
 use crate::district::observed_assignment_districts;
 use crate::graph::Graph;
+use crate::input::BenSource;
 use crate::output::parquet::DistrictMetricWriter;
 use crate::pipeline::{
     parquet_compression, run_pipeline, AssignmentLengthCheck, PARQUET_BATCH_ROWS,
@@ -36,7 +37,7 @@ fn tally_keys(
 
 pub fn tally_and_save_from_key_list(
     graph: Graph,
-    in_file_name: &str,
+    source: &BenSource,
     output_dir: Option<&str>,
     key_list: Vec<String>,
     show_progress: bool,
@@ -54,11 +55,13 @@ pub fn tally_and_save_from_key_list(
     // One writer per key, each owning its output path. No file (and no tallies directory) is
     // created here: the writer defers that to the first decoded assignment, so a run that fails
     // before producing data leaves nothing on disk.
+    // The original input path drives the per-key output names.
+    let in_name = source.path().to_string_lossy();
     let mut writers: Vec<DistrictMetricWriter> = key_list
         .iter()
         .map(|key| {
-            let tally_dir = build_tally_output_dir(in_file_name, output_dir);
-            let output_path = build_tally_output_path(in_file_name, key, output_dir);
+            let tally_dir = build_tally_output_dir(&in_name, output_dir);
+            let output_path = build_tally_output_path(&in_name, key, output_dir);
             DistrictMetricWriter::new(
                 Box::new(move || {
                     create_dir_all(&tally_dir)?;
@@ -71,7 +74,7 @@ pub fn tally_and_save_from_key_list(
         .collect();
 
     run_pipeline(
-        in_file_name,
+        source,
         AssignmentLengthCheck::MatchesGraph(graph.node_count),
         // The pipeline enforces that the district set is identical for every plan, so the schema
         // each writer fixes from its first row holds for the whole run.

@@ -3,18 +3,18 @@
 //! the assignment that gets written is the **first-seen original**, so labels in the output match
 //! how the plan first appeared in the input.
 
+use crate::input::BenSource;
 use crate::metrics::canonical::canonical_hash;
-use crate::pipeline::{count_frames, run_sequential_accepted_frames, AssignmentLengthCheck};
-use ben::encode::BenEncoder;
+use crate::pipeline::{run_sequential_accepted_frames, AssignmentLengthCheck};
+use ben::io::writer::BenStreamWriter;
 use ben::BenVariant;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
-use std::path::Path;
 use std::rc::Rc;
 
-/// `Write` handle sharing one `BufWriter<File>` between the [`BenEncoder`] (which must own its
+/// `Write` handle sharing one `BufWriter<File>` between the [`BenStreamWriter`] (which must own its
 /// writer) and this module (which must flush explicitly at the end — `BufWriter`'s `Drop` flushes
 /// but swallows errors, and a swallowed disk-full would mean a silently truncated output BEN).
 struct SharedWriter(Rc<RefCell<BufWriter<File>>>);
@@ -29,30 +29,31 @@ impl Write for SharedWriter {
     }
 }
 
-type Sink = (Rc<RefCell<BufWriter<File>>>, BenEncoder<SharedWriter>);
+type Sink = (Rc<RefCell<BufWriter<File>>>, BenStreamWriter<SharedWriter>);
 
-/// Open the output file and wrap it in an encoder. `BenEncoder::new` writes the BEN header
+/// Open the output file and wrap it in an encoder. `BenStreamWriter::for_ben` writes the BEN header
 /// immediately, so this must not run before the first assignment decodes successfully (or until a
 /// zero-frame run has completed) — a failed run must leave no output file.
 fn make_sink(out_file_name: &str) -> io::Result<Sink> {
     let file = File::create(out_file_name)?;
     let shared = Rc::new(RefCell::new(BufWriter::new(file)));
-    let encoder = BenEncoder::new(SharedWriter(Rc::clone(&shared)), BenVariant::Standard);
+    let encoder = BenStreamWriter::for_ben(SharedWriter(Rc::clone(&shared)), BenVariant::Standard)?;
     Ok((shared, encoder))
 }
 
 pub fn extract_unique_plans(
-    in_file_name: &str,
+    source: &BenSource,
     out_file_name: &str,
     show_progress: bool,
 ) -> crate::error::Result<()> {
-    let basename = Path::new(in_file_name)
+    let basename = source
+        .path()
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
     log::info!("Reading {:?}...", basename);
 
-    let total_frames = count_frames(in_file_name)?;
+    let total_frames = source.count_frames()?;
     log::info!("Found {} accepted plans in {:?}", total_frames, basename);
 
     let mut sink: Option<Sink> = None;
@@ -60,7 +61,7 @@ pub fn extract_unique_plans(
     let mut written: u64 = 0;
 
     let total = run_sequential_accepted_frames(
-        in_file_name,
+        source,
         total_frames,
         None,
         // No graph is loaded in this mode, so the driver establishes the expected assignment

@@ -1,5 +1,6 @@
 use crate::district::observed_assignment_districts;
 use crate::graph::Graph;
+use crate::input::BenSource;
 use crate::output::parquet::U32KeyedMetricWriter;
 use crate::pipeline::{
     parquet_compression, run_pipeline, AssignmentLengthCheck, PARQUET_BATCH_ROWS,
@@ -79,7 +80,7 @@ fn region_metric_for_key(
 
 pub fn tally_and_save_region_metric(
     graph: Graph,
-    in_file_name: &str,
+    source: &BenSource,
     out_file_name: &str,
     key_list: Vec<String>,
     metric: RegionMetric,
@@ -116,7 +117,7 @@ pub fn tally_and_save_region_metric(
     );
 
     run_pipeline(
-        in_file_name,
+        source,
         AssignmentLengthCheck::MatchesGraph(graph.node_count),
         // The pipeline enforces a fixed district set across the ensemble for region modes too.
         metric_column_name,

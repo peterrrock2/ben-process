@@ -1,5 +1,7 @@
 use crate::cli::{Args, Mode};
-use std::io;
+use crate::graph::{load_graph, load_graph_from_reader, Graph, GraphLoadRequest};
+use crate::input::ResolvedInput;
+use std::io::{self, Cursor};
 use std::path::Path;
 
 mod changed_assignments;
@@ -33,6 +35,26 @@ pub fn run(args: Args) -> crate::error::Result<()> {
         Mode::RegionPieces => region::run_pieces(args),
         Mode::UniquePlans => unique_plans::run(args),
         Mode::ExtractUniquePlans => extract_unique_plans::run(args),
+    }
+}
+
+/// Pick the dual graph for a graph-driven mode. Precedence: an explicit `--graph-file` always wins;
+/// otherwise a graph embedded in a `.bendl` bundle is used; otherwise the standard "graph file
+/// required" error. A `--graph-file` that overrides a bundle's embedded graph is logged.
+pub(super) fn resolve_graph(
+    args: &Args,
+    resolved: &ResolvedInput,
+    request: GraphLoadRequest,
+) -> crate::error::Result<Graph> {
+    match (&args.graph_file, &resolved.embedded_graph) {
+        (Some(path), embedded) => {
+            if embedded.is_some() {
+                log::info!("--graph-file given; ignoring the graph embedded in the bundle");
+            }
+            load_graph(path, request)
+        }
+        (None, Some(bytes)) => load_graph_from_reader(Cursor::new(bytes), request),
+        (None, None) => load_graph(graph_file(args)?, request),
     }
 }
 

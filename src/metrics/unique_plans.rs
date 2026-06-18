@@ -4,6 +4,7 @@
 //! appearance, then hashed with xxh3-128. Plans that differ only by a permutation of district
 //! labels collide on the same digest and thus count as the same partition.
 
+use crate::input::BenSource;
 use crate::metrics::canonical::canonical_hash;
 use crate::output::parquet::write_unique_plans;
 use crate::pipeline::{parquet_compression, run_label_invariant_pipeline, AssignmentLengthCheck};
@@ -11,7 +12,7 @@ use std::collections::HashSet;
 use std::fs::File;
 
 pub fn count_and_save_unique_plans(
-    in_file_name: &str,
+    source: &BenSource,
     out_file_name: &str,
     show_progress: bool,
     high_compression: bool,
@@ -20,7 +21,7 @@ pub fn count_and_save_unique_plans(
     let mut total_frames: u64 = 0;
 
     run_label_invariant_pipeline(
-        in_file_name,
+        source,
         // No graph is loaded for this mode — there is no node count to validate against, so the
         // pipeline establishes the expected length from the first frame and a corrupt
         // mixed-length file errors instead of counting the odd frames as distinct plans. The
