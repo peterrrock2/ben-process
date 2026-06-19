@@ -6,7 +6,23 @@
 #[path = "common/mod.rs"]
 mod common;
 
+use ben::io::bundle::format::{
+    write_header_with_tail, BendlHeader, HEADER_SIZE, HEADER_WITH_TAIL_SIZE,
+};
 use common::*;
+
+fn corrupt_stream_len_past_eof(path: &Path) {
+    let mut bytes = std::fs::read(path).unwrap();
+    let header_bytes: [u8; HEADER_SIZE] = bytes[..HEADER_SIZE].try_into().unwrap();
+    let mut header = BendlHeader::from_bytes(&header_bytes).unwrap();
+    header.stream_len = bytes.len() as u64 + 1;
+
+    let mut patched_header = Vec::new();
+    write_header_with_tail(&mut patched_header, &header).unwrap();
+    assert_eq!(patched_header.len(), HEADER_WITH_TAIL_SIZE);
+    bytes[..HEADER_WITH_TAIL_SIZE].copy_from_slice(&patched_header);
+    std::fs::write(path, bytes).unwrap();
+}
 
 /// A `.bendl` carrying `graph.json` + a BEN stream: `cut-edges` with **no** `--graph-file` uses the
 /// embedded graph and produces the ring's hand-computed unweighted cut counts (2, 6, 2). The output
@@ -152,5 +168,31 @@ fn bendl_negative_sample_count_errors() {
     assert!(
         stderr.contains("sample_count") && stderr.contains("negative or out of range"),
         "expected the negative-sample-count error, got: {stderr}"
+    );
+}
+
+/// A finalized bundle whose declared stream range extends past EOF must fail during input
+/// resolution. Without this guard, a BEN reader could treat EOF at a frame boundary as a clean end
+/// and silently decode only the prefix.
+#[test]
+fn bendl_stream_len_past_eof_errors_at_resolution() {
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let bendl = dir.join("plans.bendl");
+    write_bendl_ben(&bendl, None, &tri_plans());
+    corrupt_stream_len_past_eof(&bendl);
+
+    let stderr = run_failure(&[
+        "--mode",
+        "unique-plans",
+        "--ben-file",
+        bendl.to_str().unwrap(),
+        "--output-dir",
+        dir.to_str().unwrap(),
+        "--no-progress",
+    ]);
+    assert!(
+        stderr.contains("bundle assignment stream range") && stderr.contains("exceeds file length"),
+        "expected the past-EOF stream-range error, got: {stderr}"
     );
 }
