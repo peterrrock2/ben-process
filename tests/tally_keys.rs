@@ -234,7 +234,11 @@ fn tally_keys_max_samples_truncates_mkvchain_repetition_count() {
         "2",
         "-q",
     ]);
-    let df = read_parquet(&f.dir.join("plans_tallies").join("pop_tally_plans.parquet"));
+    let df = read_parquet(
+        &f.dir
+            .join("plans_tallies")
+            .join("pop_tally_up_to_2_plans.parquet"),
+    );
     assert_eq!(f64_col(&df, "district_1"), vec![60.0]);
     assert_eq!(f64_col(&df, "district_2"), vec![150.0]);
     assert_eq!(u64_col(&df, "step"), vec![1]);

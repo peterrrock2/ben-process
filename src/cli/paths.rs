@@ -64,10 +64,16 @@ pub fn build_tally_output_dir(in_ben_file: &str, output_dir: Option<&str>) -> Pa
     }
 }
 
-pub fn build_tally_output_path(in_ben_file: &str, key: &str, output_dir: Option<&str>) -> PathBuf {
+pub fn build_tally_output_path(
+    in_ben_file: &str,
+    key: &str,
+    max_samples: Option<usize>,
+    output_dir: Option<&str>,
+) -> PathBuf {
     let ben_stem = ben_stem(in_ben_file);
+    let sample_tag = max_samples.map_or(String::new(), |samples| format!("_up_to_{samples}"));
     build_tally_output_dir(in_ben_file, output_dir)
-        .join(format!("{}_tally_{}.parquet", key, ben_stem))
+        .join(format!("{}_tally{}_{}.parquet", key, sample_tag, ben_stem))
 }
 
 #[cfg(test)]
@@ -140,8 +146,21 @@ mod tests {
     #[test]
     fn build_tally_output_path_uses_key_and_ben_stem() {
         assert_eq!(
-            build_tally_output_path("/tmp/runs/plans.jsonl.ben", "pop", Some("/tmp/out")),
+            build_tally_output_path("/tmp/runs/plans.jsonl.ben", "pop", None, Some("/tmp/out")),
             PathBuf::from("/tmp/out/plans_tallies/pop_tally_plans.parquet")
+        );
+    }
+
+    #[test]
+    fn build_tally_output_path_includes_max_samples() {
+        assert_eq!(
+            build_tally_output_path(
+                "/tmp/runs/plans.jsonl.ben",
+                "pop",
+                Some(50),
+                Some("/tmp/out")
+            ),
+            PathBuf::from("/tmp/out/plans_tallies/pop_tally_up_to_50_plans.parquet")
         );
     }
 }

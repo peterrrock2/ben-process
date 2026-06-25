@@ -62,7 +62,7 @@ pub fn tally_and_save_from_key_list(
         .iter()
         .map(|key| {
             let tally_dir = build_tally_output_dir(&in_name, output_dir);
-            let output_path = build_tally_output_path(&in_name, key, output_dir);
+            let output_path = build_tally_output_path(&in_name, key, max_samples, output_dir);
             DistrictMetricWriter::new(
                 Box::new(move || {
                     create_dir_all(&tally_dir)?;
