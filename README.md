@@ -27,20 +27,25 @@ cargo run -- <args...>
 ## CLI
 
 ```text
-ben-process [OPTIONS] --ben-file <BEN_FILE>
+ben-process <COMMAND> [OPTIONS] --ben-file <BEN_FILE>
 ```
 
-Common options:
-- `--mode <MODE>`
-- `--ben-file <BEN_FILE>` (`.ben`, `.xben`, or `.bendl`; detected by content, not extension)
-- `--graph-file <GRAPH_FILE>` (optional when the input is a `.bendl` that embeds a graph)
-- `--output-dir <OUTPUT_DIR>`
-- `--max-samples <N>` (stop per-sample modes after the first `N` expanded samples)
-- `--no-progress`
-- `--high-compression`
-- `--quiet` (suppress status logging and the progress bar; errors still print. `RUST_LOG` overrides the level)
+Pick a command (one per metric), then pass its options. Run `ben-process <COMMAND> --help` to see the
+exact flags a given command accepts.
 
-Available modes:
+Common options (every command):
+- `-b`, `--ben-file <BEN_FILE>` (`.ben`, `.xben`, or `.bendl`; detected by content, not extension)
+- `--output-dir <OUTPUT_DIR>`
+- `-v`, `--verbose` (enable info-level status logging; off by default. `RUST_LOG` overrides the level)
+- `-q`, `--quiet` (suppress the progress bar; errors and warnings still print)
+
+Per-command options:
+- `-g`, `--graph-file <GRAPH_FILE>` (graph-driven commands; optional when the input is a `.bendl` that embeds a graph)
+- `-k`, `--keys <KEYS>...` (`tally-keys`, `region-splits`, `region-pieces`)
+- `--max-samples <N>` (per-sample commands; stop after the first `N` expanded samples)
+- `--high-compression` (Parquet-writing commands; Brotli instead of Snappy)
+
+Commands:
 - `tally-keys`
 - `cut-edges`
 - `polsby-popper`
@@ -74,8 +79,8 @@ graph. Output file names derive from the input's base name (`plans.bendl` →
 Tallies one or more numeric node attributes by district for each accepted plan.
 
 Required:
-- `--graph-file`
 - `--keys <KEYS>...`
+- graph input: `--graph-file <GRAPH_FILE>` unless the `.bendl` input embeds `graph.json`
 
 Output:
 - creates a directory named `<ben_stem>_tallies`
@@ -93,8 +98,7 @@ If `--output-dir` is set, the output layout is:
 Example:
 
 ```bash
-ben-process \
-  --mode tally-keys \
+ben-process tally-keys \
   --graph-file data/graph.json \
   --ben-file runs/plans.jsonl.ben \
   --keys pop area vap \
@@ -114,7 +118,7 @@ out/plans_tallies/vap_tally_plans.parquet
 Counts cut edges for each accepted plan. By default this is an unweighted cut-edge count.
 
 Required:
-- `--graph-file`
+- graph input: `--graph-file <GRAPH_FILE>` unless the `.bendl` input embeds `graph.json`
 
 Optional:
 - `--edge-weight-key <EDGE_WEIGHT_KEY>`
@@ -133,15 +137,13 @@ Output:
 Examples:
 
 ```bash
-ben-process \
-  --mode cut-edges \
+ben-process cut-edges \
   --graph-file data/graph.json \
   --ben-file runs/plans.jsonl.ben
 ```
 
 ```bash
-ben-process \
-  --mode cut-edges \
+ben-process cut-edges \
   --graph-file data/graph.json \
   --ben-file runs/plans.jsonl.ben \
   --edge-weight-key weight \
@@ -153,7 +155,7 @@ ben-process \
 Computes district-level Polsby-Popper scores for each accepted plan.
 
 Required:
-- `--graph-file`
+- graph input: `--graph-file <GRAPH_FILE>` unless the `.bendl` input embeds `graph.json`
 - one of:
   default GerryChain geometry keys
   `--perim-key <PERIM_KEY>`
@@ -187,16 +189,14 @@ Examples:
 Use the default GerryChain geometry keys:
 
 ```bash
-ben-process \
-  --mode polsby-popper \
+ben-process polsby-popper \
   --graph-file data/dual_graph.json \
   --ben-file runs/plans.jsonl.ben \
   --output-dir out
 ```
 
 ```bash
-ben-process \
-  --mode polsby-popper \
+ben-process polsby-popper \
   --graph-file data/dual_graph.json \
   --ben-file runs/plans.jsonl.ben \
   --perim-key perim \
@@ -204,8 +204,7 @@ ben-process \
 ```
 
 ```bash
-ben-process \
-  --mode polsby-popper \
+ben-process polsby-popper \
   --graph-file data/dual_graph.json \
   --ben-file runs/plans.jsonl.ben \
   --boundary-perim-key boundary_perim \
@@ -235,14 +234,12 @@ Notes:
 Examples:
 
 ```bash
-ben-process \
-  --mode changed-assignments \
+ben-process changed-assignments \
   --ben-file runs/plans.jsonl.ben
 ```
 
 ```bash
-ben-process \
-  --mode changed-assignments \
+ben-process changed-assignments \
   --ben-file runs/plans.jsonl.ben \
   --normalize \
   --max-accepted 50000 \
@@ -254,8 +251,8 @@ ben-process \
 Counts, for each requested region key, how many regions are split across more than one district in each plan.
 
 Required:
-- `--graph-file`
 - `--keys <KEYS>...`
+- graph input: `--graph-file <GRAPH_FILE>` unless the `.bendl` input embeds `graph.json`
 
 Output:
 - `<ben_stem>_region_splits.parquet`
@@ -265,8 +262,7 @@ Output:
 Example:
 
 ```bash
-ben-process \
-  --mode region-splits \
+ben-process region-splits \
   --graph-file data/graph.json \
   --ben-file runs/plans.jsonl.ben \
   --keys county municipality \
@@ -278,8 +274,8 @@ ben-process \
 Counts, for each requested region key, the total number of district pieces across all regions in each plan.
 
 Required:
-- `--graph-file`
 - `--keys <KEYS>...`
+- graph input: `--graph-file <GRAPH_FILE>` unless the `.bendl` input embeds `graph.json`
 
 Output:
 - `<ben_stem>_region_pieces.parquet`
@@ -289,8 +285,7 @@ Output:
 Example:
 
 ```bash
-ben-process \
-  --mode region-pieces \
+ben-process region-pieces \
   --graph-file data/graph.json \
   --ben-file runs/plans.jsonl.ben \
   --keys county \
@@ -318,8 +313,7 @@ Output:
 Example:
 
 ```bash
-ben-process \
-  --mode unique-plans \
+ben-process unique-plans \
   --ben-file runs/plans.jsonl.ben \
   --output-dir out
 ```
@@ -337,8 +331,7 @@ Output:
 Example:
 
 ```bash
-ben-process \
-  --mode extract-unique-plans \
+ben-process extract-unique-plans \
   --ben-file runs/plans.jsonl.ben \
   --output-dir out
 ```
@@ -350,8 +343,7 @@ Parquet-writing modes use Snappy by default.
 Use `--high-compression` to switch to Brotli:
 
 ```bash
-ben-process \
-  --mode cut-edges \
+ben-process cut-edges \
   --graph-file data/graph.json \
   --ben-file runs/plans.jsonl.ben \
   --high-compression
@@ -364,8 +356,7 @@ Brotli is slower and is mainly useful when storage size matters more than CPU ti
 Tally multiple attributes:
 
 ```bash
-ben-process \
-  --mode tally-keys \
+ben-process tally-keys \
   --graph-file data/graph.json \
   --ben-file runs/plans.jsonl.ben \
   --keys pop area vap \
@@ -375,8 +366,7 @@ ben-process \
 Weighted cut edges:
 
 ```bash
-ben-process \
-  --mode cut-edges \
+ben-process cut-edges \
   --graph-file data/graph.json \
   --ben-file runs/plans.jsonl.ben \
   --edge-weight-key weight
@@ -385,8 +375,7 @@ ben-process \
 District-level Polsby-Popper with direct node perimeter:
 
 ```bash
-ben-process \
-  --mode polsby-popper \
+ben-process polsby-popper \
   --graph-file data/dual_graph.json \
   --ben-file runs/plans.jsonl.ben \
   --perim-key perim \
@@ -396,8 +385,7 @@ ben-process \
 Changed assignments on the first 100,000 accepted plans:
 
 ```bash
-ben-process \
-  --mode changed-assignments \
+ben-process changed-assignments \
   --ben-file runs/plans.jsonl.ben \
   --max-accepted 100000 \
   --output-dir out
@@ -406,8 +394,7 @@ ben-process \
 County split counts:
 
 ```bash
-ben-process \
-  --mode region-splits \
+ben-process region-splits \
   --graph-file data/graph.json \
   --ben-file runs/plans.jsonl.ben \
   --keys county
@@ -416,8 +403,7 @@ ben-process \
 Extract unique plans:
 
 ```bash
-ben-process \
-  --mode extract-unique-plans \
+ben-process extract-unique-plans \
   --ben-file runs/plans.jsonl.ben \
   --output-dir out
 ```

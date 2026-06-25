@@ -18,7 +18,6 @@ fn short_plan() -> Vec<Vec<u16>> {
 fn failed_cut_edges_run_leaves_no_output_file() {
     let f = fixture(&short_plan());
     let stderr = run_failure(&[
-        "--mode",
         "cut-edges",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -26,7 +25,7 @@ fn failed_cut_edges_run_leaves_no_output_file() {
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
     assert!(
         stderr.contains("BEN assignment has 4 entries but graph has 6 nodes"),
@@ -42,7 +41,6 @@ fn failed_cut_edges_run_leaves_no_output_file() {
 fn failed_tally_keys_run_leaves_no_output_dir() {
     let f = fixture(&short_plan());
     run_failure(&[
-        "--mode",
         "tally-keys",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -52,7 +50,7 @@ fn failed_tally_keys_run_leaves_no_output_dir() {
         f.dir.to_str().unwrap(),
         "--keys",
         "pop",
-        "--no-progress",
+        "-q",
     ]);
     assert!(
         !f.dir.join("plans_tallies").exists(),
@@ -64,7 +62,6 @@ fn failed_tally_keys_run_leaves_no_output_dir() {
 fn failed_region_splits_run_leaves_no_output_file() {
     let f = fixture(&short_plan());
     run_failure(&[
-        "--mode",
         "region-splits",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -74,7 +71,7 @@ fn failed_region_splits_run_leaves_no_output_file() {
         f.dir.to_str().unwrap(),
         "--keys",
         "region",
-        "--no-progress",
+        "-q",
     ]);
     assert!(
         !f.dir.join("plans_region_splits.parquet").exists(),
@@ -87,7 +84,6 @@ fn failed_polsby_popper_run_leaves_no_output_file() {
     // 6-entry plan against the 4-node polsby path graph.
     let f = polsby_fixture(&[vec![1, 1, 2, 2, 2, 2]]);
     run_failure(&[
-        "--mode",
         "polsby-popper",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -101,7 +97,7 @@ fn failed_polsby_popper_run_leaves_no_output_file() {
         "perim",
         "--shared-perim-key",
         "shared_perim",
-        "--no-progress",
+        "-q",
     ]);
     assert!(
         !f.dir.join("plans_polsby_popper.parquet").exists(),
@@ -115,13 +111,12 @@ fn failed_unique_plans_run_leaves_no_output_file() {
     // check; unique-plans only writes its single-row output after a clean full pass.
     let f = fixture(&[vec![1, 1, 2, 2, 1, 1], vec![1, 1, 2, 2]]);
     run_failure(&[
-        "--mode",
         "unique-plans",
         "--ben-file",
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
     assert!(
         !f.dir.join("plans_unique_plans.parquet").exists(),

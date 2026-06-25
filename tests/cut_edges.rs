@@ -7,7 +7,6 @@ use common::*;
 fn cut_edges_unweighted() {
     let f = fixture(&tri_plans());
     run(&[
-        "--mode",
         "cut-edges",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -15,7 +14,7 @@ fn cut_edges_unweighted() {
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
     let df = read_parquet(&f.dir.join("plans_cut_edges.parquet"));
     assert_eq!(f64_col(&df, "cut_edges"), vec![2.0, 6.0, 2.0]);
@@ -28,7 +27,6 @@ fn cut_edges_unweighted() {
 fn cut_edges_weighted_by_edge_key() {
     let f = fixture(&tri_plans());
     run(&[
-        "--mode",
         "cut-edges",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -38,7 +36,7 @@ fn cut_edges_weighted_by_edge_key() {
         f.dir.to_str().unwrap(),
         "--edge-weight-key",
         "weight",
-        "--no-progress",
+        "-q",
     ]);
     let df = read_parquet(&f.dir.join("plans_cut_edges.parquet"));
     assert_eq!(f64_col(&df, "cut_edges"), vec![8.0, 21.0, 5.0]);
@@ -84,7 +82,6 @@ fn cut_edges_weighted_tolerates_asymmetric_missing_weight() {
     std::fs::write(&graph, graph_json.to_string()).unwrap();
     write_fixture_ben(&ben, &[vec![1u16, 1, 1, 2, 2, 2]]);
     run(&[
-        "--mode",
         "cut-edges",
         "--graph-file",
         graph.to_str().unwrap(),
@@ -94,7 +91,7 @@ fn cut_edges_weighted_tolerates_asymmetric_missing_weight() {
         dir.to_str().unwrap(),
         "--edge-weight-key",
         "weight",
-        "--no-progress",
+        "-q",
     ]);
     let df = read_parquet(&dir.join("plans_cut_edges.parquet"));
     assert_eq!(f64_col(&df, "cut_edges"), vec![8.0]);
@@ -108,7 +105,6 @@ fn cut_edges_weighted_tolerates_asymmetric_missing_weight() {
 fn cut_edges_with_high_compression_round_trips() {
     let f = fixture(&tri_plans());
     run(&[
-        "--mode",
         "cut-edges",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -117,7 +113,7 @@ fn cut_edges_with_high_compression_round_trips() {
         "--output-dir",
         f.dir.to_str().unwrap(),
         "--high-compression",
-        "--no-progress",
+        "-q",
     ]);
     let df = read_parquet(&f.dir.join("plans_cut_edges.parquet"));
     assert_eq!(f64_col(&df, "cut_edges"), vec![2.0, 6.0, 2.0]);
@@ -133,7 +129,6 @@ fn cut_edges_fails_when_district_set_changes() {
     let plans = vec![vec![1u16, 1, 1, 2, 2, 2], vec![1u16, 1, 1, 1, 1, 1]];
     let f = fixture(&plans);
     let stderr = run_failure(&[
-        "--mode",
         "cut-edges",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -141,7 +136,7 @@ fn cut_edges_fails_when_district_set_changes() {
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
 
     assert!(
@@ -162,7 +157,6 @@ fn cut_edges_fails_when_output_dir_is_an_existing_file() {
 
     let output = Command::new(bin())
         .args([
-            "--mode",
             "cut-edges",
             "--graph-file",
             f.graph.to_str().unwrap(),
@@ -170,7 +164,7 @@ fn cut_edges_fails_when_output_dir_is_an_existing_file() {
             f.ben.to_str().unwrap(),
             "--output-dir",
             bogus_dir.to_str().unwrap(),
-            "--no-progress",
+            "-q",
         ])
         .output()
         .expect("failed to spawn ben-process");
@@ -199,7 +193,6 @@ fn cut_edges_mkvchain_step_advances_by_n_reps() {
         vec![1, 2, 1, 2, 1, 2],
     ]);
     run(&[
-        "--mode",
         "cut-edges",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -207,7 +200,7 @@ fn cut_edges_mkvchain_step_advances_by_n_reps() {
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
     let df = read_parquet(&f.dir.join("plans_cut_edges.parquet"));
     assert_eq!(f64_col(&df, "cut_edges"), vec![2.0, 6.0]);

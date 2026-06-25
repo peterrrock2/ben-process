@@ -8,13 +8,7 @@ fn rejects_ben_file_path_without_file_name() {
     // A --ben-file with no file-name component (here "..") would panic in ben_stem when deriving
     // the output path; the entry-point guard must turn it into a clean error instead.
     // unique-plans needs no graph, so this isolates the ben-file check.
-    let stderr = run_failure(&[
-        "--mode",
-        "unique-plans",
-        "--ben-file",
-        "..",
-        "--no-progress",
-    ]);
+    let stderr = run_failure(&["unique-plans", "--ben-file", "..", "-q"]);
 
     assert!(
         stderr.contains("path has no file name component"),
@@ -26,13 +20,12 @@ fn rejects_ben_file_path_without_file_name() {
 fn graph_backed_modes_require_graph_file_argument() {
     let f = fixture(&tri_plans());
     let stderr = run_failure(&[
-        "--mode",
         "cut-edges",
         "--ben-file",
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
 
     assert!(
@@ -46,7 +39,6 @@ fn graph_backed_modes_report_missing_graph_file_path() {
     let f = fixture(&tri_plans());
     let missing_graph = f.dir.join("missing_graph.json");
     let stderr = run_failure(&[
-        "--mode",
         "cut-edges",
         "--graph-file",
         missing_graph.to_str().unwrap(),
@@ -54,7 +46,7 @@ fn graph_backed_modes_report_missing_graph_file_path() {
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
 
     assert!(
@@ -71,7 +63,6 @@ fn graph_backed_modes_report_missing_graph_file_path() {
 fn tally_keys_reports_missing_graph_attribute_key() {
     let f = fixture(&tri_plans());
     let stderr = run_failure(&[
-        "--mode",
         "tally-keys",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -81,7 +72,7 @@ fn tally_keys_reports_missing_graph_attribute_key() {
         f.dir.to_str().unwrap(),
         "--keys",
         "does_not_exist",
-        "--no-progress",
+        "-q",
     ]);
 
     assert!(
@@ -129,7 +120,6 @@ fn permuted_node_ids_warn_and_resolve_against_nodes_order() {
     write_fixture_ben(&ben, &[vec![1u16, 1, 2, 2]]);
 
     let stderr = run_success_capture_stderr(&[
-        "--mode",
         "cut-edges",
         "--graph-file",
         graph.to_str().unwrap(),
@@ -137,7 +127,7 @@ fn permuted_node_ids_warn_and_resolve_against_nodes_order() {
         ben.to_str().unwrap(),
         "--output-dir",
         dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
 
     assert!(
@@ -153,7 +143,6 @@ fn permuted_node_ids_warn_and_resolve_against_nodes_order() {
 fn graph_backed_modes_report_assignment_length_mismatch() {
     let f = fixture(&[vec![1u16, 1, 2, 2]]);
     let stderr = run_failure(&[
-        "--mode",
         "cut-edges",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -161,7 +150,7 @@ fn graph_backed_modes_report_assignment_length_mismatch() {
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
 
     assert!(

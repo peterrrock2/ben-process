@@ -13,7 +13,6 @@ fn cut_edges_and_tally_keys_handle_empty_ben_input() {
     let f = fixture(&plans);
 
     run(&[
-        "--mode",
         "cut-edges",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -21,13 +20,12 @@ fn cut_edges_and_tally_keys_handle_empty_ben_input() {
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
     let cut_df = read_parquet(&f.dir.join("plans_cut_edges.parquet"));
     assert_eq!(cut_df.height(), 0);
 
     run(&[
-        "--mode",
         "tally-keys",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -37,7 +35,7 @@ fn cut_edges_and_tally_keys_handle_empty_ben_input() {
         f.dir.to_str().unwrap(),
         "--keys",
         "pop",
-        "--no-progress",
+        "-q",
     ]);
     let tally_df = read_parquet(&f.dir.join("plans_tallies").join("pop_tally_plans.parquet"));
     assert_eq!(tally_df.height(), 0);
@@ -50,7 +48,6 @@ fn region_splits_handles_empty_ben_input() {
     let plans: Vec<Vec<u16>> = vec![];
     let f = fixture(&plans);
     run(&[
-        "--mode",
         "region-splits",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -60,7 +57,7 @@ fn region_splits_handles_empty_ben_input() {
         f.dir.to_str().unwrap(),
         "--keys",
         "region",
-        "--no-progress",
+        "-q",
     ]);
     let df = read_parquet(&f.dir.join("plans_region_splits.parquet"));
     assert_eq!(df.height(), 0);
@@ -73,13 +70,12 @@ fn changed_assignments_fails_on_empty_ben_input() {
     let plans: Vec<Vec<u16>> = vec![];
     let f = fixture(&plans);
     let stderr = run_failure(&[
-        "--mode",
         "changed-assignments",
         "--ben-file",
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
     assert!(
         stderr.contains("No data found"),
@@ -99,13 +95,12 @@ fn unique_plans_handles_empty_ben_input() {
     let plans: Vec<Vec<u16>> = vec![];
     let f = fixture(&plans);
     run(&[
-        "--mode",
         "unique-plans",
         "--ben-file",
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
     let df = read_parquet(&f.dir.join("plans_unique_plans.parquet"));
     assert_eq!(u64_col(&df, "unique_plans"), vec![0]);
@@ -119,13 +114,12 @@ fn extract_unique_plans_handles_empty_ben_input() {
     let plans: Vec<Vec<u16>> = vec![];
     let f = fixture(&plans);
     run(&[
-        "--mode",
         "extract-unique-plans",
         "--ben-file",
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
     let out = f.dir.join("plans_unique.jsonl.ben");
     let decoder = BenStreamReader::from_ben(File::open(&out).unwrap()).unwrap();

@@ -17,13 +17,12 @@ fn changed_assignments_single_plan_smoke() {
     let plans = vec![vec![1u16, 1, 1, 2, 2, 2]];
     let f = fixture(&plans);
     run(&[
-        "--mode",
         "changed-assignments",
         "--ben-file",
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
     let df = read_parquet(&f.dir.join("plans_accept_1_changed_assignments.parquet"));
     assert_eq!(u32_col(&df, "node"), vec![0, 1, 2, 3, 4, 5]);
@@ -40,13 +39,12 @@ fn changed_assignments_single_plan_smoke() {
 fn changed_assignments_tri_plans_deterministic() {
     let f = fixture(&tri_plans());
     run(&[
-        "--mode",
         "changed-assignments",
         "--ben-file",
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
     assert_eq!(
         read_changed_assignments(&f.dir, 3),
@@ -82,13 +80,12 @@ fn changed_assignments_mkvchain_uses_frame_count() {
         ],
     );
     run(&[
-        "--mode",
         "changed-assignments",
         "--ben-file",
         ben.to_str().unwrap(),
         "--output-dir",
         dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
     let path = dir.join("plans_accept_2_changed_assignments.parquet");
     assert!(
@@ -106,14 +103,13 @@ fn changed_assignments_mkvchain_uses_frame_count() {
 fn changed_assignments_tri_plans_normalized() {
     let f = fixture(&tri_plans());
     run(&[
-        "--mode",
         "changed-assignments",
         "--ben-file",
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
         "--normalize",
-        "--no-progress",
+        "-q",
     ]);
     assert_eq!(
         read_changed_assignments(&f.dir, 3),
@@ -125,7 +121,6 @@ fn changed_assignments_tri_plans_normalized() {
 fn changed_assignments_respects_max_accepted() {
     let f = fixture(&tri_plans());
     run(&[
-        "--mode",
         "changed-assignments",
         "--ben-file",
         f.ben.to_str().unwrap(),
@@ -133,7 +128,7 @@ fn changed_assignments_respects_max_accepted() {
         f.dir.to_str().unwrap(),
         "--max-accepted",
         "2",
-        "--no-progress",
+        "-q",
     ]);
     assert_eq!(
         read_changed_assignments(&f.dir, 2),
@@ -149,7 +144,6 @@ fn changed_assignments_respects_max_accepted() {
 fn changed_assignments_max_accepted_beyond_frame_count_normalizes_by_actual_frames() {
     let f = fixture(&tri_plans());
     run(&[
-        "--mode",
         "changed-assignments",
         "--ben-file",
         f.ben.to_str().unwrap(),
@@ -158,7 +152,7 @@ fn changed_assignments_max_accepted_beyond_frame_count_normalizes_by_actual_fram
         "--max-accepted",
         "10",
         "--normalize",
-        "--no-progress",
+        "-q",
     ]);
     assert_eq!(
         read_changed_assignments(&f.dir, 3),
@@ -176,14 +170,13 @@ fn changed_assignments_with_randomize_reassignments_runs_and_writes_valid_output
     let plans = vec![vec![1u16, 1, 2, 2], vec![2u16, 2, 1, 1]];
     let f = fixture(&plans);
     run(&[
-        "--mode",
         "changed-assignments",
         "--ben-file",
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
         "--randomize-reassignments",
-        "--no-progress",
+        "-q",
     ]);
 
     let counts = read_changed_assignments(&f.dir, 2);
@@ -209,7 +202,6 @@ fn changed_assignments_seed_makes_randomization_reproducible() {
 
     for out in [&dir_a, &dir_b] {
         run(&[
-            "--mode",
             "changed-assignments",
             "--ben-file",
             f.ben.to_str().unwrap(),
@@ -218,7 +210,7 @@ fn changed_assignments_seed_makes_randomization_reproducible() {
             "--randomize-reassignments",
             "--seed",
             "42",
-            "--no-progress",
+            "-q",
         ]);
     }
 
@@ -236,13 +228,12 @@ fn changed_assignments_fails_when_later_frame_adds_a_district() {
     let f = fixture(&plans);
 
     let stderr = run_failure(&[
-        "--mode",
         "changed-assignments",
         "--ben-file",
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
 
     assert!(
@@ -261,13 +252,12 @@ fn changed_assignments_fails_when_later_frame_drops_a_district() {
     let f = fixture(&plans);
 
     let stderr = run_failure(&[
-        "--mode",
         "changed-assignments",
         "--ben-file",
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
 
     assert!(
@@ -286,13 +276,12 @@ fn changed_assignments_fails_on_mixed_assignment_lengths() {
     let f = fixture(&plans);
 
     let stderr = run_failure(&[
-        "--mode",
         "changed-assignments",
         "--ben-file",
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
 
     assert!(

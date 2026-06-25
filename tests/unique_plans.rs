@@ -18,13 +18,12 @@ fn unique_plans_reports_one_when_every_frame_is_identical() {
     let plans: Vec<Vec<u16>> = vec![vec![1, 1, 1, 2, 2, 2]; 5];
     let f = fixture(&plans);
     run(&[
-        "--mode",
         "unique-plans",
         "--ben-file",
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
     assert_eq!(read_unique_plans(&f.dir), (1, 5));
 }
@@ -42,13 +41,12 @@ fn unique_plans_reports_n_when_every_frame_is_distinct() {
     ];
     let f = fixture(&plans);
     run(&[
-        "--mode",
         "unique-plans",
         "--ben-file",
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
     assert_eq!(read_unique_plans(&f.dir), (5, 5));
 }
@@ -61,13 +59,12 @@ fn unique_plans_rejects_mixed_assignment_lengths() {
     let plans: Vec<Vec<u16>> = vec![vec![1, 1, 2, 2, 1, 1], vec![1, 1, 2, 2]];
     let f = fixture(&plans);
     let stderr = run_failure(&[
-        "--mode",
         "unique-plans",
         "--ben-file",
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
     assert!(
         stderr.contains("assignment length changed from 6 to 4 within the BEN file"),
@@ -88,13 +85,12 @@ fn unique_plans_writes_distinct_partition_count_and_total_frames() {
     ];
     let f = fixture(&plans);
     run(&[
-        "--mode",
         "unique-plans",
         "--ben-file",
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
     assert_eq!(read_unique_plans(&f.dir), (3, 5));
 }

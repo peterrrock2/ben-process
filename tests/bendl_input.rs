@@ -35,13 +35,12 @@ fn bendl_uses_embedded_graph_without_graph_file() {
     write_bendl_ben(&bendl, Some(&fixture_graph_bytes()), &tri_plans());
 
     run(&[
-        "--mode",
         "cut-edges",
         "--ben-file",
         bendl.to_str().unwrap(),
         "--output-dir",
         dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
 
     let df = read_parquet(&dir.join("plans_cut_edges.parquet"));
@@ -61,7 +60,6 @@ fn bendl_graph_file_overrides_embedded() {
     write_fixture_graph(&graph);
 
     run(&[
-        "--mode",
         "cut-edges",
         "--graph-file",
         graph.to_str().unwrap(),
@@ -69,7 +67,7 @@ fn bendl_graph_file_overrides_embedded() {
         bendl.to_str().unwrap(),
         "--output-dir",
         dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
 
     let df = read_parquet(&dir.join("plans_cut_edges.parquet"));
@@ -86,13 +84,12 @@ fn bendl_without_graph_and_no_graph_file_errors() {
     write_bendl_ben(&bendl, None, &tri_plans());
 
     let stderr = run_failure(&[
-        "--mode",
         "cut-edges",
         "--ben-file",
         bendl.to_str().unwrap(),
         "--output-dir",
         dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
     assert!(
         stderr.contains("graph file required"),
@@ -110,13 +107,12 @@ fn bendl_unique_plans_runs_without_graph() {
     write_bendl_ben(&bendl, None, &tri_plans());
 
     run(&[
-        "--mode",
         "unique-plans",
         "--ben-file",
         bendl.to_str().unwrap(),
         "--output-dir",
         dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
 
     let df = read_parquet(&dir.join("plans_unique_plans.parquet"));
@@ -134,13 +130,12 @@ fn bendl_xben_stream_cut_edges() {
     write_bendl_xben(&bendl, Some(&fixture_graph_bytes()), &tri_plans());
 
     run(&[
-        "--mode",
         "cut-edges",
         "--ben-file",
         bendl.to_str().unwrap(),
         "--output-dir",
         dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
 
     let df = read_parquet(&dir.join("plans_cut_edges.parquet"));
@@ -157,13 +152,12 @@ fn bendl_negative_sample_count_errors() {
     write_bendl_ben_sample_count(&bendl, None, &tri_plans(), -1);
 
     let stderr = run_failure(&[
-        "--mode",
         "unique-plans",
         "--ben-file",
         bendl.to_str().unwrap(),
         "--output-dir",
         dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
     assert!(
         stderr.contains("sample_count") && stderr.contains("negative or out of range"),
@@ -183,13 +177,12 @@ fn bendl_stream_len_past_eof_errors_at_resolution() {
     corrupt_stream_len_past_eof(&bendl);
 
     let stderr = run_failure(&[
-        "--mode",
         "unique-plans",
         "--ben-file",
         bendl.to_str().unwrap(),
         "--output-dir",
         dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
     assert!(
         stderr.contains("bundle assignment stream range") && stderr.contains("exceeds file length"),

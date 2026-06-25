@@ -19,7 +19,6 @@ fn cut_edges_on_twodelta_matches_standard() {
     write_fixture_ben_variant(&ben, &tri_plans(), BenVariant::TwoDelta);
 
     run(&[
-        "--mode",
         "cut-edges",
         "--graph-file",
         graph.to_str().unwrap(),
@@ -27,7 +26,7 @@ fn cut_edges_on_twodelta_matches_standard() {
         ben.to_str().unwrap(),
         "--output-dir",
         dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
 
     let df = read_parquet(&dir.join("plans_cut_edges.parquet"));

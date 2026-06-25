@@ -3,14 +3,14 @@ mod common;
 
 use common::*;
 
-/// Without `--quiet` the binary prints status lines (e.g. "Done!") to stderr; with `--quiet` they
-/// are suppressed while the run still succeeds. `RUST_LOG` is cleared so the test doesn't depend on
-/// the caller's environment.
+/// Verbosity model (matching binary-ensemble 1.0): status logging is off by default and is enabled
+/// by `-v/--verbose`; `-q/--quiet` only suppresses the progress bar. So a default run prints no
+/// "Done!" status line, and a `-v` run does. `RUST_LOG` is cleared so the test doesn't depend on
+/// the caller's environment. `-q` keeps the progress bar out of captured stderr in both runs.
 #[test]
-fn quiet_suppresses_status_output() {
+fn verbose_controls_status_output() {
     let f = fixture(&tri_plans());
     let base_args = [
-        "--mode",
         "cut-edges",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -18,31 +18,31 @@ fn quiet_suppresses_status_output() {
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ];
-
-    let loud = Command::new(bin())
-        .args(base_args)
-        .env_remove("RUST_LOG")
-        .output()
-        .expect("failed to spawn ben-process");
-    assert!(loud.status.success(), "loud run should succeed");
-    let loud_stderr = String::from_utf8_lossy(&loud.stderr);
-    assert!(
-        loud_stderr.contains("Done!"),
-        "default run should print status lines to stderr, got: {loud_stderr}"
-    );
 
     let quiet = Command::new(bin())
         .args(base_args)
-        .arg("--quiet")
         .env_remove("RUST_LOG")
         .output()
         .expect("failed to spawn ben-process");
-    assert!(quiet.status.success(), "quiet run should still succeed");
+    assert!(quiet.status.success(), "default run should succeed");
     let quiet_stderr = String::from_utf8_lossy(&quiet.stderr);
     assert!(
         quiet_stderr.is_empty(),
-        "--quiet should suppress all status output, got: {quiet_stderr}"
+        "without -v there should be no status output, got: {quiet_stderr}"
+    );
+
+    let verbose = Command::new(bin())
+        .args(base_args)
+        .arg("-v")
+        .env_remove("RUST_LOG")
+        .output()
+        .expect("failed to spawn ben-process");
+    assert!(verbose.status.success(), "verbose run should still succeed");
+    let verbose_stderr = String::from_utf8_lossy(&verbose.stderr);
+    assert!(
+        verbose_stderr.contains("Done!"),
+        "-v should print status lines to stderr, got: {verbose_stderr}"
     );
 }

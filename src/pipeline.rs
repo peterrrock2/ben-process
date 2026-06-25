@@ -274,7 +274,7 @@ where
 /// `on_row`.
 ///
 /// The total sample count needed to size the progress bar is computed here (a single extra pass
-/// over the file) only when `show_progress` is set, so `--no-progress` runs never pay for it.
+/// over the file) only when `show_progress` is set, so `-q/--quiet` runs never pay for it.
 pub fn run_pipeline<Row, P, F>(
     source: &BenSource,
     length_check: AssignmentLengthCheck,

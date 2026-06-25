@@ -10,13 +10,12 @@ fn extract_unique_plans_rejects_mixed_assignment_lengths() {
     let plans: Vec<Vec<u16>> = vec![vec![1, 1, 2, 2, 1, 1], vec![1, 1, 2, 2]];
     let f = fixture(&plans);
     let stderr = run_failure(&[
-        "--mode",
         "extract-unique-plans",
         "--ben-file",
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
     assert!(
         stderr.contains("assignment length changed from 6 to 4 within the BEN file"),
@@ -42,13 +41,12 @@ fn extract_unique_plans_dedups_label_permutations() {
     ];
     let f = fixture(&plans);
     run(&[
-        "--mode",
         "extract-unique-plans",
         "--ben-file",
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
 
     let out = f.dir.join("plans_unique.jsonl.ben");
@@ -80,13 +78,12 @@ fn extract_unique_plans_fails_on_corrupted_ben_input() {
 
     let output = Command::new(bin())
         .args([
-            "--mode",
             "extract-unique-plans",
             "--ben-file",
             bogus.to_str().unwrap(),
             "--output-dir",
             dir.to_str().unwrap(),
-            "--no-progress",
+            "-q",
         ])
         .output()
         .expect("failed to spawn ben-process");

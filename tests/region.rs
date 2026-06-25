@@ -7,7 +7,6 @@ use common::*;
 fn region_splits_for_region_key() {
     let f = fixture(&tri_plans());
     run(&[
-        "--mode",
         "region-splits",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -17,7 +16,7 @@ fn region_splits_for_region_key() {
         f.dir.to_str().unwrap(),
         "--keys",
         "region",
-        "--no-progress",
+        "-q",
     ]);
     let df = read_parquet(&f.dir.join("plans_region_splits.parquet"));
     assert_eq!(u32_col(&df, "region_splits"), vec![2, 2, 0]);
@@ -34,7 +33,6 @@ fn region_splits_fails_when_district_set_changes() {
     let plans = vec![vec![1u16, 1, 1, 2, 2, 2], vec![1u16, 1, 1, 1, 1, 1]];
     let f = fixture(&plans);
     let stderr = run_failure(&[
-        "--mode",
         "region-splits",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -44,7 +42,7 @@ fn region_splits_fails_when_district_set_changes() {
         f.dir.to_str().unwrap(),
         "--keys",
         "region",
-        "--no-progress",
+        "-q",
     ]);
 
     assert!(
@@ -58,7 +56,6 @@ fn region_splits_fails_when_district_set_changes() {
 fn region_pieces_for_region_key() {
     let f = fixture(&tri_plans());
     run(&[
-        "--mode",
         "region-pieces",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -68,7 +65,7 @@ fn region_pieces_for_region_key() {
         f.dir.to_str().unwrap(),
         "--keys",
         "region",
-        "--no-progress",
+        "-q",
     ]);
     let df = read_parquet(&f.dir.join("plans_region_pieces.parquet"));
     assert_eq!(u32_col(&df, "region_pieces"), vec![4, 4, 2]);
@@ -88,7 +85,6 @@ fn region_splits_mkvchain_step_advances_by_n_reps() {
         vec![1, 1, 2, 2, 1, 1],
     ]);
     run(&[
-        "--mode",
         "region-splits",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -98,7 +94,7 @@ fn region_splits_mkvchain_step_advances_by_n_reps() {
         f.dir.to_str().unwrap(),
         "--keys",
         "region",
-        "--no-progress",
+        "-q",
     ]);
     let df = read_parquet(&f.dir.join("plans_region_splits.parquet"));
     assert_eq!(u32_col(&df, "region_splits"), vec![2, 0]);

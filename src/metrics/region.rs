@@ -78,6 +78,7 @@ fn region_metric_for_key(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn tally_and_save_region_metric(
     graph: Graph,
     source: &BenSource,

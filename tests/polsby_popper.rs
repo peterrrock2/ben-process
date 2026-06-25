@@ -8,7 +8,6 @@ fn polsby_popper_with_explicit_perimeter_key() {
     let plans = vec![vec![1u16, 1, 2, 2], vec![1u16, 2, 2, 2]];
     let f = polsby_fixture(&plans);
     run(&[
-        "--mode",
         "polsby-popper",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -22,7 +21,7 @@ fn polsby_popper_with_explicit_perimeter_key() {
         "perim",
         "--shared-perim-key",
         "shared_perim",
-        "--no-progress",
+        "-q",
     ]);
 
     let df = read_parquet(&f.dir.join("plans_polsby_popper.parquet"));
@@ -43,7 +42,6 @@ fn polsby_popper_with_boundary_and_shared_perimeter_matches_direct_perimeter() {
     let plans = vec![vec![1u16, 1, 2, 2], vec![1u16, 2, 2, 2]];
     let f = polsby_fixture(&plans);
     run(&[
-        "--mode",
         "polsby-popper",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -57,7 +55,7 @@ fn polsby_popper_with_boundary_and_shared_perimeter_matches_direct_perimeter() {
         "boundary_perim",
         "--shared-perim-key",
         "shared_perim",
-        "--no-progress",
+        "-q",
     ]);
 
     let df = read_parquet(&f.dir.join("plans_polsby_popper.parquet"));
@@ -88,7 +86,6 @@ fn polsby_popper_uses_gerrychain_default_geometry_keys() {
     let plans = vec![vec![1u16, 1, 2, 2]];
     let f = polsby_fixture(&plans);
     run(&[
-        "--mode",
         "polsby-popper",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -96,7 +93,7 @@ fn polsby_popper_uses_gerrychain_default_geometry_keys() {
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
 
     let df = read_parquet(&f.dir.join("plans_polsby_popper.parquet"));
@@ -110,7 +107,6 @@ fn polsby_popper_treats_missing_boundary_perimeter_as_zero() {
     let plans = vec![vec![1u16, 1, 2, 2]];
     let f = polsby_partial_boundary_fixture(&plans);
     run(&[
-        "--mode",
         "polsby-popper",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -118,7 +114,7 @@ fn polsby_popper_treats_missing_boundary_perimeter_as_zero() {
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
 
     let df = read_parquet(&f.dir.join("plans_polsby_popper.parquet"));
@@ -132,7 +128,6 @@ fn polsby_popper_treats_missing_shared_perimeter_as_zero() {
     let plans = vec![vec![1u16, 1, 2, 2]];
     let f = polsby_missing_shared_perim_fixture(&plans);
     run(&[
-        "--mode",
         "polsby-popper",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -140,7 +135,7 @@ fn polsby_popper_treats_missing_shared_perimeter_as_zero() {
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
 
     let df = read_parquet(&f.dir.join("plans_polsby_popper.parquet"));
@@ -154,7 +149,6 @@ fn polsby_popper_uses_default_area_and_shared_keys_with_explicit_boundary_perime
     let plans = vec![vec![1u16, 1, 2, 2]];
     let f = polsby_fixture(&plans);
     run(&[
-        "--mode",
         "polsby-popper",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -164,7 +158,7 @@ fn polsby_popper_uses_default_area_and_shared_keys_with_explicit_boundary_perime
         f.dir.to_str().unwrap(),
         "--boundary-perim-key",
         "boundary_perim",
-        "--no-progress",
+        "-q",
     ]);
 
     let df = read_parquet(&f.dir.join("plans_polsby_popper.parquet"));
@@ -209,7 +203,6 @@ fn polsby_popper_perim_key_wins_when_both_keys_are_passed() {
     write_fixture_ben(&ben, &[vec![1u16, 1, 2, 2]]);
 
     run(&[
-        "--mode",
         "polsby-popper",
         "--graph-file",
         graph.to_str().unwrap(),
@@ -225,7 +218,7 @@ fn polsby_popper_perim_key_wins_when_both_keys_are_passed() {
         "boundary_perim",
         "--shared-perim-key",
         "shared_perim",
-        "--no-progress",
+        "-q",
     ]);
 
     let df = read_parquet(&dir.join("plans_polsby_popper.parquet"));
@@ -242,7 +235,6 @@ fn polsby_popper_fails_when_later_frame_drops_a_first_assignment_district() {
     let plans = vec![vec![1u16, 1, 2, 2], vec![1u16, 1, 1, 1]];
     let f = polsby_fixture(&plans);
     let stderr = run_failure(&[
-        "--mode",
         "polsby-popper",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -250,7 +242,7 @@ fn polsby_popper_fails_when_later_frame_drops_a_first_assignment_district() {
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
 
     assert!(
@@ -269,7 +261,6 @@ fn polsby_popper_handles_empty_ben_input() {
     let plans: Vec<Vec<u16>> = vec![];
     let f = polsby_fixture(&plans);
     run(&[
-        "--mode",
         "polsby-popper",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -277,7 +268,7 @@ fn polsby_popper_handles_empty_ben_input() {
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
     let df = read_parquet(&f.dir.join("plans_polsby_popper.parquet"));
     assert_eq!(df.height(), 0);
@@ -309,7 +300,6 @@ fn polsby_popper_mkvchain_step_advances_by_n_reps() {
         vec![1, 2, 2, 2],
     ]);
     run(&[
-        "--mode",
         "polsby-popper",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -323,7 +313,7 @@ fn polsby_popper_mkvchain_step_advances_by_n_reps() {
         "perim",
         "--shared-perim-key",
         "shared_perim",
-        "--no-progress",
+        "-q",
     ]);
     let df = read_parquet(&f.dir.join("plans_polsby_popper.parquet"));
     let expected_d1 = [2.0 * std::f64::consts::PI / 9.0, std::f64::consts::PI / 4.0];

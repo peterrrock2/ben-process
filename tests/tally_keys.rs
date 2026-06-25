@@ -7,7 +7,6 @@ use common::*;
 fn tally_keys_requires_at_least_one_key() {
     let f = fixture(&tri_plans());
     let stderr = run_failure(&[
-        "--mode",
         "tally-keys",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -15,7 +14,7 @@ fn tally_keys_requires_at_least_one_key() {
         f.ben.to_str().unwrap(),
         "--output-dir",
         f.dir.to_str().unwrap(),
-        "--no-progress",
+        "-q",
     ]);
 
     assert!(
@@ -28,7 +27,6 @@ fn tally_keys_requires_at_least_one_key() {
 fn tally_keys_pop_per_district() {
     let f = fixture(&tri_plans());
     run(&[
-        "--mode",
         "tally-keys",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -38,7 +36,7 @@ fn tally_keys_pop_per_district() {
         f.dir.to_str().unwrap(),
         "--keys",
         "pop",
-        "--no-progress",
+        "-q",
     ]);
     let df = read_parquet(&f.dir.join("plans_tallies").join("pop_tally_plans.parquet"));
     assert_eq!(f64_col(&df, "district_1"), vec![60.0, 90.0, 140.0]);
@@ -65,7 +63,6 @@ fn tally_keys_pop_per_district() {
 fn tally_keys_multiple_keys_write_separate_files() {
     let f = fixture(&tri_plans());
     run(&[
-        "--mode",
         "tally-keys",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -76,7 +73,7 @@ fn tally_keys_multiple_keys_write_separate_files() {
         "--keys",
         "pop",
         "area",
-        "--no-progress",
+        "-q",
     ]);
 
     let pop_df = read_parquet(&f.dir.join("plans_tallies").join("pop_tally_plans.parquet"));
@@ -95,7 +92,6 @@ fn tally_keys_output_dir_nests_files_under_graph_stem_directory() {
     let f = fixture(&tri_plans());
     let output_dir = f.dir.join("custom_out");
     run(&[
-        "--mode",
         "tally-keys",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -105,7 +101,7 @@ fn tally_keys_output_dir_nests_files_under_graph_stem_directory() {
         output_dir.to_str().unwrap(),
         "--keys",
         "pop",
-        "--no-progress",
+        "-q",
     ]);
 
     let expected = output_dir
@@ -133,7 +129,6 @@ fn tally_keys_fails_when_later_frame_drops_a_first_assignment_district() {
     let plans = vec![vec![1u16, 1, 1, 2, 2, 2], vec![1u16, 1, 1, 1, 1, 1]];
     let f = fixture(&plans);
     let stderr = run_failure(&[
-        "--mode",
         "tally-keys",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -143,7 +138,7 @@ fn tally_keys_fails_when_later_frame_drops_a_first_assignment_district() {
         f.dir.to_str().unwrap(),
         "--keys",
         "pop",
-        "--no-progress",
+        "-q",
     ]);
 
     assert!(
@@ -159,7 +154,6 @@ fn tally_keys_fails_when_later_frames_introduce_unseen_district_ids() {
     let f = fixture(&plans);
     let output = Command::new(bin())
         .args([
-            "--mode",
             "tally-keys",
             "--graph-file",
             f.graph.to_str().unwrap(),
@@ -169,7 +163,7 @@ fn tally_keys_fails_when_later_frames_introduce_unseen_district_ids() {
             f.dir.to_str().unwrap(),
             "--keys",
             "pop",
-            "--no-progress",
+            "-q",
         ])
         .output()
         .expect("failed to spawn ben-process");
@@ -199,7 +193,6 @@ fn tally_keys_mkvchain_step_advances_by_n_reps() {
         vec![1, 2, 1, 2, 1, 2],
     ]);
     run(&[
-        "--mode",
         "tally-keys",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -209,7 +202,7 @@ fn tally_keys_mkvchain_step_advances_by_n_reps() {
         f.dir.to_str().unwrap(),
         "--keys",
         "pop",
-        "--no-progress",
+        "-q",
     ]);
     let df = read_parquet(&f.dir.join("plans_tallies").join("pop_tally_plans.parquet"));
     assert_eq!(f64_col(&df, "district_1"), vec![60.0, 90.0]);
@@ -228,7 +221,6 @@ fn tally_keys_max_samples_truncates_mkvchain_repetition_count() {
         vec![1, 2, 1, 2, 1, 2],
     ]);
     run(&[
-        "--mode",
         "tally-keys",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -240,7 +232,7 @@ fn tally_keys_max_samples_truncates_mkvchain_repetition_count() {
         "pop",
         "--max-samples",
         "2",
-        "--no-progress",
+        "-q",
     ]);
     let df = read_parquet(&f.dir.join("plans_tallies").join("pop_tally_plans.parquet"));
     assert_eq!(f64_col(&df, "district_1"), vec![60.0]);
@@ -254,7 +246,6 @@ fn tally_keys_max_samples_truncates_mkvchain_repetition_count() {
 fn tally_keys_max_samples_reports_short_input() {
     let f = fixture(&tri_plans());
     let stderr = run_success_capture_stderr(&[
-        "--mode",
         "tally-keys",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -266,7 +257,9 @@ fn tally_keys_max_samples_reports_short_input() {
         "pop",
         "--max-samples",
         "5",
-        "--no-progress",
+        // The short-input notice is an info-level log line, off by default; `-v` enables it.
+        "-v",
+        "-q",
     ]);
 
     assert!(
@@ -281,7 +274,6 @@ fn tally_keys_max_samples_reports_short_input() {
 fn tally_keys_rejects_duplicate_keys() {
     let f = fixture(&tri_plans());
     let stderr = run_failure(&[
-        "--mode",
         "tally-keys",
         "--graph-file",
         f.graph.to_str().unwrap(),
@@ -292,7 +284,7 @@ fn tally_keys_rejects_duplicate_keys() {
         "--keys",
         "pop",
         "pop",
-        "--no-progress",
+        "-q",
     ]);
     assert!(
         stderr.contains("duplicate key \"pop\" passed to --keys"),
