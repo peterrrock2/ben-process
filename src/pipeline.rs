@@ -282,6 +282,7 @@ pub fn run_pipeline<Row, P, F>(
     process: P,
     on_row: F,
     show_progress: bool,
+    max_samples: Option<usize>,
 ) -> Result<()>
 where
     Row: Send,
@@ -295,6 +296,7 @@ where
         process,
         on_row,
         show_progress,
+        max_samples,
     )
 }
 
@@ -307,6 +309,7 @@ pub fn run_label_invariant_pipeline<Row, P, F>(
     process: P,
     on_row: F,
     show_progress: bool,
+    max_samples: Option<usize>,
 ) -> Result<()>
 where
     Row: Send,
@@ -321,6 +324,7 @@ where
         move |assignment, n_reps| Ok((0u128, process(assignment, n_reps)?)),
         on_row,
         show_progress,
+        max_samples,
     )
 }
 
@@ -333,6 +337,7 @@ fn run_pipeline_core<Row, P, F>(
     process: P,
     mut on_row: F,
     show_progress: bool,
+    max_samples: Option<usize>,
 ) -> Result<()>
 where
     Row: Send,
@@ -347,16 +352,20 @@ where
     log::info!("Reading {:?}...", basename);
 
     let progress_bar = if show_progress {
-        Some(make_progress_bar(source.count_samples()?))
+        Some(make_progress_bar(match max_samples {
+            Some(n) => n,
+            None => source.count_samples()?,
+        }))
     } else {
         None
     };
 
-    let frames = source.open_frames()?;
+    let mut frames = source.open_frames()?;
     let mut frame_batch: Vec<(DecodeFrame, u16)> = Vec::with_capacity(BATCH);
 
     let mut sample_count: u64 = 1;
     let mut accepted_count: u64 = 1;
+    let mut remaining_samples = max_samples;
     // The parallel pre-check inside `process_batch` only applies to `MatchesGraph`; the serial
     // guards below enforce both contracts in BEN-file order before each row reaches `on_row`.
     let graph_node_count = match length_check {
@@ -386,14 +395,35 @@ where
         Ok(())
     };
 
-    for frame_res in frames {
-        frame_batch.push(frame_res?);
+    while remaining_samples != Some(0) {
+        let Some(frame_res) = frames.next() else {
+            break;
+        };
+        let (frame, n_reps) = frame_res?;
+        let n_reps = match remaining_samples {
+            Some(remaining) => {
+                let keep = remaining.min(n_reps as usize);
+                remaining_samples = Some(remaining - keep);
+                keep as u16
+            }
+            None => n_reps,
+        };
+        frame_batch.push((frame, n_reps));
         if frame_batch.len() == BATCH {
             drain_batch(&mut frame_batch)?;
         }
     }
     // Trailing partial batch; a no-op when the frame count was an exact multiple of BATCH.
     drain_batch(&mut frame_batch)?;
+
+    if let Some(requested) = max_samples {
+        let processed = requested - remaining_samples.unwrap_or(0);
+        if processed < requested {
+            log::info!(
+                "Reached end of input after {processed} samples before --max-samples {requested}"
+            );
+        }
+    }
 
     if let Some(progress_bar) = progress_bar {
         progress_bar.finish_and_clear();
@@ -461,10 +491,40 @@ mod tests {
                 Ok(())
             },
             false,
+            None,
         )
         .unwrap();
 
         assert_eq!(rows, vec![(1, 2, 1, (1, 2)), (3, 1, 2, (2, 1)),]);
+    }
+
+    #[test]
+    fn run_pipeline_max_samples_truncates_mkvchain_repetitions() {
+        let ben_file = write_ben_file(
+            BenVariant::MkvChain,
+            &[
+                vec![1, 1, 2, 2],
+                vec![1, 1, 2, 2],
+                vec![1, 1, 2, 2],
+                vec![2, 2, 1, 1],
+            ],
+        );
+
+        let mut rows = Vec::new();
+        run_label_invariant_pipeline(
+            &ben_source(&ben_file),
+            AssignmentLengthCheck::MatchesGraph(4),
+            |assignment, n_reps| Ok((assignment[0], n_reps)),
+            |step, n_reps, accepted, row| {
+                rows.push((step, n_reps, accepted, row));
+                Ok(())
+            },
+            false,
+            Some(2),
+        )
+        .unwrap();
+
+        assert_eq!(rows, vec![(1, 2, 1, (1, 2))]);
     }
 
     #[test]
@@ -504,6 +564,7 @@ mod tests {
             |assignment, _n_reps| Ok(assignment.len()),
             |_step, _n_reps, _accepted, _row| Ok(()),
             false,
+            None,
         )
     }
 
@@ -543,6 +604,7 @@ mod tests {
                 Ok(())
             },
             false,
+            None,
         )
         .unwrap_err();
         assert_eq!(
@@ -576,6 +638,7 @@ mod tests {
                 Ok(())
             },
             false,
+            None,
         )
         .unwrap();
 
@@ -608,6 +671,7 @@ mod tests {
             },
             |_step, _n_reps, _accepted, _row| Ok(()),
             false,
+            None,
         )
         .unwrap_err();
         assert_eq!(
@@ -633,6 +697,7 @@ mod tests {
                 Ok(())
             },
             false,
+            None,
         )
         .unwrap();
         assert_eq!(seen, 2);

@@ -15,6 +15,7 @@ pub fn count_and_save_unique_plans(
     source: &BenSource,
     out_file_name: &str,
     show_progress: bool,
+    max_samples: Option<usize>,
     high_compression: bool,
 ) -> crate::error::Result<()> {
     let mut unique: HashSet<u128> = HashSet::new();
@@ -35,6 +36,7 @@ pub fn count_and_save_unique_plans(
             Ok(())
         },
         show_progress,
+        max_samples,
     )?;
 
     let n_unique = unique.len() as u64;

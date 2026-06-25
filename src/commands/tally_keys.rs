@@ -23,6 +23,7 @@ pub fn run(args: Args) -> crate::error::Result<()> {
         output_dir,
         args.keys,
         show_progress,
+        args.max_samples,
         args.high_compression,
     )
 }

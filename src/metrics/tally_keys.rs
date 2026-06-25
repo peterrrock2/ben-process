@@ -41,6 +41,7 @@ pub fn tally_and_save_from_key_list(
     output_dir: Option<&str>,
     key_list: Vec<String>,
     show_progress: bool,
+    max_samples: Option<usize>,
     high_compression: bool,
 ) -> crate::error::Result<()> {
     let attr_column_indices: Vec<usize> = key_list
@@ -98,6 +99,7 @@ pub fn tally_and_save_from_key_list(
             Ok(())
         },
         show_progress,
+        max_samples,
     )?;
 
     log::info!("Writing final output...");

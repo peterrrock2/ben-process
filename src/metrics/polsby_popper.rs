@@ -91,6 +91,7 @@ pub fn tally_and_save_polsby_popper(
     perim_key: Option<&str>,
     boundary_perim_key: Option<&str>,
     show_progress: bool,
+    max_samples: Option<usize>,
     high_compression: bool,
 ) -> crate::error::Result<()> {
     let area_values = graph
@@ -147,6 +148,7 @@ pub fn tally_and_save_polsby_popper(
             writer.push_row(step, n_reps, accepted, (observed, &scores))
         },
         show_progress,
+        max_samples,
     )?;
 
     log::info!("Writing final output...");

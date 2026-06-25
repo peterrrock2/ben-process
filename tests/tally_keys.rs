@@ -219,6 +219,62 @@ fn tally_keys_mkvchain_step_advances_by_n_reps() {
     assert_eq!(u64_col(&df, "accepted_count"), vec![1, 2]);
 }
 
+#[test]
+fn tally_keys_max_samples_truncates_mkvchain_repetition_count() {
+    let f = fixture_mkv(&[
+        vec![1, 1, 1, 2, 2, 2],
+        vec![1, 1, 1, 2, 2, 2],
+        vec![1, 1, 1, 2, 2, 2],
+        vec![1, 2, 1, 2, 1, 2],
+    ]);
+    run(&[
+        "--mode",
+        "tally-keys",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--keys",
+        "pop",
+        "--max-samples",
+        "2",
+        "--no-progress",
+    ]);
+    let df = read_parquet(&f.dir.join("plans_tallies").join("pop_tally_plans.parquet"));
+    assert_eq!(f64_col(&df, "district_1"), vec![60.0]);
+    assert_eq!(f64_col(&df, "district_2"), vec![150.0]);
+    assert_eq!(u64_col(&df, "step"), vec![1]);
+    assert_eq!(u32_col(&df, "n_reps"), vec![2]);
+    assert_eq!(u64_col(&df, "accepted_count"), vec![1]);
+}
+
+#[test]
+fn tally_keys_max_samples_reports_short_input() {
+    let f = fixture(&tri_plans());
+    let stderr = run_success_capture_stderr(&[
+        "--mode",
+        "tally-keys",
+        "--graph-file",
+        f.graph.to_str().unwrap(),
+        "--ben-file",
+        f.ben.to_str().unwrap(),
+        "--output-dir",
+        f.dir.to_str().unwrap(),
+        "--keys",
+        "pop",
+        "--max-samples",
+        "5",
+        "--no-progress",
+    ]);
+
+    assert!(
+        stderr.contains("Reached end of input after 3 samples before --max-samples 5"),
+        "stderr should report the short input, got: {stderr}"
+    );
+}
+
 /// Duplicate keys would derive the same output path twice: two writers interleaving row groups
 /// into one file produces unreadable Parquet, so the CLI must reject the duplicate up front.
 #[test]

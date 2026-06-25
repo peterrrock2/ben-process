@@ -85,6 +85,7 @@ pub fn tally_and_save_region_metric(
     key_list: Vec<String>,
     metric: RegionMetric,
     show_progress: bool,
+    max_samples: Option<usize>,
     high_compression: bool,
 ) -> crate::error::Result<()> {
     let region_column_indices: Vec<usize> = key_list
@@ -151,6 +152,7 @@ pub fn tally_and_save_region_metric(
             Ok(())
         },
         show_progress,
+        max_samples,
     )?;
 
     log::info!("Writing final output...");

@@ -49,6 +49,7 @@ fn run(
         args.keys,
         metric,
         show_progress,
+        args.max_samples,
         args.high_compression,
     )
 }

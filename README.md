@@ -35,6 +35,7 @@ Common options:
 - `--ben-file <BEN_FILE>` (`.ben`, `.xben`, or `.bendl`; detected by content, not extension)
 - `--graph-file <GRAPH_FILE>` (optional when the input is a `.bendl` that embeds a graph)
 - `--output-dir <OUTPUT_DIR>`
+- `--max-samples <N>` (stop per-sample modes after the first `N` expanded samples)
 - `--no-progress`
 - `--high-compression`
 - `--quiet` (suppress status logging and the progress bar; errors still print. `RUST_LOG` overrides the level)

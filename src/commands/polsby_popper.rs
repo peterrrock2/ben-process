@@ -61,6 +61,7 @@ pub fn run(args: Args) -> crate::error::Result<()> {
         perim_key.as_deref(),
         boundary_perim_key.as_deref(),
         args.show_progress(),
+        args.max_samples,
         args.high_compression,
     )
 }

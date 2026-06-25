@@ -30,6 +30,9 @@ pub struct Args {
     pub normalize: bool,
     #[arg(long)]
     pub max_accepted: Option<usize>,
+    /// Stop per-sample modes after this many expanded samples.
+    #[arg(long)]
+    pub max_samples: Option<usize>,
     /// Randomize merge-split label reassignments (changed-assignments mode only). Only set this
     /// for MCMC merge-split ensembles. Default: off.
     #[arg(long, default_value_t = false)]

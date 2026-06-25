@@ -48,6 +48,7 @@ pub fn tally_and_save_cut_edges(
     source: &BenSource,
     out_file_name: &str,
     show_progress: bool,
+    max_samples: Option<usize>,
     high_compression: bool,
 ) -> crate::error::Result<()> {
     // The output file is created lazily on the first decoded assignment (or at finish for a
@@ -70,6 +71,7 @@ pub fn tally_and_save_cut_edges(
         },
         |step, n_reps, accepted, cuts| writer.push_row(step, n_reps, accepted, cuts),
         show_progress,
+        max_samples,
     )?;
 
     log::info!("Writing final output...");

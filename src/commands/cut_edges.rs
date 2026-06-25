@@ -28,6 +28,7 @@ pub fn run(args: Args) -> crate::error::Result<()> {
         &resolved.source,
         output_file.as_str(),
         args.show_progress(),
+        args.max_samples,
         args.high_compression,
     )
 }
