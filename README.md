@@ -86,6 +86,8 @@ Output:
 - creates a directory named `<ben_stem>_tallies`
 - writes one parquet file per key:
   `<key>_tally_<ben_stem>.parquet`
+- with `--max-samples <N>`:
+  `<key>_tally_up_to_<N>_<ben_stem>.parquet`
 - each file contains:
   `step`, `n_reps`, `accepted_count`, `district_*`
 

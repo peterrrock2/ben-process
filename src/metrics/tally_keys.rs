@@ -126,6 +126,7 @@ mod tests {
             region_id_counts: vec![],
             edges: vec![],
             edge_weights: None,
+            adjacency: None,
         }
     }
 

@@ -1,4 +1,4 @@
-use crate::district::observed_assignment_districts;
+use crate::district::{observe_district, MAX_DISTRICTS};
 use crate::graph::Graph;
 use crate::input::BenSource;
 use crate::output::parquet::DistrictMetricWriter;
@@ -37,16 +37,19 @@ fn polsby_popper_rows(
     edges: &[(u32, u32)],
     shared_perimeters: &[f64],
 ) -> crate::error::Result<(Vec<f64>, u16, u128)> {
-    let (n_districts, observed) = observed_assignment_districts(assignment)?;
-    let n_districts = n_districts as usize;
-    let mut area_by_district = vec![0.0f64; n_districts];
-    let mut perimeter_by_district = vec![0.0f64; n_districts];
+    let mut observed = 0u128;
+    let mut max_district = 0usize;
+    let mut area_by_district = vec![0.0f64; MAX_DISTRICTS as usize];
+    let mut perimeter_by_district = vec![0.0f64; MAX_DISTRICTS as usize];
 
     for (node, &district) in assignment.iter().enumerate() {
+        observe_district(&mut observed, district)?;
         let district = district as usize;
         area_by_district[district] += area_values[node];
         perimeter_by_district[district] += total_perimeter_values[node];
+        max_district = max_district.max(district);
     }
+    let n_districts = max_district + 1;
 
     for (edge_index, &(node_u, node_v)) in edges.iter().enumerate() {
         let district_u = assignment[node_u as usize] as usize;

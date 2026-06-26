@@ -22,6 +22,7 @@ use crate::district::{observed_assignment_districts, validate_district_set_uncha
 use crate::error::{BenError, Result};
 use crate::input::BenSource;
 use ben::io::reader::DecodeFrame;
+use ben::BenVariant;
 use indicatif::{ProgressBar, ProgressStyle};
 use polars::prelude::ParquetCompression;
 use rayon::prelude::*;
@@ -139,7 +140,7 @@ pub struct AcceptedFrame {
     pub n_reps: u16,
 }
 
-fn make_progress_bar(total_samples: usize) -> ProgressBar {
+pub(crate) fn make_progress_bar(total_samples: usize) -> ProgressBar {
     let progress_bar = ProgressBar::new(total_samples as u64);
     progress_bar.set_style(
         ProgressStyle::with_template(
@@ -160,6 +161,28 @@ fn decode_frame(frame: &DecodeFrame) -> io::Result<Vec<u16>> {
     })
 }
 
+fn run_metric_on_assignment<Row, P>(
+    process: &P,
+    graph_node_count: Option<usize>,
+    assignment: &[u16],
+    count: u16,
+) -> Result<(u16, usize, u128, Row)>
+where
+    P: Fn(&[u16], u16) -> Result<(u128, Row)> + Sync,
+{
+    if let Some(expected) = graph_node_count {
+        // Graph-driven metrics index assignment[node_idx], so fail before `process` can panic.
+        if assignment.len() != expected {
+            return Err(BenError::AssignmentLength {
+                actual: assignment.len(),
+                expected,
+            });
+        }
+    }
+    let (observed, row) = process(assignment, count)?;
+    Ok((count, assignment.len(), observed, row))
+}
+
 fn process_batch<Row, P>(
     process: &P,
     graph_node_count: Option<usize>,
@@ -173,29 +196,66 @@ where
         .par_iter()
         .map(|(frame, count)| -> Result<(u16, usize, u128, Row)> {
             let assignment = decode_frame(frame)?;
-            if let Some(expected) = graph_node_count {
-                // The `MatchesGraph` half of the length contract must hold BEFORE the metric
-                // closure runs: every graph-driven metric indexes `assignment[node_idx]` while
-                // iterating a graph-length container, so a too-short assignment would otherwise
-                // panic deep in a metric with an opaque out-of-bounds index. The serial
-                // `LengthGuard` downstream re-asserts the same contract; this parallel pre-check
-                // exists only to fail before `process` touches the assignment.
-                if assignment.len() != expected {
-                    return Err(BenError::AssignmentLength {
-                        actual: assignment.len(),
-                        expected,
-                    });
-                }
-            }
-            // `process` returns its own district label set (folded into the single pass it already
-            // makes over the assignment/edges), so `run_pipeline` can enforce the set stays fixed
-            // across the ensemble without a second pass. Label-invariant modes return `0`.
-            let (observed, row) = process(&assignment, *count)?;
-            Ok((*count, assignment.len(), observed, row))
+            run_metric_on_assignment(process, graph_node_count, &assignment, *count)
         })
         .collect::<Vec<_>>()
         .into_iter()
         .collect()
+}
+
+fn process_assignment_batch<Row, P>(
+    process: &P,
+    graph_node_count: Option<usize>,
+    records: &[(Vec<u16>, u16)],
+) -> Result<Vec<(u16, usize, u128, Row)>>
+where
+    Row: Send,
+    P: Fn(&[u16], u16) -> Result<(u128, Row)> + Sync,
+{
+    records
+        .par_iter()
+        .map(|(assignment, count)| {
+            run_metric_on_assignment(process, graph_node_count, assignment, *count)
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn forward_results<Row, F>(
+    results: Vec<(u16, usize, u128, Row)>,
+    length_guard: &mut LengthGuard,
+    district_guard: &mut DistrictSetGuard<'_>,
+    sample_count: &mut u64,
+    accepted_count: &mut u64,
+    progress_bar: Option<&ProgressBar>,
+    on_row: &mut F,
+) -> Result<()>
+where
+    F: FnMut(u64, u32, u64, Row) -> Result<()>,
+{
+    for (n_reps, assignment_len, observed, row) in results {
+        length_guard.check(assignment_len)?;
+        district_guard.check(observed)?;
+        on_row(*sample_count, n_reps as u32, *accepted_count, row)?;
+        *sample_count += n_reps as u64;
+        *accepted_count += 1;
+        if let Some(progress_bar) = progress_bar {
+            progress_bar.inc(n_reps as u64);
+        }
+    }
+    Ok(())
+}
+
+fn capped_reps(remaining_samples: &mut Option<usize>, n_reps: u16) -> u16 {
+    match *remaining_samples {
+        Some(remaining) => {
+            let keep = remaining.min(n_reps as usize);
+            *remaining_samples = Some(remaining - keep);
+            keep as u16
+        }
+        None => n_reps,
+    }
 }
 
 /// Drive `on_frame` over every accepted frame in order, with the same first-frame contracts as
@@ -360,9 +420,6 @@ where
         None
     };
 
-    let mut frames = source.open_frames()?;
-    let mut frame_batch: Vec<(DecodeFrame, u16)> = Vec::with_capacity(BATCH);
-
     let mut sample_count: u64 = 1;
     let mut accepted_count: u64 = 1;
     let mut remaining_samples = max_samples;
@@ -374,47 +431,75 @@ where
     };
     let mut length_guard = LengthGuard::new(length_check);
     let mut district_guard = DistrictSetGuard::new(district_set_label);
+    let variant = source.variant()?;
 
-    // Single drain used for both the full mid-stream batches and the trailing partial batch, so
-    // the guard checks, row forwarding, and counter accounting can never diverge between the two.
-    let mut drain_batch = |frame_batch: &mut Vec<(DecodeFrame, u16)>| -> Result<()> {
-        for (n_reps, assignment_len, observed, row) in
-            process_batch(&process, graph_node_count, frame_batch)?
-        {
-            length_guard.check(assignment_len)?;
-            district_guard.check(observed)?;
-            on_row(sample_count, n_reps as u32, accepted_count, row)?;
-            sample_count += n_reps as u64;
-            accepted_count += 1;
-            // Advance by n_reps so MkvChain repetitions tick the bar correctly.
-            if let Some(progress_bar) = &progress_bar {
-                progress_bar.inc(n_reps as u64);
+    if variant == BenVariant::TwoDelta {
+        let mut records = source.open_reader()?;
+        let mut batch: Vec<(Vec<u16>, u16)> = Vec::with_capacity(BATCH);
+        while remaining_samples != Some(0) {
+            let Some(record_res) = records.next() else {
+                break;
+            };
+            let (assignment, n_reps) = record_res?;
+            batch.push((assignment, capped_reps(&mut remaining_samples, n_reps)));
+            if batch.len() == BATCH {
+                let results = process_assignment_batch(&process, graph_node_count, &batch)?;
+                forward_results(
+                    results,
+                    &mut length_guard,
+                    &mut district_guard,
+                    &mut sample_count,
+                    &mut accepted_count,
+                    progress_bar.as_ref(),
+                    &mut on_row,
+                )?;
+                batch.clear();
             }
         }
-        frame_batch.clear();
-        Ok(())
-    };
-
-    while remaining_samples != Some(0) {
-        let Some(frame_res) = frames.next() else {
-            break;
-        };
-        let (frame, n_reps) = frame_res?;
-        let n_reps = match remaining_samples {
-            Some(remaining) => {
-                let keep = remaining.min(n_reps as usize);
-                remaining_samples = Some(remaining - keep);
-                keep as u16
+        let results = process_assignment_batch(&process, graph_node_count, &batch)?;
+        forward_results(
+            results,
+            &mut length_guard,
+            &mut district_guard,
+            &mut sample_count,
+            &mut accepted_count,
+            progress_bar.as_ref(),
+            &mut on_row,
+        )?;
+    } else {
+        let mut frames = source.open_frames()?;
+        let mut batch: Vec<(DecodeFrame, u16)> = Vec::with_capacity(BATCH);
+        while remaining_samples != Some(0) {
+            let Some(frame_res) = frames.next() else {
+                break;
+            };
+            let (frame, n_reps) = frame_res?;
+            batch.push((frame, capped_reps(&mut remaining_samples, n_reps)));
+            if batch.len() == BATCH {
+                let results = process_batch(&process, graph_node_count, &batch)?;
+                forward_results(
+                    results,
+                    &mut length_guard,
+                    &mut district_guard,
+                    &mut sample_count,
+                    &mut accepted_count,
+                    progress_bar.as_ref(),
+                    &mut on_row,
+                )?;
+                batch.clear();
             }
-            None => n_reps,
-        };
-        frame_batch.push((frame, n_reps));
-        if frame_batch.len() == BATCH {
-            drain_batch(&mut frame_batch)?;
         }
+        let results = process_batch(&process, graph_node_count, &batch)?;
+        forward_results(
+            results,
+            &mut length_guard,
+            &mut district_guard,
+            &mut sample_count,
+            &mut accepted_count,
+            progress_bar.as_ref(),
+            &mut on_row,
+        )?;
     }
-    // Trailing partial batch; a no-op when the frame count was an exact multiple of BATCH.
-    drain_batch(&mut frame_batch)?;
 
     if let Some(requested) = max_samples {
         let processed = requested - remaining_samples.unwrap_or(0);
@@ -502,6 +587,72 @@ mod tests {
     fn run_pipeline_max_samples_truncates_mkvchain_repetitions() {
         let ben_file = write_ben_file(
             BenVariant::MkvChain,
+            &[
+                vec![1, 1, 2, 2],
+                vec![1, 1, 2, 2],
+                vec![1, 1, 2, 2],
+                vec![2, 2, 1, 1],
+            ],
+        );
+
+        let mut rows = Vec::new();
+        run_label_invariant_pipeline(
+            &ben_source(&ben_file),
+            AssignmentLengthCheck::MatchesGraph(4),
+            |assignment, n_reps| Ok((assignment[0], n_reps)),
+            |step, n_reps, accepted, row| {
+                rows.push((step, n_reps, accepted, row));
+                Ok(())
+            },
+            false,
+            Some(2),
+        )
+        .unwrap();
+
+        assert_eq!(rows, vec![(1, 2, 1, (1, 2))]);
+    }
+
+    #[test]
+    fn run_pipeline_twodelta_record_path_matches_standard_rows() {
+        let assignments = vec![vec![1, 1, 2, 2], vec![1, 2, 1, 2], vec![2, 2, 1, 1]];
+        let standard_file = write_ben_file(BenVariant::Standard, &assignments);
+        let twodelta_file = write_ben_file(BenVariant::TwoDelta, &assignments);
+
+        let mut standard_rows = Vec::new();
+        run_label_invariant_pipeline(
+            &ben_source(&standard_file),
+            AssignmentLengthCheck::MatchesGraph(4),
+            |assignment, n_reps| Ok((assignment.to_vec(), n_reps)),
+            |step, n_reps, accepted, row| {
+                standard_rows.push((step, n_reps, accepted, row));
+                Ok(())
+            },
+            false,
+            None,
+        )
+        .unwrap();
+
+        let mut twodelta_rows = Vec::new();
+        run_label_invariant_pipeline(
+            &ben_source(&twodelta_file),
+            AssignmentLengthCheck::MatchesGraph(4),
+            |assignment, n_reps| Ok((assignment.to_vec(), n_reps)),
+            |step, n_reps, accepted, row| {
+                twodelta_rows.push((step, n_reps, accepted, row));
+                Ok(())
+            },
+            false,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(twodelta_rows, standard_rows);
+    }
+
+    #[test]
+    fn run_pipeline_twodelta_max_samples_truncates_repetitions() {
+        let ben_file = write_ben_file(
+            BenVariant::TwoDelta,
             &[
                 vec![1, 1, 2, 2],
                 vec![1, 1, 2, 2],

@@ -52,6 +52,28 @@ fn changed_assignments_tri_plans_deterministic() {
     );
 }
 
+#[test]
+fn changed_assignments_twodelta_uses_event_changes() {
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let ben = dir.join("plans.jsonl.ben");
+    write_fixture_ben_variant(&ben, &tri_plans(), BenVariant::TwoDelta);
+
+    run(&[
+        "changed-assignments",
+        "--ben-file",
+        ben.to_str().unwrap(),
+        "--output-dir",
+        dir.to_str().unwrap(),
+        "-q",
+    ]);
+
+    assert_eq!(
+        read_changed_assignments(&dir, 3),
+        vec![0.0, 2.0, 1.0, 0.0, 1.0, 1.0]
+    );
+}
+
 /// MkvChain BEN with a repeated assignment collapses into a frame with `count > 1`.
 /// `changed-assignments` semantics are per-accepted-record (per-frame), so a 3-sample / 2-frame
 /// ensemble should report 2 accepted.

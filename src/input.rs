@@ -19,6 +19,7 @@ use ben::format::banners::has_known_banner_prefix;
 use ben::io::bundle::format::{ASSET_TYPE_GRAPH, BENDL_MAGIC};
 use ben::io::bundle::{BendlReader, ExactLen};
 use ben::io::reader::{BenStreamFrameReader, BenStreamReader, BenWireFormat};
+use ben::BenVariant;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -136,6 +137,11 @@ impl BenSource {
         Ok(self.open_reader()?.into_frames())
     }
 
+    /// The BEN frame variant, read from the stream banner.
+    pub fn variant(&self) -> io::Result<BenVariant> {
+        Ok(self.open_reader()?.variant())
+    }
+
     /// Total sample count (sum of repetition counts). For a finalized bundle this is the header
     /// hint; otherwise it walks the stream. Used only to size the progress bar.
     pub fn count_samples(&self) -> io::Result<usize> {
@@ -152,6 +158,15 @@ impl BenSource {
     /// Number of accepted frames (independent of repetition counts). Always walks the stream, so it
     /// is exact even for a finalized bundle whose header count is only a hint.
     pub fn count_frames(&self) -> io::Result<usize> {
+        if self.variant()? == BenVariant::TwoDelta {
+            let mut n = 0usize;
+            for event in self.open_reader()?.into_twodelta_events() {
+                event?;
+                n += 1;
+            }
+            return Ok(n);
+        }
+
         let mut n = 0usize;
         for frame in self.open_frames()? {
             frame?;

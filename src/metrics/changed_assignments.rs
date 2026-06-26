@@ -1,8 +1,15 @@
 use crate::cli::build_output_path;
+use crate::district::{
+    observe_district, observed_assignment_districts, validate_district_set_unchanged, MAX_DISTRICTS,
+};
 use crate::error::BenError;
 use crate::input::BenSource;
 use crate::output::parquet::write_changed_assignments;
-use crate::pipeline::{parquet_compression, run_sequential_accepted_frames, AssignmentLengthCheck};
+use crate::pipeline::{
+    make_progress_bar, parquet_compression, run_sequential_accepted_frames, AssignmentLengthCheck,
+};
+use ben::io::reader::TwoDeltaFrameEvent;
+use ben::BenVariant;
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use std::fs::File;
@@ -142,6 +149,121 @@ fn finalize_changed_counts(diff_count: &[u32], line_count: usize, normalize: boo
         .collect()
 }
 
+fn check_uniform_length(expected: &mut Option<usize>, actual: usize) -> io::Result<()> {
+    match *expected {
+        None => *expected = Some(actual),
+        Some(expected) if expected != actual => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "assignment length changed from {} to {} within the BEN file; every plan in \
+                     an ensemble must assign the same node set",
+                    expected, actual
+                ),
+            ))
+        }
+        Some(_) => {}
+    }
+    Ok(())
+}
+
+fn update_observed_from_changes(
+    changes: &[(u32, u16, u16)],
+    node_counts: &mut [u32],
+    observed: &mut u128,
+) -> crate::error::Result<()> {
+    for &(_node, old, new) in changes {
+        observe_district(observed, new)?;
+        node_counts[new as usize] += 1;
+        node_counts[old as usize] -= 1;
+        if node_counts[old as usize] == 0 {
+            *observed &= !(1u128 << old);
+        }
+    }
+    Ok(())
+}
+
+fn count_twodelta_event_changes(
+    source: &BenSource,
+    line_count: usize,
+    show_progress: bool,
+) -> crate::error::Result<(Vec<u32>, u64)> {
+    let progress_bar = show_progress.then(|| make_progress_bar(line_count));
+    let mut length: Option<usize> = None;
+    let mut expected_observed: Option<u128> = None;
+    let mut observed = 0u128;
+    let mut node_counts = vec![0u32; MAX_DISTRICTS as usize];
+    let mut diff_count: Vec<u32> = Vec::new();
+    let mut full_count = 0u64;
+
+    for event in source
+        .open_reader()?
+        .into_twodelta_events()
+        .take(line_count)
+    {
+        match event? {
+            TwoDeltaFrameEvent::Snapshot {
+                assignment,
+                changes,
+                ..
+            } => {
+                check_uniform_length(&mut length, assignment.len())?;
+                let (_n_districts, snapshot_observed) = observed_assignment_districts(&assignment)?;
+                if let Some(expected) = expected_observed {
+                    validate_district_set_unchanged(
+                        snapshot_observed,
+                        expected,
+                        "changed-assignments",
+                    )?;
+                    if let Some(changes) = changes {
+                        for &(node, _old, _new) in &changes {
+                            diff_count[node as usize] += 1;
+                        }
+                    }
+                } else {
+                    expected_observed = Some(snapshot_observed);
+                    diff_count = vec![0u32; assignment.len()];
+                }
+
+                observed = snapshot_observed;
+                node_counts.fill(0);
+                for &district in &assignment {
+                    node_counts[district as usize] += 1;
+                }
+            }
+            TwoDeltaFrameEvent::Delta { changes, .. } => {
+                if length.is_none() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "TwoDelta delta event appeared before an initial snapshot",
+                    )
+                    .into());
+                }
+                for &(node, _old, _new) in &changes {
+                    diff_count[node as usize] += 1;
+                }
+                update_observed_from_changes(&changes, &mut node_counts, &mut observed)?;
+                validate_district_set_unchanged(
+                    observed,
+                    expected_observed.expect("expected set established by initial snapshot"),
+                    "changed-assignments",
+                )?;
+            }
+        }
+
+        full_count += 1;
+        if let Some(progress_bar) = &progress_bar {
+            progress_bar.inc(1);
+        }
+    }
+
+    if let Some(progress_bar) = progress_bar {
+        progress_bar.finish_and_clear();
+    }
+
+    Ok((diff_count, full_count))
+}
+
 /// Tallies the number of changed assignments (flips) per node and saves them to a Parquet file with
 /// columns `node` and `changed_assignments`, one row per node.
 ///
@@ -200,43 +322,48 @@ pub fn tally_and_save_changed_assignments(
         output_dir,
     );
 
-    let mut current_assignment: Option<Vec<u16>> = None;
-    let mut current_permutation: Vec<u16> = Vec::new();
-    let mut diff_count: Vec<u32> = Vec::new();
+    let (diff_count, full_count) =
+        if source.variant()? == BenVariant::TwoDelta && !with_random_reassignments {
+            count_twodelta_event_changes(source, line_count, show_progress)?
+        } else {
+            let mut current_assignment: Option<Vec<u16>> = None;
+            let mut current_permutation: Vec<u16> = Vec::new();
+            let mut diff_count: Vec<u32> = Vec::new();
 
-    let full_count = run_sequential_accepted_frames(
-        source,
-        total_frames,
-        Some(line_count),
-        // No graph is loaded, so the driver fixes the expected assignment length from the first
-        // frame (mixed lengths would silently zip-truncate the per-node diff below) and enforces
-        // the fixed-district-set invariant the run_pipeline modes get at the same chokepoint.
-        AssignmentLengthCheck::UniformWithinFile,
-        Some("changed-assignments"),
-        show_progress,
-        |frame| {
-            if current_assignment.is_none() {
-                let max_assignment = *frame.assignment.iter().max().unwrap_or(&0);
-                current_permutation = (0..=max_assignment).collect();
-                diff_count = vec![0u32; frame.assignment.len()];
-                current_assignment = Some(frame.assignment);
-                return Ok(());
-            }
+            let full_count = run_sequential_accepted_frames(
+                source,
+                total_frames,
+                Some(line_count),
+                // No graph is loaded, so the driver fixes the expected assignment length from the
+                // first frame and enforces the fixed-district-set invariant.
+                AssignmentLengthCheck::UniformWithinFile,
+                Some("changed-assignments"),
+                show_progress,
+                |frame| {
+                    if current_assignment.is_none() {
+                        let max_assignment = *frame.assignment.iter().max().unwrap_or(&0);
+                        current_permutation = (0..=max_assignment).collect();
+                        diff_count = vec![0u32; frame.assignment.len()];
+                        current_assignment = Some(frame.assignment);
+                        return Ok(());
+                    }
 
-            let mut assignment = frame.assignment;
-            update_changed_assignment_state(
-                current_assignment
-                    .as_ref()
-                    .expect("current assignment should be initialized after first frame"),
-                &mut assignment,
-                &mut current_permutation,
-                &mut diff_count,
-                with_random_reassignments && rng.random_bool(0.5),
+                    let mut assignment = frame.assignment;
+                    update_changed_assignment_state(
+                        current_assignment
+                            .as_ref()
+                            .expect("current assignment should be initialized after first frame"),
+                        &mut assignment,
+                        &mut current_permutation,
+                        &mut diff_count,
+                        with_random_reassignments && rng.random_bool(0.5),
+                    )?;
+                    current_assignment = Some(assignment);
+                    Ok(())
+                },
             )?;
-            current_assignment = Some(assignment);
-            Ok(())
-        },
-    )?;
+            (diff_count, full_count)
+        };
 
     if full_count == 0 {
         return Err(BenError::NoData);

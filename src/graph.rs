@@ -31,6 +31,13 @@ pub struct GraphLoadRequest {
     pub partial_numeric_keys: Vec<String>,
     pub region_keys: Vec<String>,
     pub edge_weight: Option<EdgeWeightRequest>,
+    pub need_adjacency: bool,
+}
+
+#[derive(Debug)]
+pub struct CsrAdjacency {
+    pub offsets: Vec<u32>,
+    pub neighbors: Vec<(u32, u32)>,
 }
 
 /// Pre-parsed graph ready for the hot loop.
@@ -60,6 +67,8 @@ pub struct Graph {
     /// single weight key the caller asked for. Edges missing the key fall back to the request's
     /// `default_value`.
     pub edge_weights: Option<Vec<f64>>,
+    /// Optional per-node adjacency for incremental edge updates. Built only when requested.
+    pub adjacency: Option<CsrAdjacency>,
 }
 
 impl Graph {
@@ -79,6 +88,39 @@ impl Graph {
     pub fn edge_weight_column(&self) -> Option<&[f64]> {
         self.edge_weights.as_deref()
     }
+
+    pub fn neighbors(&self, node: usize) -> &[(u32, u32)] {
+        let adjacency = self
+            .adjacency
+            .as_ref()
+            .expect("adjacency not built; set need_adjacency");
+        &adjacency.neighbors[adjacency.offsets[node] as usize..adjacency.offsets[node + 1] as usize]
+    }
+}
+
+fn build_csr_adjacency(node_count: usize, edges: &[(u32, u32)]) -> CsrAdjacency {
+    let mut offsets = vec![0u32; node_count + 1];
+    for &(u, v) in edges {
+        offsets[u as usize + 1] += 1;
+        offsets[v as usize + 1] += 1;
+    }
+    for i in 0..node_count {
+        offsets[i + 1] += offsets[i];
+    }
+
+    let mut cursor = offsets.clone();
+    let mut neighbors = vec![(0u32, 0u32); edges.len() * 2];
+    for (edge_index, &(u, v)) in edges.iter().enumerate() {
+        let u_slot = cursor[u as usize] as usize;
+        neighbors[u_slot] = (v, edge_index as u32);
+        cursor[u as usize] += 1;
+
+        let v_slot = cursor[v as usize] as usize;
+        neighbors[v_slot] = (u, edge_index as u32);
+        cursor[v as usize] += 1;
+    }
+
+    CsrAdjacency { offsets, neighbors }
 }
 
 /// Decide whether a node's value for a region key is meaningful (e.g. a real county id) or missing.
@@ -549,6 +591,9 @@ pub fn load_graph_from_reader(
             })
             .collect()
     });
+    let adjacency = request
+        .need_adjacency
+        .then(|| build_csr_adjacency(node_count, &edges));
 
     Ok(Graph {
         node_count,
@@ -559,6 +604,7 @@ pub fn load_graph_from_reader(
         region_id_counts,
         edges,
         edge_weights,
+        adjacency,
     })
 }
 
@@ -685,6 +731,37 @@ mod tests {
 
         assert_eq!(graph.edges, vec![(0, 1), (0, 2), (1, 2)]);
         assert_eq!(graph.edge_weights, Some(vec![4.5, 9.0, 3.5]));
+        assert!(graph.adjacency.is_none());
+    }
+
+    #[test]
+    fn load_graph_builds_csr_adjacency_when_requested() {
+        let graph_json = json!({
+            "directed": false,
+            "multigraph": false,
+            "graph": [],
+            "nodes": [{}, {}, {}],
+            "adjacency": [
+                [ { "id": 1 }, { "id": 2 } ],
+                [ { "id": 0 }, { "id": 2 } ],
+                [ { "id": 0 }, { "id": 1 } ]
+            ]
+        });
+        let graph_file = write_graph(graph_json);
+
+        let graph = load_graph(
+            graph_file.path().to_str().unwrap(),
+            GraphLoadRequest {
+                need_adjacency: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(graph.edges, vec![(0, 1), (0, 2), (1, 2)]);
+        assert_eq!(graph.neighbors(0), &[(1, 0), (2, 1)]);
+        assert_eq!(graph.neighbors(1), &[(0, 0), (2, 2)]);
+        assert_eq!(graph.neighbors(2), &[(0, 1), (1, 2)]);
     }
 
     #[test]

@@ -102,6 +102,7 @@ mod tests {
             region_id_counts: vec![],
             edges: vec![(0, 1), (1, 2), (2, 3)],
             edge_weights,
+            adjacency: None,
         }
     }
 
@@ -139,6 +140,7 @@ mod tests {
             region_id_counts: vec![],
             edges,
             edge_weights,
+            adjacency: None,
         }
     }
 
@@ -168,6 +170,7 @@ mod tests {
             region_id_counts: vec![],
             edges: vec![(0, 1)],
             edge_weights: None,
+            adjacency: None,
         };
         let d125 = (1u128 << 1) | (1u128 << 2) | (1u128 << 5);
         assert_eq!(cut_edges(&graph, &[1, 2, 5]).unwrap(), (1.0, d125));
