@@ -26,6 +26,46 @@ fn region_splits_for_region_key() {
     );
 }
 
+#[test]
+fn region_twodelta_splits_and_pieces_for_region_key() {
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let graph = dir.join("graph.json");
+    let ben = dir.join("plans.jsonl.ben");
+    write_fixture_graph(&graph);
+    write_fixture_ben_variant(&ben, &tri_plans(), BenVariant::TwoDelta);
+
+    run(&[
+        "region-splits",
+        "--graph-file",
+        graph.to_str().unwrap(),
+        "--ben-file",
+        ben.to_str().unwrap(),
+        "--output-dir",
+        dir.to_str().unwrap(),
+        "--keys",
+        "region",
+        "-q",
+    ]);
+    run(&[
+        "region-pieces",
+        "--graph-file",
+        graph.to_str().unwrap(),
+        "--ben-file",
+        ben.to_str().unwrap(),
+        "--output-dir",
+        dir.to_str().unwrap(),
+        "--keys",
+        "region",
+        "-q",
+    ]);
+
+    let splits_df = read_parquet(&dir.join("plans_region_splits.parquet"));
+    let pieces_df = read_parquet(&dir.join("plans_region_pieces.parquet"));
+    assert_eq!(u32_col(&splits_df, "region_splits"), vec![2, 2, 0]);
+    assert_eq!(u32_col(&pieces_df, "region_pieces"), vec![4, 4, 2]);
+}
+
 /// Region modes also go through the pipeline's fixed-district-set chokepoint. plan 0 =
 /// [1,1,1,2,2,2] establishes districts {1,2}; plan 1 = [1,1,1,1,1,1] drops district 2 → fail fast.
 #[test]
@@ -101,4 +141,44 @@ fn region_splits_mkvchain_step_advances_by_n_reps() {
     assert_eq!(u64_col(&df, "step"), vec![1, 3]);
     assert_eq!(u32_col(&df, "n_reps"), vec![2, 1]);
     assert_eq!(u64_col(&df, "accepted_count"), vec![1, 2]);
+}
+
+#[test]
+fn region_splits_twodelta_max_samples_truncates_repetition_count() {
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let graph = dir.join("graph.json");
+    let ben = dir.join("plans.jsonl.ben");
+    write_fixture_graph(&graph);
+    write_fixture_ben_variant(
+        &ben,
+        &[
+            vec![1, 1, 1, 2, 2, 2],
+            vec![1, 1, 1, 2, 2, 2],
+            vec![1, 1, 1, 2, 2, 2],
+            vec![1, 1, 2, 2, 1, 1],
+        ],
+        BenVariant::TwoDelta,
+    );
+
+    run(&[
+        "region-splits",
+        "--graph-file",
+        graph.to_str().unwrap(),
+        "--ben-file",
+        ben.to_str().unwrap(),
+        "--output-dir",
+        dir.to_str().unwrap(),
+        "--keys",
+        "region",
+        "--max-samples",
+        "2",
+        "-q",
+    ]);
+
+    let df = read_parquet(&dir.join("plans_region_splits.parquet"));
+    assert_eq!(u32_col(&df, "region_splits"), vec![2]);
+    assert_eq!(u64_col(&df, "step"), vec![1]);
+    assert_eq!(u32_col(&df, "n_reps"), vec![2]);
+    assert_eq!(u64_col(&df, "accepted_count"), vec![1]);
 }

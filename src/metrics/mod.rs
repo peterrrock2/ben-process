@@ -5,4 +5,5 @@ pub mod extract_unique_plans;
 pub mod polsby_popper;
 pub mod region;
 pub mod tally_keys;
+pub(crate) mod twodelta;
 pub mod unique_plans;

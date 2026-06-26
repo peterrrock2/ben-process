@@ -3,9 +3,11 @@ use crate::district::{
 };
 use crate::graph::Graph;
 use crate::input::BenSource;
+use crate::metrics::twodelta::PostDeltaLabels;
 use crate::output::parquet::F64MetricWriter;
 use crate::pipeline::{
-    make_progress_bar, parquet_compression, run_pipeline, AssignmentLengthCheck, PARQUET_BATCH_ROWS,
+    capped_reps, make_progress_bar, parquet_compression, run_pipeline, AssignmentLengthCheck,
+    PARQUET_BATCH_ROWS,
 };
 use ben::io::reader::TwoDeltaFrameEvent;
 use ben::BenVariant;
@@ -46,44 +48,6 @@ fn cut_edges(graph: &Graph, assignment: &[u16]) -> crate::error::Result<(f64, u1
         }
     };
     Ok((cut_value, observed))
-}
-
-/// Sparse lookup for labels after the current TwoDelta event is applied.
-///
-/// `stamp` avoids clearing `new_label` for every event: only nodes touched in the current
-/// generation override the pre-delta assignment.
-struct PostDeltaLabels {
-    new_label: Vec<u16>,
-    stamp: Vec<u64>,
-    gen: u64,
-}
-
-impl PostDeltaLabels {
-    fn new(node_count: usize) -> Self {
-        Self {
-            new_label: vec![0; node_count],
-            stamp: vec![0; node_count],
-            gen: 0,
-        }
-    }
-
-    /// Load the changed labels for one delta without clearing the previous scratch arrays.
-    fn refresh(&mut self, changes: &[(usize, u16, u16)]) {
-        self.gen += 1;
-        for &(node, _old, new) in changes {
-            self.stamp[node] = self.gen;
-            self.new_label[node] = new;
-        }
-    }
-
-    /// Return the node's post-delta label, falling back to the pre-delta assignment.
-    fn label(&self, before: &[u16], node: usize) -> u16 {
-        if self.stamp[node] == self.gen {
-            self.new_label[node]
-        } else {
-            before[node]
-        }
-    }
 }
 
 /// Maintains cut-edge totals across TwoDelta events without rescanning every edge.
@@ -191,18 +155,6 @@ impl<'g> IncrementalCutEdges<'g> {
         }
 
         Ok(())
-    }
-}
-
-/// Cap a frame's repetition count against `--max-samples` and update the remaining budget.
-fn capped_reps(remaining_samples: &mut Option<usize>, n_reps: u16) -> u16 {
-    match *remaining_samples {
-        Some(remaining) => {
-            let keep = remaining.min(n_reps as usize);
-            *remaining_samples = Some(remaining - keep);
-            keep as u16
-        }
-        None => n_reps,
     }
 }
 

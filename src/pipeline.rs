@@ -247,7 +247,7 @@ where
     Ok(())
 }
 
-fn capped_reps(remaining_samples: &mut Option<usize>, n_reps: u16) -> u16 {
+pub(crate) fn capped_reps(remaining_samples: &mut Option<usize>, n_reps: u16) -> u16 {
     match *remaining_samples {
         Some(remaining) => {
             let keep = remaining.min(n_reps as usize);

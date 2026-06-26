@@ -38,6 +38,49 @@ fn polsby_popper_with_explicit_perimeter_key() {
 }
 
 #[test]
+fn polsby_popper_twodelta_with_explicit_perimeter_key() {
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let graph = dir.join("graph.json");
+    let ben = dir.join("plans.jsonl.ben");
+    write_polsby_fixture_graph(&graph);
+    write_fixture_ben_variant(
+        &ben,
+        &[vec![1u16, 1, 2, 2], vec![1u16, 2, 2, 2]],
+        BenVariant::TwoDelta,
+    );
+
+    run(&[
+        "polsby-popper",
+        "--graph-file",
+        graph.to_str().unwrap(),
+        "--ben-file",
+        ben.to_str().unwrap(),
+        "--output-dir",
+        dir.to_str().unwrap(),
+        "--area-key",
+        "area",
+        "--perim-key",
+        "perim",
+        "--shared-perim-key",
+        "shared_perim",
+        "-q",
+    ]);
+
+    let df = read_parquet(&dir.join("plans_polsby_popper.parquet"));
+    let expected_d1 = [2.0 * std::f64::consts::PI / 9.0, std::f64::consts::PI / 4.0];
+    let expected_d2 = [
+        2.0 * std::f64::consts::PI / 9.0,
+        3.0 * std::f64::consts::PI / 16.0,
+    ];
+    assert_f64_vec_close(&f64_col(&df, "district_1"), &expected_d1);
+    assert_f64_vec_close(&f64_col(&df, "district_2"), &expected_d2);
+    assert_eq!(u64_col(&df, "step"), vec![1, 2]);
+    assert_eq!(u32_col(&df, "n_reps"), vec![1, 1]);
+    assert_eq!(u64_col(&df, "accepted_count"), vec![1, 2]);
+}
+
+#[test]
 fn polsby_popper_with_boundary_and_shared_perimeter_matches_direct_perimeter() {
     let plans = vec![vec![1u16, 1, 2, 2], vec![1u16, 2, 2, 2]];
     let f = polsby_fixture(&plans);
@@ -326,4 +369,50 @@ fn polsby_popper_mkvchain_step_advances_by_n_reps() {
     assert_eq!(u64_col(&df, "step"), vec![1, 3]);
     assert_eq!(u32_col(&df, "n_reps"), vec![2, 1]);
     assert_eq!(u64_col(&df, "accepted_count"), vec![1, 2]);
+}
+
+#[test]
+fn polsby_popper_twodelta_max_samples_truncates_repetition_count() {
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let graph = dir.join("graph.json");
+    let ben = dir.join("plans.jsonl.ben");
+    write_polsby_fixture_graph(&graph);
+    write_fixture_ben_variant(
+        &ben,
+        &[
+            vec![1u16, 1, 2, 2],
+            vec![1u16, 1, 2, 2],
+            vec![1u16, 1, 2, 2],
+            vec![1u16, 2, 2, 2],
+        ],
+        BenVariant::TwoDelta,
+    );
+
+    run(&[
+        "polsby-popper",
+        "--graph-file",
+        graph.to_str().unwrap(),
+        "--ben-file",
+        ben.to_str().unwrap(),
+        "--output-dir",
+        dir.to_str().unwrap(),
+        "--area-key",
+        "area",
+        "--perim-key",
+        "perim",
+        "--shared-perim-key",
+        "shared_perim",
+        "--max-samples",
+        "2",
+        "-q",
+    ]);
+
+    let df = read_parquet(&dir.join("plans_polsby_popper.parquet"));
+    let expected = [2.0 * std::f64::consts::PI / 9.0];
+    assert_f64_vec_close(&f64_col(&df, "district_1"), &expected);
+    assert_f64_vec_close(&f64_col(&df, "district_2"), &expected);
+    assert_eq!(u64_col(&df, "step"), vec![1]);
+    assert_eq!(u32_col(&df, "n_reps"), vec![2]);
+    assert_eq!(u64_col(&df, "accepted_count"), vec![1]);
 }

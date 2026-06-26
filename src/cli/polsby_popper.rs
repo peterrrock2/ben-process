@@ -2,6 +2,7 @@ use super::{build_output_path, resolve_graph, CommonArgs};
 use crate::graph::{EdgeWeightRequest, GraphLoadRequest};
 use crate::input;
 use crate::metrics;
+use ben::BenVariant;
 
 #[derive(clap::Args, Debug)]
 pub struct PolsbyPopperArgs {
@@ -55,6 +56,7 @@ pub fn run(args: PolsbyPopperArgs, show_progress: bool) -> crate::error::Result<
     }
 
     let resolved = input::resolve(args.common.ben_file())?;
+    let need_adjacency = resolved.source.variant()? == BenVariant::TwoDelta;
     let graph = resolve_graph(
         args.graph_file.as_deref(),
         &resolved,
@@ -65,6 +67,7 @@ pub fn run(args: PolsbyPopperArgs, show_progress: bool) -> crate::error::Result<
                 key: shared_perim_key.clone(),
                 default_value: 0.0,
             }),
+            need_adjacency,
             ..Default::default()
         },
     )?;

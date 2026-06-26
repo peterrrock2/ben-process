@@ -88,6 +88,40 @@ fn tally_keys_multiple_keys_write_separate_files() {
 }
 
 #[test]
+fn tally_keys_twodelta_multiple_keys_write_separate_files() {
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let graph = dir.join("graph.json");
+    let ben = dir.join("plans.jsonl.ben");
+    write_fixture_graph(&graph);
+    write_fixture_ben_variant(&ben, &tri_plans(), BenVariant::TwoDelta);
+
+    run(&[
+        "tally-keys",
+        "--graph-file",
+        graph.to_str().unwrap(),
+        "--ben-file",
+        ben.to_str().unwrap(),
+        "--output-dir",
+        dir.to_str().unwrap(),
+        "--keys",
+        "pop",
+        "area",
+        "-q",
+    ]);
+
+    let pop_df = read_parquet(&dir.join("plans_tallies").join("pop_tally_plans.parquet"));
+    let area_df = read_parquet(&dir.join("plans_tallies").join("area_tally_plans.parquet"));
+
+    assert_eq!(f64_col(&pop_df, "district_1"), vec![60.0, 90.0, 140.0]);
+    assert_eq!(f64_col(&pop_df, "district_2"), vec![150.0, 120.0, 70.0]);
+    assert_eq!(f64_col(&area_df, "district_1"), vec![6.0, 9.0, 14.0]);
+    assert_eq!(f64_col(&area_df, "district_2"), vec![15.0, 12.0, 7.0]);
+    assert_eq!(u64_col(&area_df, "step"), vec![1, 2, 3]);
+    assert_eq!(u64_col(&area_df, "accepted_count"), vec![1, 2, 3]);
+}
+
+#[test]
 fn tally_keys_output_dir_nests_files_under_graph_stem_directory() {
     let f = fixture(&tri_plans());
     let output_dir = f.dir.join("custom_out");
@@ -237,6 +271,50 @@ fn tally_keys_max_samples_truncates_mkvchain_repetition_count() {
     let df = read_parquet(
         &f.dir
             .join("plans_tallies")
+            .join("pop_tally_up_to_2_plans.parquet"),
+    );
+    assert_eq!(f64_col(&df, "district_1"), vec![60.0]);
+    assert_eq!(f64_col(&df, "district_2"), vec![150.0]);
+    assert_eq!(u64_col(&df, "step"), vec![1]);
+    assert_eq!(u32_col(&df, "n_reps"), vec![2]);
+    assert_eq!(u64_col(&df, "accepted_count"), vec![1]);
+}
+
+#[test]
+fn tally_keys_twodelta_max_samples_truncates_repetition_count() {
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let graph = dir.join("graph.json");
+    let ben = dir.join("plans.jsonl.ben");
+    write_fixture_graph(&graph);
+    write_fixture_ben_variant(
+        &ben,
+        &[
+            vec![1, 1, 1, 2, 2, 2],
+            vec![1, 1, 1, 2, 2, 2],
+            vec![1, 1, 1, 2, 2, 2],
+            vec![1, 2, 1, 2, 1, 2],
+        ],
+        BenVariant::TwoDelta,
+    );
+
+    run(&[
+        "tally-keys",
+        "--graph-file",
+        graph.to_str().unwrap(),
+        "--ben-file",
+        ben.to_str().unwrap(),
+        "--output-dir",
+        dir.to_str().unwrap(),
+        "--keys",
+        "pop",
+        "--max-samples",
+        "2",
+        "-q",
+    ]);
+
+    let df = read_parquet(
+        &dir.join("plans_tallies")
             .join("pop_tally_up_to_2_plans.parquet"),
     );
     assert_eq!(f64_col(&df, "district_1"), vec![60.0]);
