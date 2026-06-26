@@ -42,6 +42,32 @@ fn cut_edges_weighted_by_edge_key() {
     assert_eq!(f64_col(&df, "cut_edges"), vec![8.0, 21.0, 5.0]);
 }
 
+#[test]
+fn cut_edges_twodelta_weighted_by_edge_key() {
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let graph = dir.join("graph.json");
+    let ben = dir.join("plans.jsonl.ben");
+    write_fixture_graph(&graph);
+    write_fixture_ben_variant(&ben, &tri_plans(), BenVariant::TwoDelta);
+
+    run(&[
+        "cut-edges",
+        "--graph-file",
+        graph.to_str().unwrap(),
+        "--ben-file",
+        ben.to_str().unwrap(),
+        "--output-dir",
+        dir.to_str().unwrap(),
+        "--edge-weight-key",
+        "weight",
+        "-q",
+    ]);
+
+    let df = read_parquet(&dir.join("plans_cut_edges.parquet"));
+    assert_eq!(f64_col(&df, "cut_edges"), vec![8.0, 21.0, 5.0]);
+}
+
 /// Asymmetric edge-weight fixture: the same edge carries a valid weight from one endpoint and a
 /// missing/non-numeric value from the other. The edge-weight rule is "last valid weight wins" (a
 /// non-numeric value is not stored), so cut_edges on p0=[1,1,1,2,2,2] must give 8.0 regardless of
@@ -207,4 +233,42 @@ fn cut_edges_mkvchain_step_advances_by_n_reps() {
     assert_eq!(u64_col(&df, "step"), vec![1, 3]);
     assert_eq!(u32_col(&df, "n_reps"), vec![2, 1]);
     assert_eq!(u64_col(&df, "accepted_count"), vec![1, 2]);
+}
+
+#[test]
+fn cut_edges_twodelta_max_samples_truncates_repetition_count() {
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let graph = dir.join("graph.json");
+    let ben = dir.join("plans.jsonl.ben");
+    write_fixture_graph(&graph);
+    write_fixture_ben_variant(
+        &ben,
+        &[
+            vec![1, 1, 1, 2, 2, 2],
+            vec![1, 1, 1, 2, 2, 2],
+            vec![1, 1, 1, 2, 2, 2],
+            vec![1, 2, 1, 2, 1, 2],
+        ],
+        BenVariant::TwoDelta,
+    );
+
+    run(&[
+        "cut-edges",
+        "--graph-file",
+        graph.to_str().unwrap(),
+        "--ben-file",
+        ben.to_str().unwrap(),
+        "--output-dir",
+        dir.to_str().unwrap(),
+        "--max-samples",
+        "2",
+        "-q",
+    ]);
+
+    let df = read_parquet(&dir.join("plans_cut_edges.parquet"));
+    assert_eq!(f64_col(&df, "cut_edges"), vec![2.0]);
+    assert_eq!(u64_col(&df, "step"), vec![1]);
+    assert_eq!(u32_col(&df, "n_reps"), vec![2]);
+    assert_eq!(u64_col(&df, "accepted_count"), vec![1]);
 }

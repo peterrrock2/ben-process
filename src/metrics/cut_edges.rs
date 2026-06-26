@@ -1,11 +1,16 @@
-use crate::district::observed_assignment_districts;
+use crate::district::{
+    observe_district, observed_assignment_districts, validate_district_set_unchanged, MAX_DISTRICTS,
+};
 use crate::graph::Graph;
 use crate::input::BenSource;
 use crate::output::parquet::F64MetricWriter;
 use crate::pipeline::{
-    parquet_compression, run_pipeline, AssignmentLengthCheck, PARQUET_BATCH_ROWS,
+    make_progress_bar, parquet_compression, run_pipeline, AssignmentLengthCheck, PARQUET_BATCH_ROWS,
 };
+use ben::io::reader::TwoDeltaFrameEvent;
+use ben::BenVariant;
 use std::fs::File;
+use std::io;
 
 /// Count cut edges for a single assignment, and capture the district label set.
 ///
@@ -43,6 +48,247 @@ fn cut_edges(graph: &Graph, assignment: &[u16]) -> crate::error::Result<(f64, u1
     Ok((cut_value, observed))
 }
 
+/// Sparse lookup for labels after the current TwoDelta event is applied.
+///
+/// `stamp` avoids clearing `new_label` for every event: only nodes touched in the current
+/// generation override the pre-delta assignment.
+struct PostDeltaLabels {
+    new_label: Vec<u16>,
+    stamp: Vec<u64>,
+    gen: u64,
+}
+
+impl PostDeltaLabels {
+    fn new(node_count: usize) -> Self {
+        Self {
+            new_label: vec![0; node_count],
+            stamp: vec![0; node_count],
+            gen: 0,
+        }
+    }
+
+    /// Load the changed labels for one delta without clearing the previous scratch arrays.
+    fn refresh(&mut self, changes: &[(usize, u16, u16)]) {
+        self.gen += 1;
+        for &(node, _old, new) in changes {
+            self.stamp[node] = self.gen;
+            self.new_label[node] = new;
+        }
+    }
+
+    /// Return the node's post-delta label, falling back to the pre-delta assignment.
+    fn label(&self, before: &[u16], node: usize) -> u16 {
+        if self.stamp[node] == self.gen {
+            self.new_label[node]
+        } else {
+            before[node]
+        }
+    }
+}
+
+/// Maintains cut-edge totals across TwoDelta events without rescanning every edge.
+///
+/// `update_delta` expects its `before` slice to still be the pre-delta assignment; the caller
+/// applies the changes only after the cut-edge total has been patched.
+struct IncrementalCutEdges<'g> {
+    graph: &'g Graph,
+    cut_value: f64,
+    node_counts: Vec<u32>,
+    observed: u128,
+    post_delta_labels: PostDeltaLabels,
+    seen_edges: Vec<u64>,
+    gen: u64,
+}
+
+impl<'g> IncrementalCutEdges<'g> {
+    fn new(graph: &'g Graph) -> Self {
+        Self {
+            graph,
+            cut_value: 0.0,
+            node_counts: vec![0; MAX_DISTRICTS as usize],
+            observed: 0,
+            post_delta_labels: PostDeltaLabels::new(graph.node_count),
+            seen_edges: vec![0; graph.edges.len()],
+            gen: 0,
+        }
+    }
+
+    /// Recompute all state from a snapshot assignment.
+    fn seed(&mut self, assignment: &[u16]) -> crate::error::Result<()> {
+        let (cut_value, observed) = cut_edges(self.graph, assignment)?;
+        self.cut_value = cut_value;
+        self.observed = observed;
+        self.node_counts.fill(0);
+        for &district in assignment {
+            self.node_counts[district as usize] += 1;
+        }
+        Ok(())
+    }
+
+    /// Apply one delta event to the maintained cut-edge total and district set.
+    ///
+    /// This validates each delta against `before`, evaluates each incident edge once, then leaves
+    /// assignment mutation to the caller so edges with both endpoints changed see a consistent
+    /// pre/post comparison.
+    fn update_delta(
+        &mut self,
+        before: &[u16],
+        changes: &[(usize, u16, u16)],
+    ) -> crate::error::Result<()> {
+        for &(node, old, new) in changes {
+            let Some(&current) = before.get(node) else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "TwoDelta delta references node {node} outside assignment length {}",
+                        before.len()
+                    ),
+                )
+                .into());
+            };
+            if current != old {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "TwoDelta delta old label mismatch at node {node}: \
+                         expected {current}, got {old}",
+                    ),
+                )
+                .into());
+            }
+            observe_district(&mut self.observed, new)?;
+            self.node_counts[new as usize] += 1;
+            self.node_counts[old as usize] -= 1;
+            if self.node_counts[old as usize] == 0 {
+                self.observed &= !(1u128 << old);
+            }
+        }
+
+        self.post_delta_labels.refresh(changes);
+        self.gen += 1;
+        for &(node, _old, _new) in changes {
+            for &(_neighbor, edge_index) in self.graph.neighbors(node) {
+                let edge_index = edge_index as usize;
+                if self.seen_edges[edge_index] == self.gen {
+                    continue;
+                }
+                self.seen_edges[edge_index] = self.gen;
+                let (u, v) = self.graph.edges[edge_index];
+                let u = u as usize;
+                let v = v as usize;
+                let was_cut = before[u] != before[v];
+                let is_cut = self.post_delta_labels.label(before, u)
+                    != self.post_delta_labels.label(before, v);
+                if was_cut != is_cut {
+                    let weight = self
+                        .graph
+                        .edge_weights
+                        .as_ref()
+                        .map_or(1.0, |weights| weights[edge_index]);
+                    self.cut_value += if is_cut { weight } else { -weight };
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Cap a frame's repetition count against `--max-samples` and update the remaining budget.
+fn capped_reps(remaining_samples: &mut Option<usize>, n_reps: u16) -> u16 {
+    match *remaining_samples {
+        Some(remaining) => {
+            let keep = remaining.min(n_reps as usize);
+            *remaining_samples = Some(remaining - keep);
+            keep as u16
+        }
+        None => n_reps,
+    }
+}
+
+/// Run cut-edges directly from TwoDelta events, reseeding on snapshots and patching on deltas.
+fn run_incremental_twodelta_cut_edges(
+    graph: &Graph,
+    source: &BenSource,
+    writer: &mut F64MetricWriter,
+    show_progress: bool,
+    max_samples: Option<usize>,
+) -> crate::error::Result<()> {
+    let progress_bar = if show_progress {
+        Some(make_progress_bar(match max_samples {
+            Some(n) => n,
+            None => source.count_samples()?,
+        }))
+    } else {
+        None
+    };
+
+    let mut remaining_samples = max_samples;
+    let mut assignment: Option<Vec<u16>> = None;
+    let mut expected_observed: Option<u128> = None;
+    let mut state = IncrementalCutEdges::new(graph);
+    let mut step = 1u64;
+
+    for (accepted, event) in (1u64..).zip(source.open_reader()?.into_twodelta_events()) {
+        if remaining_samples == Some(0) {
+            break;
+        }
+
+        let n_reps = match event? {
+            TwoDeltaFrameEvent::Snapshot {
+                assignment: snapshot,
+                count,
+                ..
+            } => {
+                if snapshot.len() != graph.node_count {
+                    return Err(crate::error::BenError::AssignmentLength {
+                        actual: snapshot.len(),
+                        expected: graph.node_count,
+                    });
+                }
+                state.seed(&snapshot)?;
+                assignment = Some(snapshot);
+                capped_reps(&mut remaining_samples, count)
+            }
+            TwoDeltaFrameEvent::Delta { changes, count } => {
+                let assignment = assignment.as_mut().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "TwoDelta delta event appeared before an initial snapshot",
+                    )
+                })?;
+                let changes = changes
+                    .into_iter()
+                    .map(|(node, old, new)| (node as usize, old, new))
+                    .collect::<Vec<_>>();
+                state.update_delta(assignment, &changes)?;
+                for (node, _old, new) in changes {
+                    assignment[node] = new;
+                }
+                capped_reps(&mut remaining_samples, count)
+            }
+        };
+
+        match expected_observed {
+            None => expected_observed = Some(state.observed),
+            Some(expected) => {
+                validate_district_set_unchanged(state.observed, expected, "cut-edges")?;
+            }
+        }
+
+        writer.push_row(step, n_reps as u32, accepted, state.cut_value)?;
+        step += n_reps as u64;
+        if let Some(progress_bar) = &progress_bar {
+            progress_bar.inc(n_reps as u64);
+        }
+    }
+
+    if let Some(progress_bar) = progress_bar {
+        progress_bar.finish_and_clear();
+    }
+    Ok(())
+}
+
 pub fn tally_and_save_cut_edges(
     graph: Graph,
     source: &BenSource,
@@ -61,18 +307,28 @@ pub fn tally_and_save_cut_edges(
         PARQUET_BATCH_ROWS,
     );
 
-    run_pipeline(
-        source,
-        AssignmentLengthCheck::MatchesGraph(graph.node_count),
-        "cut-edges",
-        |assignment, _n_reps| {
-            let (cuts, observed) = cut_edges(&graph, assignment)?;
-            Ok((observed, cuts))
-        },
-        |step, n_reps, accepted, cuts| writer.push_row(step, n_reps, accepted, cuts),
-        show_progress,
-        max_samples,
-    )?;
+    if source.variant()? == BenVariant::TwoDelta && graph.adjacency.is_some() {
+        run_incremental_twodelta_cut_edges(
+            &graph,
+            source,
+            &mut writer,
+            show_progress,
+            max_samples,
+        )?;
+    } else {
+        run_pipeline(
+            source,
+            AssignmentLengthCheck::MatchesGraph(graph.node_count),
+            "cut-edges",
+            |assignment, _n_reps| {
+                let (cuts, observed) = cut_edges(&graph, assignment)?;
+                Ok((observed, cuts))
+            },
+            |step, n_reps, accepted, cuts| writer.push_row(step, n_reps, accepted, cuts),
+            show_progress,
+            max_samples,
+        )?;
+    }
 
     log::info!("Writing final output...");
     writer.finish()?;
@@ -83,8 +339,8 @@ pub fn tally_and_save_cut_edges(
 
 #[cfg(test)]
 mod tests {
-    use super::cut_edges;
-    use crate::graph::Graph;
+    use super::{cut_edges, IncrementalCutEdges};
+    use crate::graph::{CsrAdjacency, Graph};
     use crate::output::parquet::F64MetricWriter;
     use crate::pipeline::parquet_compression;
     use polars::prelude::{ParquetReader, SerReader};
@@ -144,6 +400,23 @@ mod tests {
         }
     }
 
+    fn graph_with_path_adjacency() -> Graph {
+        Graph {
+            node_count: 4,
+            attr_columns: vec![],
+            attr_index: HashMap::new(),
+            region_columns: vec![],
+            region_index: HashMap::new(),
+            region_id_counts: vec![],
+            edges: vec![(0, 1), (1, 2), (2, 3)],
+            edge_weights: None,
+            adjacency: Some(CsrAdjacency {
+                offsets: vec![0, 1, 3, 5, 6],
+                neighbors: vec![(1, 0), (0, 0), (2, 1), (1, 1), (3, 2), (2, 2)],
+            }),
+        }
+    }
+
     #[test]
     fn cut_edges_returns_zero_for_empty_edge_list() {
         // No edges → no crossings, regardless of assignment. Both the weighted and unweighted code
@@ -155,6 +428,36 @@ mod tests {
         let weighted = graph_with_explicit_edges(vec![], Some(vec![]));
         assert_eq!(cut_edges(&unweighted, &[1, 2, 3]).unwrap(), (0.0, d123));
         assert_eq!(cut_edges(&weighted, &[1, 2, 3]).unwrap(), (0.0, d123));
+    }
+
+    #[test]
+    fn incremental_cut_edges_handles_edge_with_both_endpoints_moved() {
+        let graph = graph_with_path_adjacency();
+        let before = vec![1, 1, 2, 2];
+        let changes = vec![(1usize, 1u16, 2u16), (2usize, 2u16, 1u16)];
+        let mut state = IncrementalCutEdges::new(&graph);
+
+        state.seed(&before).unwrap();
+        state.update_delta(&before, &changes).unwrap();
+
+        assert_eq!(state.cut_value, 3.0);
+        assert_eq!(state.observed, (1u128 << 1) | (1u128 << 2));
+    }
+
+    #[test]
+    fn incremental_cut_edges_rejects_delta_old_label_mismatch() {
+        let graph = graph_with_path_adjacency();
+        let before = vec![1, 1, 2, 2];
+        let changes = vec![(1usize, 2u16, 1u16)];
+        let mut state = IncrementalCutEdges::new(&graph);
+
+        state.seed(&before).unwrap();
+        let err = state.update_delta(&before, &changes).unwrap_err();
+
+        assert!(
+            err.to_string().contains("old label mismatch"),
+            "unexpected error: {err}",
+        );
     }
 
     #[test]

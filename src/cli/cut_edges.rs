@@ -2,6 +2,7 @@ use super::{build_output_path, resolve_graph, CommonArgs};
 use crate::graph::{EdgeWeightRequest, GraphLoadRequest};
 use crate::input;
 use crate::metrics;
+use ben::BenVariant;
 
 #[derive(clap::Args, Debug)]
 pub struct CutEdgesArgs {
@@ -21,6 +22,7 @@ pub struct CutEdgesArgs {
 
 pub fn run(args: CutEdgesArgs, show_progress: bool) -> crate::error::Result<()> {
     let resolved = input::resolve(args.common.ben_file())?;
+    let need_adjacency = resolved.source.variant()? == BenVariant::TwoDelta;
     let graph = resolve_graph(
         args.graph_file.as_deref(),
         &resolved,
@@ -29,6 +31,7 @@ pub fn run(args: CutEdgesArgs, show_progress: bool) -> crate::error::Result<()> 
                 key,
                 default_value: 1.0,
             }),
+            need_adjacency,
             ..Default::default()
         },
     )?;
