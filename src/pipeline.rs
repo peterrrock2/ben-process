@@ -83,6 +83,11 @@ impl LengthGuard {
                     return Err(Error::AssignmentLength { actual, expected });
                 }
             }
+            AssignmentLengthCheck::MatchesGeometryFile(expected) => {
+                if actual != expected {
+                    return Err(Error::AssignmentLength { actual, expected });
+                }
+            }
             AssignmentLengthCheck::UniformWithinFile => match self.established {
                 None => self.established = Some(actual),
                 Some(expected) => {
@@ -431,6 +436,7 @@ where
     // guards below enforce both contracts in BEN-file order before each row reaches `on_row`.
     let graph_node_count = match length_check {
         AssignmentLengthCheck::MatchesGraph(node_count) => Some(node_count),
+        AssignmentLengthCheck::MatchesGeometryFile(geo_count) => Some(geo_count),
         AssignmentLengthCheck::UniformWithinFile => None,
     };
     let mut length_guard = LengthGuard::new(length_check);

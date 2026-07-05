@@ -15,17 +15,55 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io;
 
+const EPS: f64 = 1e-9;
+
+#[inline]
+fn l2_sq_dist(p: Coord, q: Coord) -> f64 {
+    (p.x - q.x).powi(2) + (p.y - q.y).powi(2)
+}
+
 fn diameter_circle(p: Coord, q: Coord) -> Circle {
     let center = Coord {
         x: (p.x + q.x) / 2.0,
         y: (p.y + q.y) / 2.0,
     };
-    let radius = ((p.x - q.x).powi(2) + (p.y - q.y).powi(2)).sqrt() / 2.0;
+    let radius = l2_sq_dist(p, q).sqrt() / 2.0;
     Circle { center, radius }
 }
 
-fn circumcircle(p: Coord, q: Coord, r: Coord) -> Circle {
-    let d = 2.0 * (p.x * (q.y - r.y) + q.x * (r.y - p.y) + r.x * (p.y - q.y));
+fn largest_diameter_circle(p: Coord, q: Coord, r: Coord) -> Circle {
+    let points = vec![p, q, r];
+    let (point1, point2) = {
+        let mut ret = (points[0], points[1]);
+        for (p1, p2) in [
+            (points[0], points[1]),
+            (points[0], points[2]),
+            (points[1], points[2]),
+        ] {
+            if l2_sq_dist(p1, p2) > l2_sq_dist(ret.0, ret.1) {
+                ret = (p1, p2);
+            }
+        }
+        ret
+    };
+
+    diameter_circle(point1, point2)
+}
+
+#[inline]
+fn determinant(p: Coord, q: Coord, r: Coord) -> f64 {
+    p.x * (q.y - r.y) + q.x * (r.y - p.y) + r.x * (p.y - q.y)
+}
+
+fn circumcircle(p: Coord, q: Coord, r: Coord) -> Option<Circle> {
+    let det = determinant(p, q, r);
+
+    // Check collinearity
+    if det.abs() < EPS {
+        return None;
+    }
+
+    let d = 2.0 * det;
     let ux = ((p.x.powi(2) + p.y.powi(2)) * (q.y - r.y)
         + (q.x.powi(2) + q.y.powi(2)) * (r.y - p.y)
         + (r.x.powi(2) + r.y.powi(2)) * (p.y - q.y))
@@ -36,58 +74,94 @@ fn circumcircle(p: Coord, q: Coord, r: Coord) -> Circle {
         / d;
     let center = Coord { x: ux, y: uy };
     let radius = ((center.x - p.x).powi(2) + (center.y - p.y).powi(2)).sqrt();
-    Circle { center, radius }
+    Some(Circle { center, radius })
 }
 
 fn in_circle(p: Coord, circle: &Circle) -> bool {
-    let dist_sq = (p.x - circle.center.x).powi(2) + (p.y - circle.center.y).powi(2);
-    dist_sq <= circle.radius.powi(2)
+    let dist_sq = l2_sq_dist(p, circle.center);
+    dist_sq <= circle.radius.powi(2) + EPS
 }
 
 // Use Welzl's algorithm to compute the minimum enclosing circle of a set of points
-fn compute_minimum_enclosing_circle_area(hull: &geo::Polygon<f64>) -> f64 {
+fn compute_minimum_enclosing_circle_area(hull: &geo::Polygon<f64>) -> Option<f64> {
     let mut points: Vec<Coord<f64>> = hull.exterior().points().map(|p: Point| p.0).collect();
+
+    if points.len() < 2 {
+        return None;
+    }
+
+    // Remove the last point if it is the same as the first point (closed polygon)
+    if points[0] == points[points.len() - 1] {
+        points.pop();
+    }
+
+    if points.len() < 2 {
+        return None;
+    }
 
     let mut rng = rand::rng();
     points.shuffle(&mut rng);
 
     let p0 = points[0];
     let p1 = points[1];
-    let mut mec = diameter_circle(p0, p1);
 
-    for i in 2..points.len() {
-        if !in_circle(points[i], &mec) {
-            mec = diameter_circle(p0, points[i]);
-            for j in 1..i {
-                if !in_circle(points[j], &mec) {
-                    mec = circumcircle(p0, points[j], points[i]);
+    let mut mec = diameter_circle(p0, p1);
+    for i in 0..points.len() {
+        if in_circle(points[i], &mec) {
+            continue;
+        }
+
+        mec = Circle {
+            center: points[i],
+            radius: 0.0,
+        };
+
+        for j in 0..i {
+            if in_circle(points[j], &mec) {
+                continue;
+            }
+
+            mec = diameter_circle(points[i], points[j]);
+
+            for k in 0..j {
+                if in_circle(points[k], &mec) {
+                    continue;
                 }
+
+                mec = circumcircle(points[i], points[j], points[k])
+                    .unwrap_or_else(|| largest_diameter_circle(points[i], points[j], points[k]));
             }
         }
     }
 
-    std::f64::consts::PI * mec.radius.powi(2)
+    Some(std::f64::consts::PI * mec.radius.powi(2))
 }
 
-#[inline]
-fn reock_score(point_cloud: Vec<Coord>, hull_area: f64) -> f64 {
+/// Compute the Reock score for a district given its point cloud and convex hull area.
+fn reock_score(point_cloud: Vec<Coord>, hull_area: f64) -> crate::error::Result<f64> {
     let hull = geo::MultiPoint::from(point_cloud).convex_hull();
-    let mec_area = compute_minimum_enclosing_circle_area(&hull);
+    let mec_area = compute_minimum_enclosing_circle_area(&hull).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Failed to compute minimum enclosing circle area for one of the districts.",
+        )
+    })?;
 
-    if mec_area > 0.0 {
+    Ok(if mec_area > 0.0 {
         hull_area / mec_area
     } else {
         0.0
-    }
+    })
 }
 
 fn reock_rows(
     assignment: &[u16],
-    reock_geometries: ReockGeometries,
+    reock_geometries: &ReockGeometries,
 ) -> crate::error::Result<(Vec<f64>, u16, u128)> {
     let mut observed = 0u128;
     let mut area_by_district = vec![0.0f64; MAX_DISTRICTS as usize];
     let mut district_hull_points = HashMap::<u16, Vec<Coord<f64>>>::new();
+    let mut max_district = 0u16;
 
     if assignment.len() != reock_geometries.units.len() {
         return Err(crate::error::Error::AssignmentLength {
@@ -106,13 +180,17 @@ fn reock_rows(
             .entry(district)
             .or_default()
             .extend(current_unit.convex_hull_points.iter().copied());
+
+        max_district = max_district.max(district);
     }
 
-    for (district, points) in district_hull_points.into_iter() {
-        let score = reock_score(points, area_by_district[district as usize]);
+    let mut scores = vec![0.0; MAX_DISTRICTS as usize];
+
+    for (district, points) in district_hull_points {
+        scores[district as usize] = reock_score(points, area_by_district[district as usize])?;
     }
 
-    todo!("Implement Reock score calculation based on area and perimeter");
+    Ok((scores, max_district + 1, observed))
 }
 
 /// NOTE: Fill this in
@@ -279,13 +357,12 @@ impl<'g> IncrementalReock<'g> {
 }
 
 /// Run Reock directly from TwoDelta events, reseeding on snapshots and patching deltas.
-#[allow(clippy::too_many_arguments)]
 fn run_incremental_twodelta_reock(
-    reock_geometries: ReockGeometries,
-    source: &BenSource,
-    writer: &mut DistrictMetricWriter,
-    show_progress: bool,
-    max_samples: Option<usize>,
+    _reock_geometries: ReockGeometries,
+    _source: &BenSource,
+    _writer: &mut DistrictMetricWriter,
+    _show_progress: bool,
+    _max_samples: Option<usize>,
 ) -> crate::error::Result<()> {
     todo!();
     // let progress_bar = if show_progress {
@@ -399,7 +476,7 @@ pub fn tally_and_save_reock(
             "reock",
             // process
             |assignment, _n_reps| {
-                let (scores, _n_districts, observed) = reock_rows(assignment, reock_geometries)?;
+                let (scores, _n_districts, observed) = reock_rows(assignment, &reock_geometries)?;
                 Ok((observed, (scores, observed)))
             },
             // on row
