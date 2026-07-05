@@ -157,7 +157,16 @@ fn reock_score(point_cloud: Vec<Coord<f64>>, hull_area: f64) -> crate::error::Re
         .into());
     }
 
-    Ok(hull_area / mec_area)
+    let score = hull_area / mec_area;
+    if score > 1.0 + EPS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("district has impossible Reock score {score}"),
+        )
+        .into());
+    }
+
+    Ok(score.min(1.0))
 }
 
 struct ReockState {
@@ -559,4 +568,327 @@ pub fn tally_and_save_reock(
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+    use crate::geometry::ReockUnit;
+    use geo::LineString;
+
+    fn coord(x: f64, y: f64) -> Coord<f64> {
+        Coord { x, y }
+    }
+
+    fn polygon(points: &[(f64, f64)]) -> geo::Polygon<f64> {
+        geo::Polygon::new(
+            LineString::from(points.iter().map(|&(x, y)| coord(x, y)).collect::<Vec<_>>()),
+            vec![],
+        )
+    }
+
+    fn assert_close(actual: f64, expected: f64) {
+        assert_close_eps(actual, expected, 1e-9);
+    }
+
+    fn assert_close_eps(actual: f64, expected: f64, eps: f64) {
+        assert!(
+            (actual - expected).abs() <= eps,
+            "expected {expected}, got {actual}",
+        );
+    }
+
+    fn mec_area_for_points(points: Vec<Coord<f64>>) -> Option<f64> {
+        let hull = geo::MultiPoint::from(points).convex_hull();
+        compute_minimum_enclosing_circle_area(&hull)
+    }
+
+    /// Exhaustively checks every 2-point diameter circle and every 3-point circumcircle.
+    ///
+    /// A minimum enclosing circle is defined by either two boundary points or three boundary
+    /// points, so this slow oracle is useful for small test inputs.
+    fn brute_force_mec_area(points: &[Coord<f64>]) -> Option<f64> {
+        let mut unique = Vec::new();
+        for &point in points {
+            if !unique.iter().any(|&seen| l2_sq_dist(seen, point) <= EPS) {
+                unique.push(point);
+            }
+        }
+        if unique.len() < 2 {
+            return None;
+        }
+
+        let mut best: Option<Circle> = None;
+        for i in 0..unique.len() {
+            for j in (i + 1)..unique.len() {
+                let circle = diameter_circle(unique[i], unique[j]);
+                if unique.iter().all(|&point| in_circle(point, &circle)) {
+                    best = Some(match best {
+                        Some(best) if best.radius <= circle.radius => best,
+                        _ => circle,
+                    });
+                }
+            }
+        }
+
+        for i in 0..unique.len() {
+            for j in (i + 1)..unique.len() {
+                for k in (j + 1)..unique.len() {
+                    let Some(circle) = circumcircle(unique[i], unique[j], unique[k]) else {
+                        continue;
+                    };
+                    if unique.iter().all(|&point| in_circle(point, &circle)) {
+                        best = Some(match best {
+                            Some(best) if best.radius <= circle.radius => best,
+                            _ => circle,
+                        });
+                    }
+                }
+            }
+        }
+
+        best.map(|circle| std::f64::consts::PI * circle.radius.powi(2))
+    }
+
+    fn square_points(x: f64, y: f64) -> Vec<Coord<f64>> {
+        vec![
+            coord(x, y),
+            coord(x + 1.0, y),
+            coord(x + 1.0, y + 1.0),
+            coord(x, y + 1.0),
+        ]
+    }
+
+    fn square_unit(x: f64, y: f64) -> ReockUnit {
+        ReockUnit {
+            area: 1.0,
+            convex_hull_points: square_points(x, y),
+        }
+    }
+
+    fn row_test_geometry() -> ReockGeometries {
+        ReockGeometries {
+            units: vec![
+                square_unit(0.0, 0.0),
+                square_unit(1.0, 0.0),
+                square_unit(10.0, 0.0),
+                square_unit(11.0, 0.0),
+            ],
+        }
+    }
+
+    fn incremental_test_geometry() -> ReockGeometries {
+        ReockGeometries {
+            units: (0..6)
+                .map(|node| square_unit((node * 2) as f64, (node % 2) as f64))
+                .collect(),
+        }
+    }
+
+    fn assert_node_positions_valid(state: &ReockState) {
+        for (district, nodes) in state.nodes_by_district.iter().enumerate() {
+            for (position, &node) in nodes.iter().enumerate() {
+                assert_eq!(
+                    state.node_position[node], position,
+                    "bad position for node {node} in district {district}",
+                );
+            }
+        }
+    }
+
+    fn assert_states_match(actual: &ReockState, expected: &ReockState) {
+        assert_eq!(actual.observed, expected.observed);
+        assert_eq!(actual.node_counts, expected.node_counts);
+
+        for district in 0..MAX_DISTRICTS as usize {
+            assert_close(
+                actual.area_by_district[district],
+                expected.area_by_district[district],
+            );
+            assert_close_eps(actual.scores[district], expected.scores[district], 1e-8);
+
+            let mut actual_nodes = actual.nodes_by_district[district].clone();
+            let mut expected_nodes = expected.nodes_by_district[district].clone();
+            actual_nodes.sort_unstable();
+            expected_nodes.sort_unstable();
+            assert_eq!(actual_nodes, expected_nodes);
+        }
+
+        assert_node_positions_valid(actual);
+    }
+
+    #[test]
+    fn mec_unit_square_uses_diagonal_circle() {
+        let poly = polygon(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)]);
+
+        let area = compute_minimum_enclosing_circle_area(&poly).unwrap();
+
+        assert_close(area, std::f64::consts::PI / 2.0);
+    }
+
+    #[test]
+    fn mec_right_triangle_uses_hypotenuse_circle() {
+        let poly = polygon(&[(0.0, 0.0), (4.0, 0.0), (0.0, 3.0), (0.0, 0.0)]);
+
+        let area = compute_minimum_enclosing_circle_area(&poly).unwrap();
+
+        assert_close(area, std::f64::consts::PI * 6.25);
+    }
+
+    #[test]
+    fn mec_collinear_points_use_largest_diameter() {
+        let poly = polygon(&[(0.0, 0.0), (0.0, 2.0), (0.0, 5.0), (0.0, 0.0)]);
+
+        let area = compute_minimum_enclosing_circle_area(&poly).unwrap();
+
+        assert_close(area, std::f64::consts::PI * 6.25);
+    }
+
+    #[test]
+    fn mec_returns_none_for_less_than_two_distinct_points() {
+        let poly = polygon(&[(1.0, 1.0), (1.0, 1.0)]);
+
+        assert!(compute_minimum_enclosing_circle_area(&poly).is_none());
+    }
+
+    #[test]
+    fn mec_matches_brute_force_for_known_point_clouds() {
+        let clouds = [
+            vec![coord(0.0, 0.0), coord(2.0, 0.0)],
+            vec![
+                coord(0.0, 0.0),
+                coord(2.0, 0.0),
+                coord(1.0, 1.7320508075688772),
+            ],
+            vec![coord(0.0, 0.0), coord(4.0, 0.0), coord(1.0, 1.0)],
+            square_points(0.0, 0.0),
+            vec![
+                coord(-2.0, -1.0),
+                coord(3.0, -1.0),
+                coord(4.0, 2.0),
+                coord(0.0, 5.0),
+                coord(-3.0, 2.0),
+            ],
+            vec![
+                coord(0.0, 0.0),
+                coord(2.0, 0.0),
+                coord(2.0, 0.0),
+                coord(5.0, 0.0),
+            ],
+        ];
+
+        for points in clouds {
+            let expected = brute_force_mec_area(&points).unwrap();
+            let actual = mec_area_for_points(points).unwrap();
+            assert_close_eps(actual, expected, 1e-8);
+        }
+    }
+
+    #[test]
+    fn mec_matches_brute_force_for_generated_point_clouds() {
+        let mut seed = 0x5eed_cafe_u64;
+
+        for case in 0..150 {
+            let len = 2 + (case % 12);
+            let mut points = Vec::new();
+            for _ in 0..len {
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let x = ((seed >> 32) % 2000) as f64 / 10.0 - 100.0;
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let y = ((seed >> 32) % 2000) as f64 / 10.0 - 100.0;
+                points.push(coord(x, y));
+            }
+
+            let expected = brute_force_mec_area(&points).unwrap();
+            let actual = mec_area_for_points(points).unwrap();
+            assert_close_eps(actual, expected, 1e-7);
+        }
+    }
+
+    #[test]
+    fn reock_score_unit_square_is_two_over_pi() {
+        let score = reock_score(square_points(0.0, 0.0), 1.0).unwrap();
+
+        assert_close(score, 2.0 / std::f64::consts::PI);
+    }
+
+    #[test]
+    fn reock_score_rejects_invalid_area() {
+        assert!(reock_score(square_points(0.0, 0.0), 0.0).is_err());
+        assert!(reock_score(square_points(0.0, 0.0), f64::NAN).is_err());
+    }
+
+    #[test]
+    fn reock_score_rejects_impossible_score_above_one() {
+        let err = reock_score(square_points(0.0, 0.0), 2.0).unwrap_err();
+
+        assert!(err.to_string().contains("impossible Reock score"));
+    }
+
+    #[test]
+    fn reock_rows_scores_hand_computable_assignment() {
+        let geometry = row_test_geometry();
+
+        let state = reock_rows(&[0, 0, 1, 1], &geometry).unwrap();
+
+        assert_eq!(state.observed, 0b11);
+        assert_eq!(state.node_counts[0], 2);
+        assert_eq!(state.node_counts[1], 2);
+        assert_close(state.area_by_district[0], 2.0);
+        assert_close(state.area_by_district[1], 2.0);
+        assert_close(state.scores[0], 8.0 / (5.0 * std::f64::consts::PI));
+        assert_close(state.scores[1], 8.0 / (5.0 * std::f64::consts::PI));
+        assert_close(state.scores[2], 0.0);
+        assert_node_positions_valid(&state);
+    }
+
+    #[test]
+    fn reock_rows_rejects_assignment_length_mismatch() {
+        let Err(err) = reock_rows(&[0, 1, 2], &row_test_geometry()) else {
+            panic!("expected assignment length mismatch");
+        };
+
+        assert!(matches!(err, crate::error::Error::AssignmentLength { .. }));
+    }
+
+    #[test]
+    fn reock_rows_rejects_districts_outside_bitmask_limit() {
+        let Err(err) = reock_rows(&[MAX_DISTRICTS, 0, 1, 1], &row_test_geometry()) else {
+            panic!("expected district limit error");
+        };
+
+        assert!(matches!(
+            err,
+            crate::error::Error::DistrictLimitExceeded { .. }
+        ));
+    }
+
+    #[test]
+    fn incremental_delta_matches_full_recompute_after_moves() {
+        let geometry = incremental_test_geometry();
+        let mut assignment = vec![0, 0, 0, 1, 1, 1];
+        let mut incremental = IncrementalReock::new(&geometry);
+        incremental.seed(&assignment).unwrap();
+
+        let changes = vec![(1, 0, 1), (4, 1, 0), (2, 0, 0)];
+        incremental.update_delta(&assignment, &changes).unwrap();
+        for &(node, _old, new) in &changes {
+            assignment[node] = new;
+        }
+
+        let expected = reock_rows(&assignment, &geometry).unwrap();
+        assert_states_match(&incremental.state, &expected);
+    }
+
+    #[test]
+    fn incremental_delta_rejects_bad_change_records() {
+        let geometry = incremental_test_geometry();
+        let assignment = vec![0, 0, 0, 1, 1, 1];
+        let mut incremental = IncrementalReock::new(&geometry);
+        incremental.seed(&assignment).unwrap();
+
+        assert!(incremental.update_delta(&assignment, &[(0, 1, 0)]).is_err());
+        assert!(incremental.update_delta(&assignment, &[(6, 0, 1)]).is_err());
+    }
+}
