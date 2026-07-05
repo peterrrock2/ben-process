@@ -6,6 +6,7 @@
 pub mod cli;
 mod district;
 pub mod error;
+pub mod geometry;
 pub mod graph;
 pub mod input;
 pub mod metrics;

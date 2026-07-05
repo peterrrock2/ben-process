@@ -11,6 +11,7 @@ mod extract_unique_plans;
 mod paths;
 mod polsby_popper;
 mod region;
+mod reock;
 mod tally_keys;
 mod unique_plans;
 
@@ -20,6 +21,7 @@ pub use extract_unique_plans::ExtractUniquePlansArgs;
 pub use paths::*;
 pub use polsby_popper::PolsbyPopperArgs;
 pub use region::RegionArgs;
+pub use reock::ReockArgs;
 pub use tally_keys::TallyKeysArgs;
 pub use unique_plans::UniquePlansArgs;
 
@@ -48,6 +50,8 @@ pub enum Command {
     CutEdges(CutEdgesArgs),
     /// District-level Polsby-Popper scores per plan.
     PolsbyPopper(PolsbyPopperArgs),
+    /// District-level Reock scores per plan.
+    Reock(ReockArgs),
     /// Per-node assignment change counts across accepted plans.
     ChangedAssignments(ChangedAssignmentsArgs),
     /// Count split regions per plan.
@@ -67,6 +71,7 @@ impl Command {
             Command::TallyKeys(a) => &a.common,
             Command::CutEdges(a) => &a.common,
             Command::PolsbyPopper(a) => &a.common,
+            Command::Reock(a) => &a.common,
             Command::ChangedAssignments(a) => &a.common,
             Command::RegionSplits(a) => &a.common,
             Command::RegionPieces(a) => &a.common,
@@ -116,6 +121,7 @@ pub fn run(cli: Cli) -> crate::error::Result<()> {
         Command::TallyKeys(args) => tally_keys::run(args, show_progress),
         Command::CutEdges(args) => cut_edges::run(args, show_progress),
         Command::PolsbyPopper(args) => polsby_popper::run(args, show_progress),
+        Command::Reock(args) => reock::run(args, show_progress),
         Command::ChangedAssignments(args) => changed_assignments::run(args, show_progress),
         Command::RegionSplits(args) => region::run_splits(args, show_progress),
         Command::RegionPieces(args) => region::run_pieces(args, show_progress),

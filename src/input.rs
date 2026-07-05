@@ -15,6 +15,7 @@
 //! `Box<dyn Read + Send>` each pass owns is `'static`, so there is no borrow of a short-lived
 //! bundle reader to thread through the pipeline's multiple open passes.
 
+use crate::error::invalid_data;
 use ben::format::banners::has_known_banner_prefix;
 use ben::io::bundle::format::{ASSET_TYPE_GRAPH, BENDL_MAGIC};
 use ben::io::bundle::{BendlReader, ExactLen};
@@ -229,7 +230,7 @@ fn resolve_bundle(path: PathBuf) -> crate::error::Result<ResolvedInput> {
 
     let wire: BenWireFormat = reader
         .assignment_format()
-        .ok_or_else(|| invalid_data("bundle has no recognized assignment-stream format".into()))?
+        .ok_or_else(|| invalid_data("bundle has no recognized assignment-stream format"))?
         .into();
 
     let header_samples = match reader.sample_count() {
@@ -264,10 +265,6 @@ fn resolve_bundle(path: PathBuf) -> crate::error::Result<ResolvedInput> {
         },
         embedded_graph,
     })
-}
-
-fn invalid_data(msg: String) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, msg)
 }
 
 #[cfg(test)]

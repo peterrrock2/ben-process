@@ -41,3 +41,7 @@ pub enum BenError {
 
 /// Convenience result alias used throughout the crate.
 pub type Result<T> = std::result::Result<T, BenError>;
+
+pub(crate) fn invalid_data(message: impl Into<String>) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, message.into())
+}
