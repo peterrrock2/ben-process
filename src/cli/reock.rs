@@ -54,17 +54,13 @@ pub fn run(args: ReockArgs, show_progress: bool) -> crate::error::Result<()> {
         "_reock.parquet",
         args.common.output_dir(),
     );
-    // tally_and_save_reock(
-    //     reock_geometries,
-    //     &resolved.source,
-    //     output_path.as_str(),
-    //     "",
-    //     None,
-    //     None,
-    //     show_progress,
-    //     args.max_samples,
-    //     args.high_compression,
-    // )
-    //
-    Ok(())
+
+    tally_and_save_reock(
+        reock_geometries,
+        &resolved.source,
+        &output_path,
+        show_progress,
+        args.max_samples,
+        args.high_compression,
+    )
 }
