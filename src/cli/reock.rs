@@ -1,5 +1,5 @@
 use super::{build_output_path, CommonArgs};
-use crate::geometry::load_reock_units_from_geoparquet;
+use crate::geometry::{load_reock_units_from_geoparquet, ReockLoadOptions};
 use crate::input::resolve;
 use crate::metrics::reock::tally_and_save_reock;
 
@@ -18,7 +18,7 @@ pub struct ReockArgs {
     pub allow_geographic_crs: bool,
 
     #[arg(long)]
-    pub allow_unknonw_crs: bool,
+    pub allow_unknown_crs: bool,
 
     #[arg(long)]
     pub target_crs: Option<String>,
@@ -38,32 +38,33 @@ pub struct ReockArgs {
 pub fn run(args: ReockArgs, show_progress: bool) -> crate::error::Result<()> {
     let resolved = resolve(args.common.ben_file())?;
 
-    let geometry = load_reock_units_from_geoparquet(
+    let reock_geometries = load_reock_units_from_geoparquet(
         &args.geometry_file,
-        geometry::ReockLoadOptions {
+        ReockLoadOptions {
             geometry_column: args.geometry_column.as_deref(),
             source_crs: args.source_crs.as_deref(),
             target_crs: args.target_crs.as_deref(),
             allow_geographic_crs: args.allow_geographic_crs,
             allow_unknown_crs: args.allow_unknown_crs,
         },
-    );
+    )?;
 
     let output_path = build_output_path(
         &args.common.ben_file(),
         "_reock.parquet",
         args.common.output_dir(),
     );
-
-    tally_and_save_reock(
-        graph,
-        &resolved.source,
-        output_path.as_str(),
-        "",
-        None,
-        None,
-        show_progress,
-        args.max_samples,
-        args.high_compression,
-    )
+    // tally_and_save_reock(
+    //     reock_geometries,
+    //     &resolved.source,
+    //     output_path.as_str(),
+    //     "",
+    //     None,
+    //     None,
+    //     show_progress,
+    //     args.max_samples,
+    //     args.high_compression,
+    // )
+    //
+    Ok(())
 }

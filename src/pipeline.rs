@@ -56,6 +56,10 @@ pub enum AssignmentLengthCheck {
     /// Graph-free modes: the first frame's length becomes the expectation for the rest of the
     /// file, so a corrupt mixed-length ensemble errors instead of being processed as-is.
     UniformWithinFile,
+    /// Geometry driven modes: every frame must have exactly the geometry file's node count.
+    /// A mismatched frame fails before the metric runs (a too-long assignment would
+    /// otherwise be silently truncated, a too-short one would panic deep in a metric).
+    MatchesGeometryFile(usize),
 }
 
 /// Serial enforcement of [`AssignmentLengthCheck`], in BEN-file order.

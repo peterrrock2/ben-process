@@ -23,20 +23,14 @@ fn crs_error(message: impl Into<String>) -> Error {
     Error::Crs(message.into())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Point2 {
-    pub x: f64,
-    pub y: f64,
-}
-
 #[derive(Debug)]
 pub struct ReockUnit {
     pub area: f64,
-    pub convex_hull_points: Vec<Point2>,
+    pub convex_hull_points: Vec<Coord<f64>>,
 }
 
 #[derive(Debug)]
-pub struct ReockGeometry {
+pub struct ReockGeometries {
     pub units: Vec<ReockUnit>,
 }
 
@@ -49,7 +43,7 @@ enum CrsStatus {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Circle {
-    pub center: Point2,
+    pub center: Coord<f64>,
     pub radius: f64,
 }
 
@@ -309,7 +303,7 @@ fn parse_reock_unit_from_wkb(wkb: &[u8], reprojector: Option<&Reprojector>) -> R
     let mut convex_hull_points = convex_hull
         .exterior()
         .points()
-        .map(|p| Point2 { x: p.x(), y: p.y() })
+        .map(|p| Coord { x: p.x(), y: p.y() })
         .collect::<Vec<_>>();
 
     if convex_hull_points.first() == convex_hull_points.last() {
@@ -380,7 +374,7 @@ fn build_reock_geometry(
     record_batch_reader_builder: ParquetRecordBatchReaderBuilder<File>,
     geometry_column: &str,
     reprojector: Option<Reprojector>,
-) -> Result<ReockGeometry> {
+) -> Result<ReockGeometries> {
     let reader = record_batch_reader_builder
         .build()
         .map_err(Error::Parquet)?;
@@ -393,7 +387,7 @@ fn build_reock_geometry(
         update_reock_units_with_batch(&batch, geometry_column, reprojector.as_ref(), &mut units)?;
     }
 
-    Ok(ReockGeometry { units })
+    Ok(ReockGeometries { units })
 }
 
 pub struct ReockLoadOptions<'a> {
@@ -407,7 +401,7 @@ pub struct ReockLoadOptions<'a> {
 pub fn load_reock_units_from_geoparquet(
     file_path: &str,
     options: ReockLoadOptions<'_>,
-) -> Result<ReockGeometry> {
+) -> Result<ReockGeometries> {
     let ReockLoadOptions {
         geometry_column,
         source_crs,
