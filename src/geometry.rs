@@ -41,12 +41,6 @@ enum CrsStatus {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct Circle {
-    pub center: Coord<f64>,
-    pub radius: f64,
-}
-
 fn open_parquet_file(file_path: &str) -> Result<ParquetRecordBatchReaderBuilder<File>> {
     let file = File::open(file_path)
         .map_err(|e| invalid_data(format!("Failed to open Parquet file {}: {}", file_path, e)))?;

@@ -1,21 +1,25 @@
-use crate::district::{observe_district, MAX_DISTRICTS};
-use crate::geometry::{Circle, ReockGeometries};
-use crate::graph::Graph;
+use crate::district::{observe_district, validate_district_set_unchanged, MAX_DISTRICTS};
+use crate::geometry::ReockGeometries;
 use crate::input::BenSource;
-use crate::metrics::twodelta::PostDeltaLabels;
 use crate::output::parquet::DistrictMetricWriter;
 use crate::pipeline::{
-    parquet_compression, run_pipeline, AssignmentLengthCheck, PARQUET_BATCH_ROWS,
+    capped_reps, make_progress_bar, parquet_compression, run_pipeline, AssignmentLengthCheck,
+    PARQUET_BATCH_ROWS,
 };
-// use ben::io::reader::TwoDeltaFrameEvent;
+use ben::io::reader::TwoDeltaFrameEvent;
 use ben::BenVariant;
 use geo::{ConvexHull, Coord, Point};
 use rand::seq::SliceRandom;
-use std::collections::HashMap;
 use std::fs::File;
 use std::io;
 
 const EPS: f64 = 1e-9;
+
+#[derive(Debug, Clone, Copy)]
+struct Circle {
+    center: Coord<f64>,
+    radius: f64,
+}
 
 #[inline]
 fn l2_sq_dist(p: Coord, q: Coord) -> f64 {
@@ -32,22 +36,14 @@ fn diameter_circle(p: Coord, q: Coord) -> Circle {
 }
 
 fn largest_diameter_circle(p: Coord, q: Coord, r: Coord) -> Circle {
-    let points = vec![p, q, r];
-    let (point1, point2) = {
-        let mut ret = (points[0], points[1]);
-        for (p1, p2) in [
-            (points[0], points[1]),
-            (points[0], points[2]),
-            (points[1], points[2]),
-        ] {
-            if l2_sq_dist(p1, p2) > l2_sq_dist(ret.0, ret.1) {
-                ret = (p1, p2);
-            }
+    let mut endpoints = (p, q);
+    for pair in [(p, r), (q, r)] {
+        if l2_sq_dist(pair.0, pair.1) > l2_sq_dist(endpoints.0, endpoints.1) {
+            endpoints = pair;
         }
-        ret
-    };
+    }
 
-    diameter_circle(point1, point2)
+    diameter_circle(endpoints.0, endpoints.1)
 }
 
 #[inline]
@@ -58,7 +54,6 @@ fn determinant(p: Coord, q: Coord, r: Coord) -> f64 {
 fn circumcircle(p: Coord, q: Coord, r: Coord) -> Option<Circle> {
     let det = determinant(p, q, r);
 
-    // Check collinearity
     if det.abs() < EPS {
         return None;
     }
@@ -82,7 +77,7 @@ fn in_circle(p: Coord, circle: &Circle) -> bool {
     dist_sq <= circle.radius.powi(2) + EPS
 }
 
-// Use Welzl's algorithm to compute the minimum enclosing circle of a set of points
+// Randomized incremental minimum enclosing circle over convex-hull vertices.
 fn compute_minimum_enclosing_circle_area(hull: &geo::Polygon<f64>) -> Option<f64> {
     let mut points: Vec<Coord<f64>> = hull.exterior().points().map(|p: Point| p.0).collect();
 
@@ -90,7 +85,6 @@ fn compute_minimum_enclosing_circle_area(hull: &geo::Polygon<f64>) -> Option<f64
         return None;
     }
 
-    // Remove the last point if it is the same as the first point (closed polygon)
     if points[0] == points[points.len() - 1] {
         points.pop();
     }
@@ -138,7 +132,7 @@ fn compute_minimum_enclosing_circle_area(hull: &geo::Polygon<f64>) -> Option<f64
 }
 
 /// Compute the Reock score for a district given its point cloud and convex hull area.
-fn reock_score(point_cloud: Vec<Coord>, hull_area: f64) -> crate::error::Result<f64> {
+fn reock_score(point_cloud: Vec<Coord<f64>>, hull_area: f64) -> crate::error::Result<f64> {
     let hull = geo::MultiPoint::from(point_cloud).convex_hull();
     let mec_area = compute_minimum_enclosing_circle_area(&hull).ok_or_else(|| {
         io::Error::new(
@@ -147,21 +141,89 @@ fn reock_score(point_cloud: Vec<Coord>, hull_area: f64) -> crate::error::Result<
         )
     })?;
 
-    Ok(if mec_area > 0.0 {
-        hull_area / mec_area
-    } else {
-        0.0
-    })
+    if !hull_area.is_finite() || hull_area <= 0.0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("district has invalid area {hull_area}"),
+        )
+        .into());
+    }
+
+    if !mec_area.is_finite() || mec_area <= 0.0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("district has invalid minimum enclosing circle area {mec_area}"),
+        )
+        .into());
+    }
+
+    Ok(hull_area / mec_area)
+}
+
+struct ReockState {
+    scores: Vec<f64>,
+    observed: u128,
+    area_by_district: Vec<f64>,
+    node_counts: Vec<u32>,
+    nodes_by_district: Vec<Vec<usize>>,
+    node_position: Vec<usize>,
+}
+
+fn remove_node(
+    node_position: &mut Vec<usize>,
+    nodes_by_district: &mut Vec<Vec<usize>>,
+    district: usize,
+    node: usize,
+) -> crate::error::Result<()> {
+    let pos = node_position[node];
+    let nodes = &mut nodes_by_district[district];
+    let Some(&removed) = nodes.get(pos) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("node position for node {node} points outside district {district}'s node list"),
+        )
+        .into());
+    };
+
+    if removed != node {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "node position for node {node} points at node {removed} in district {district}"
+            ),
+        )
+        .into());
+    }
+
+    nodes.swap_remove(pos);
+    if pos < nodes.len() {
+        let moved = nodes[pos];
+        node_position[moved] = pos;
+    }
+
+    Ok(())
+}
+
+fn add_node(
+    node_position: &mut Vec<usize>,
+    nodes_by_district: &mut Vec<Vec<usize>>,
+    district: usize,
+    node: usize,
+) {
+    node_position[node] = nodes_by_district[district].len();
+    nodes_by_district[district].push(node);
 }
 
 fn reock_rows(
     assignment: &[u16],
     reock_geometries: &ReockGeometries,
-) -> crate::error::Result<(Vec<f64>, u16, u128)> {
+) -> crate::error::Result<ReockState> {
     let mut observed = 0u128;
     let mut area_by_district = vec![0.0f64; MAX_DISTRICTS as usize];
-    let mut district_hull_points = HashMap::<u16, Vec<Coord<f64>>>::new();
-    let mut max_district = 0u16;
+    let mut district_hull_points = vec![Vec::new(); MAX_DISTRICTS as usize];
+    let mut node_counts = vec![0u32; MAX_DISTRICTS as usize];
+    let mut nodes_by_district = vec![Vec::new(); MAX_DISTRICTS as usize];
+    let mut node_position = vec![0usize; reock_geometries.units.len()];
 
     if assignment.len() != reock_geometries.units.len() {
         return Err(crate::error::Error::AssignmentLength {
@@ -172,96 +234,122 @@ fn reock_rows(
 
     for (idx, &district) in assignment.iter().enumerate() {
         observe_district(&mut observed, district)?;
+        node_counts[district as usize] += 1;
+        add_node(
+            &mut node_position,
+            &mut nodes_by_district,
+            district as usize,
+            idx,
+        );
 
         let current_unit = &reock_geometries.units[idx];
         area_by_district[district as usize] += current_unit.area;
 
-        district_hull_points
-            .entry(district)
-            .or_default()
+        district_hull_points[district as usize]
             .extend(current_unit.convex_hull_points.iter().copied());
-
-        max_district = max_district.max(district);
     }
 
     let mut scores = vec![0.0; MAX_DISTRICTS as usize];
 
-    for (district, points) in district_hull_points {
-        scores[district as usize] = reock_score(points, area_by_district[district as usize])?;
+    for (district, points) in district_hull_points.into_iter().enumerate() {
+        if node_counts[district] == 0 {
+            continue;
+        }
+
+        scores[district] = reock_score(points, area_by_district[district])?;
     }
 
-    Ok((scores, max_district + 1, observed))
+    Ok(ReockState {
+        scores,
+        observed,
+        area_by_district,
+        node_counts,
+        nodes_by_district,
+        node_position,
+    })
 }
 
-/// NOTE: Fill this in
 struct IncrementalReock<'g> {
-    graph: &'g Graph,
-    area_values: &'g [f64],
-    total_perimeter_values: &'g [f64],
-    shared_perimeters: &'g [f64],
-    area_by_district: Vec<f64>,
-    perimeter_by_district: Vec<f64>,
-    node_counts: Vec<u32>,
-    observed: u128,
-    post_delta_labels: PostDeltaLabels,
-    seen_edges: Vec<u64>,
-    gen: u64,
+    reock_geometries: &'g ReockGeometries,
+    state: ReockState,
 }
 
 impl<'g> IncrementalReock<'g> {
-    fn new(
-        graph: &'g Graph,
-        area_values: &'g [f64],
-        total_perimeter_values: &'g [f64],
-        shared_perimeters: &'g [f64],
-    ) -> Self {
+    fn new(reock_geometries: &'g ReockGeometries) -> Self {
         Self {
-            graph,
-            area_values,
-            total_perimeter_values,
-            shared_perimeters,
-            area_by_district: vec![0.0; MAX_DISTRICTS as usize],
-            perimeter_by_district: vec![0.0; MAX_DISTRICTS as usize],
-            node_counts: vec![0; MAX_DISTRICTS as usize],
-            observed: 0,
-            post_delta_labels: PostDeltaLabels::new(graph.node_count),
-            seen_edges: vec![0; graph.edges.len()],
-            gen: 0,
+            reock_geometries,
+            state: ReockState {
+                scores: vec![0.0; MAX_DISTRICTS as usize],
+                observed: 0,
+                area_by_district: vec![0.0; MAX_DISTRICTS as usize],
+                node_counts: vec![0u32; MAX_DISTRICTS as usize],
+                nodes_by_district: vec![Vec::new(); MAX_DISTRICTS as usize],
+                node_position: vec![0usize; reock_geometries.units.len()],
+            },
         }
     }
 
-    /// Recompute all area/perimeter state from a snapshot assignment.
+    fn remove_node_from_district(
+        &mut self,
+        node: usize,
+        district: u16,
+    ) -> crate::error::Result<()> {
+        remove_node(
+            &mut self.state.node_position,
+            &mut self.state.nodes_by_district,
+            district as usize,
+            node,
+        )?;
+        self.state.node_counts[district as usize] -= 1;
+        self.state.area_by_district[district as usize] -= self.reock_geometries.units[node].area;
+        Ok(())
+    }
+
+    fn add_node_to_district(&mut self, node: usize, district: u16) {
+        add_node(
+            &mut self.state.node_position,
+            &mut self.state.nodes_by_district,
+            district as usize,
+            node,
+        );
+        self.state.node_counts[district as usize] += 1;
+        self.state.area_by_district[district as usize] += self.reock_geometries.units[node].area;
+    }
+
+    /// Recompute all state from a snapshot assignment.
     fn seed(&mut self, assignment: &[u16]) -> crate::error::Result<()> {
-        self.area_by_district.fill(0.0);
-        self.perimeter_by_district.fill(0.0);
-        self.node_counts.fill(0);
-        self.observed = 0;
+        self.state = reock_rows(assignment, self.reock_geometries)?;
+        Ok(())
+    }
 
-        for (node, &district) in assignment.iter().enumerate() {
-            observe_district(&mut self.observed, district)?;
-            let district = district as usize;
-            self.node_counts[district] += 1;
-            self.area_by_district[district] += self.area_values[node];
-            self.perimeter_by_district[district] += self.total_perimeter_values[node];
+    fn recompute_score(&mut self, district: usize) -> crate::error::Result<()> {
+        let points = self.state.nodes_by_district.get(district).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("District {district} not found in nodes_by_district"),
+            )
+        })?;
+
+        let mut hull_points = Vec::new();
+        for &node in points {
+            let current_unit = &self.reock_geometries.units[node];
+            hull_points.extend(current_unit.convex_hull_points.iter().copied());
         }
 
-        for (edge_index, &(node_u, node_v)) in self.graph.edges.iter().enumerate() {
-            let district_u = assignment[node_u as usize] as usize;
-            let district_v = assignment[node_v as usize] as usize;
-            if district_u == district_v {
-                self.perimeter_by_district[district_u] -= 2.0 * self.shared_perimeters[edge_index];
-            }
-        }
+        self.state.scores[district] =
+            reock_score(hull_points, self.state.area_by_district[district])?;
 
         Ok(())
     }
 
-    /// Apply one delta event to the maintained area/perimeter state and district set.
+    /// Apply one delta event to the maintained area, membership, and score state.
     fn update_delta(
         &mut self,
         before: &[u16],
         changes: &[(usize, u16, u16)],
     ) -> crate::error::Result<()> {
+        let mut touched = Vec::new();
+
         for &(node, old, new) in changes {
             let Some(&current) = before.get(node) else {
                 return Err(io::Error::new(
@@ -284,161 +372,136 @@ impl<'g> IncrementalReock<'g> {
                 .into());
             }
 
-            observe_district(&mut self.observed, old)?;
-            observe_district(&mut self.observed, new)?;
+            observe_district(&mut self.state.observed, old)?;
+            observe_district(&mut self.state.observed, new)?;
+
             if old == new {
+                touched.push(old as usize);
                 continue;
             }
 
             let old = old as usize;
             let new = new as usize;
-            self.node_counts[new] += 1;
-            self.node_counts[old] -= 1;
-            if self.node_counts[old] == 0 {
-                self.observed &= !(1u128 << old);
-            }
-            self.area_by_district[old] -= self.area_values[node];
-            self.area_by_district[new] += self.area_values[node];
-            self.perimeter_by_district[old] -= self.total_perimeter_values[node];
-            self.perimeter_by_district[new] += self.total_perimeter_values[node];
+
+            self.remove_node_from_district(node, old as u16)?;
+            self.add_node_to_district(node, new as u16);
+
+            touched.push(old);
+            touched.push(new);
         }
 
-        self.post_delta_labels.refresh(changes);
-        self.gen += 1;
-        for &(node, _old, _new) in changes {
-            for &(_neighbor, edge_index) in self.graph.neighbors(node) {
-                let edge_index = edge_index as usize;
-                if self.seen_edges[edge_index] == self.gen {
-                    continue;
-                }
-                self.seen_edges[edge_index] = self.gen;
-                let (u, v) = self.graph.edges[edge_index];
-                let u = u as usize;
-                let v = v as usize;
-                let before_u = before[u] as usize;
-                let before_v = before[v] as usize;
-                let after_u = self.post_delta_labels.label(before, u) as usize;
-                let after_v = self.post_delta_labels.label(before, v) as usize;
-                let shared_perimeter = self.shared_perimeters[edge_index];
-                if before_u == before_v {
-                    self.perimeter_by_district[before_u] += 2.0 * shared_perimeter;
-                }
-                if after_u == after_v {
-                    self.perimeter_by_district[after_u] -= 2.0 * shared_perimeter;
-                }
+        touched.sort_unstable();
+        touched.dedup();
+
+        for district in touched {
+            if self.state.node_counts[district] == 0 {
+                self.state.scores[district] = 0.0;
+                continue;
             }
+
+            self.recompute_score(district)?;
         }
 
         Ok(())
     }
 
-    fn scores(&self) -> crate::error::Result<Vec<f64>> {
-        todo!();
-        // let mut scores = vec![0.0; MAX_DISTRICTS as usize];
-        // for (district, score) in scores.iter_mut().enumerate() {
-        //     if (self.observed & (1u128 << district)) == 0 {
-        //         continue;
-        //     }
-        //     let perimeter = self.perimeter_by_district[district];
-        //     if perimeter <= 0.0 {
-        //         return Err(io::Error::new(
-        //             io::ErrorKind::InvalidData,
-        //             format!(
-        //                 "district {} has nonpositive perimeter {}; check the
-        // area/perimeter/shared-perimeter keys",                 district, perimeter
-        //             ),
-        //         )
-        //         .into());
-        //     }
-        //     *score = reock_score();
-        // }
-        // Ok(scores)
+    fn scores(&self) -> Vec<f64> {
+        self.state.scores.clone()
+    }
+
+    fn observed(&self) -> u128 {
+        self.state.observed
     }
 }
 
 /// Run Reock directly from TwoDelta events, reseeding on snapshots and patching deltas.
 fn run_incremental_twodelta_reock(
-    _reock_geometries: ReockGeometries,
-    _source: &BenSource,
-    _writer: &mut DistrictMetricWriter,
-    _show_progress: bool,
-    _max_samples: Option<usize>,
+    reock_geometries: &ReockGeometries,
+    source: &BenSource,
+    writer: &mut DistrictMetricWriter,
+    show_progress: bool,
+    max_samples: Option<usize>,
 ) -> crate::error::Result<()> {
-    todo!();
-    // let progress_bar = if show_progress {
-    //     Some(make_progress_bar(match max_samples {
-    //         Some(n) => n,
-    //         None => source.count_samples()?,
-    //     }))
-    // } else {
-    //     None
-    // };
-    //
-    // let mut remaining_samples = max_samples;
-    // let mut assignment: Option<Vec<u16>> = None;
-    // let mut expected_observed: Option<u128> = None;
-    // let mut state = IncrementalReock::new(graph, area_values, total_perimeters,
-    // shared_perimeters); let mut step = 1u64;
-    //
-    // for (accepted, event) in (1u64..).zip(source.open_reader()?.into_twodelta_events()) {
-    //     if remaining_samples == Some(0) {
-    //         break;
-    //     }
-    //
-    //     let n_reps = match event? {
-    //         TwoDeltaFrameEvent::Snapshot {
-    //             assignment: snapshot,
-    //             count,
-    //             ..
-    //         } => {
-    //             if snapshot.len() != graph.node_count {
-    //                 return Err(crate::error::Error::AssignmentLength {
-    //                     actual: snapshot.len(),
-    //                     expected: graph.node_count,
-    //                 });
-    //             }
-    //             state.seed(&snapshot)?;
-    //             assignment = Some(snapshot);
-    //             capped_reps(&mut remaining_samples, count)
-    //         }
-    //         TwoDeltaFrameEvent::Delta { changes, count } => {
-    //             let assignment = assignment.as_mut().ok_or_else(|| {
-    //                 io::Error::new(
-    //                     io::ErrorKind::InvalidData,
-    //                     "TwoDelta delta event appeared before an initial snapshot",
-    //                 )
-    //             })?;
-    //             let changes = changes
-    //                 .into_iter()
-    //                 .map(|(node, old, new)| (node as usize, old, new))
-    //                 .collect::<Vec<_>>();
-    //             state.update_delta(assignment, &changes)?;
-    //             for (node, _old, new) in changes {
-    //                 assignment[node] = new;
-    //             }
-    //             capped_reps(&mut remaining_samples, count)
-    //         }
-    //     };
-    //
-    //     match expected_observed {
-    //         None => expected_observed = Some(state.observed),
-    //         Some(expected) => {
-    //             validate_district_set_unchanged(state.observed, expected, "polsby-popper")?;
-    //         }
-    //     }
-    //
-    //     let scores = state.scores()?;
-    //     writer.push_row(step, n_reps as u32, accepted, (state.observed, &scores))?;
-    //     step += n_reps as u64;
-    //     if let Some(progress_bar) = &progress_bar {
-    //         progress_bar.inc(n_reps as u64);
-    //     }
-    // }
-    //
-    // if let Some(progress_bar) = progress_bar {
-    //     progress_bar.finish_and_clear();
-    // }
-    // Ok(())
+    let progress_bar = if show_progress {
+        Some(make_progress_bar(match max_samples {
+            Some(n) => n,
+            None => source.count_samples()?,
+        }))
+    } else {
+        None
+    };
+
+    let mut remaining_samples = max_samples;
+    let mut assignment: Option<Vec<u16>> = None;
+    let mut expected_observed: Option<u128> = None;
+    let mut inc_state = IncrementalReock::new(&reock_geometries);
+    let mut step = 1u64;
+
+    for (accepted, event) in (1u64..).zip(source.open_reader()?.into_twodelta_events()) {
+        if remaining_samples == Some(0) {
+            break;
+        }
+
+        let n_reps = match event? {
+            TwoDeltaFrameEvent::Snapshot {
+                assignment: snapshot,
+                count,
+                ..
+            } => {
+                if snapshot.len() != reock_geometries.units.len() {
+                    return Err(crate::error::Error::AssignmentLength {
+                        actual: snapshot.len(),
+                        expected: reock_geometries.units.len(),
+                    });
+                }
+                inc_state.seed(&snapshot)?;
+                assignment = Some(snapshot);
+                capped_reps(&mut remaining_samples, count)
+            }
+            TwoDeltaFrameEvent::Delta { changes, count } => {
+                let assignment = assignment.as_mut().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "TwoDelta delta event appeared before an initial snapshot",
+                    )
+                })?;
+                let changes = changes
+                    .into_iter()
+                    .map(|(node, old, new)| (node as usize, old, new))
+                    .collect::<Vec<_>>();
+                inc_state.update_delta(assignment, &changes)?;
+                for (node, _old, new) in changes {
+                    assignment[node] = new;
+                }
+                capped_reps(&mut remaining_samples, count)
+            }
+        };
+
+        match expected_observed {
+            None => expected_observed = Some(inc_state.observed()),
+            Some(expected) => {
+                validate_district_set_unchanged(inc_state.observed(), expected, "reock")?;
+            }
+        }
+
+        let scores = inc_state.scores();
+        writer.push_row(
+            step,
+            n_reps as u32,
+            accepted,
+            (inc_state.observed(), &scores),
+        )?;
+        step += n_reps as u64;
+        if let Some(progress_bar) = &progress_bar {
+            progress_bar.inc(n_reps as u64);
+        }
+    }
+
+    if let Some(progress_bar) = progress_bar {
+        progress_bar.finish_and_clear();
+    }
+
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -461,7 +524,7 @@ pub fn tally_and_save_reock(
 
     if source.variant()? == BenVariant::TwoDelta {
         run_incremental_twodelta_reock(
-            reock_geometries,
+            &reock_geometries,
             source,
             &mut writer,
             show_progress,
@@ -476,8 +539,9 @@ pub fn tally_and_save_reock(
             "reock",
             // process
             |assignment, _n_reps| {
-                let (scores, _n_districts, observed) = reock_rows(assignment, &reock_geometries)?;
-                Ok((observed, (scores, observed)))
+                let state = reock_rows(assignment, &reock_geometries)?;
+
+                Ok((state.observed, (state.scores, state.observed)))
             },
             // on row
             |step, n_reps, accepted, (scores, observed)| {
