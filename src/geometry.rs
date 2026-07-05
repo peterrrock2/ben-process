@@ -1,4 +1,4 @@
-use crate::error::{invalid_data, BenError, Result};
+use crate::error::{invalid_data, Error, Result};
 use arrow_array::types::ByteArrayType;
 use arrow_array::{Array, BinaryArray, GenericByteArray, LargeBinaryArray, RecordBatch};
 use geo::{Area, ConvexHull, Coord, MapCoords};
@@ -11,8 +11,16 @@ use serde_json::Value;
 use std::fs::File;
 use wkb::reader::read_wkb;
 
-fn invalid(message: impl Into<String>) -> BenError {
-    invalid_data(message).into()
+fn geoparquet_error(message: impl Into<String>) -> Error {
+    Error::GeoParquet(message.into())
+}
+
+fn geometry_error(message: impl Into<String>) -> Error {
+    Error::Geometry(message.into())
+}
+
+fn crs_error(message: impl Into<String>) -> Error {
+    Error::Crs(message.into())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -49,13 +57,7 @@ fn open_parquet_file(file_path: &str) -> Result<ParquetRecordBatchReaderBuilder<
     let file = File::open(file_path)
         .map_err(|e| invalid_data(format!("Failed to open Parquet file {}: {}", file_path, e)))?;
 
-    ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
-        invalid_data(format!(
-            "Failed to build Parquet Reader for file {}: {}",
-            file_path, e
-        ))
-        .into()
-    })
+    ParquetRecordBatchReaderBuilder::try_new(file).map_err(Error::Parquet)
 }
 
 fn resolve_geometry_column(
@@ -67,7 +69,7 @@ fn resolve_geometry_column(
             if geo_meta.columns.contains_key(col) {
                 Ok(col.to_string())
             } else {
-                Err(invalid(format!(
+                Err(geoparquet_error(format!(
                     "Geometry column '{}' not found in GeoParquet metadata",
                     col
                 )))
@@ -78,7 +80,7 @@ fn resolve_geometry_column(
             if geo_meta.columns.contains_key(primary_geom_col) {
                 Ok(primary_geom_col.to_string())
             } else {
-                Err(invalid(format!(
+                Err(geoparquet_error(format!(
                     "Primary geometry column '{}' not found in GeoParquet metadata",
                     primary_geom_col
                 )))
@@ -92,7 +94,7 @@ fn require_geo_column_metadata<'a>(
     geometry_column: &str,
 ) -> Result<&'a GeoParquetColumnMetadata> {
     geo_meta.columns.get(geometry_column).ok_or_else(|| {
-        invalid(format!(
+        geoparquet_error(format!(
             "Geometry column '{}' not found in GeoParquet metadata",
             geometry_column
         ))
@@ -105,7 +107,7 @@ fn validate_geometry_encoding(
 ) -> Result<()> {
     match geo_col_meta.encoding {
         geoparquet::metadata::GeoParquetColumnEncoding::WKB => Ok(()),
-        _ => Err(invalid(format!(
+        _ => Err(geoparquet_error(format!(
             "Geometry column '{}' has unsupported encoding: {:?}",
             geometry_column, geo_col_meta.encoding
         ))),
@@ -146,12 +148,12 @@ fn resolve_source_crs(
 
     match source_crs_metadata {
         None => Ok("OGC:CRS84".to_string()),
-        Some(Value::Null) => Err(invalid(
+        Some(Value::Null) => Err(crs_error(
             "GeoParquet geometry CRS is unknown; pass --source-crs to reproject",
         )),
         Some(metadata_crs) => match classify_projjson_crs(metadata_crs) {
             CrsStatus::Projected | CrsStatus::Geographic => Ok(metadata_crs.to_string()),
-            CrsStatus::Unknown => Err(invalid(
+            CrsStatus::Unknown => Err(crs_error(
                 "GeoParquet geometry CRS is unknown; pass --source-crs to reproject",
             )),
         },
@@ -159,15 +161,15 @@ fn resolve_source_crs(
 }
 
 fn classify_user_crs(crs: &str) -> Result<CrsStatus> {
-    let crs_obj = proj::Proj::new(crs)
-        .map_err(|e| invalid_data(format!("failed to parse CRS {crs:?}: {e}")))?;
+    let crs_obj =
+        proj::Proj::new(crs).map_err(|e| crs_error(format!("failed to parse CRS {crs:?}: {e}")))?;
 
     let projjson = crs_obj
         .to_projjson(None, None, None)
-        .map_err(|e| invalid_data(format!("failed to convert CRS {crs:?} to PROJJSON: {e}")))?;
+        .map_err(|e| crs_error(format!("failed to convert CRS {crs:?} to PROJJSON: {e}")))?;
 
     let value = serde_json::from_str(&projjson).map_err(|e| {
-        invalid_data(format!(
+        crs_error(format!(
             "PROJ returned invalid PROJJSON for CRS {crs:?}: {e}"
         ))
     })?;
@@ -191,7 +193,7 @@ fn build_reprojector(
 
     let transform_status = classify_user_crs(target_crs)?;
     if transform_status != CrsStatus::Projected {
-        return Err(invalid(format!(
+        return Err(crs_error(format!(
             "Target CRS '{}' is not a projected CRS",
             target_crs
         )));
@@ -200,7 +202,7 @@ fn build_reprojector(
     let source_crs = resolve_source_crs(source_crs_metadata, source_crs_override)?;
 
     let transformer = proj::Proj::new_known_crs(&source_crs, target_crs, None).map_err(|e| {
-        invalid_data(format!(
+        crs_error(format!(
             "Failed to create Proj transformer from source CRS '{}' to target CRS '{}': {}",
             source_crs, target_crs, e
         ))
@@ -233,7 +235,7 @@ fn validate_effective_crs(
             if allow_geographic_crs {
                 Ok(())
             } else {
-                Err(invalid(
+                Err(crs_error(
                     "effective geometry CRS is geographic; pass --allow-geographic-crs to use it",
                 ))
             }
@@ -242,7 +244,7 @@ fn validate_effective_crs(
             if allow_unknown_crs {
                 Ok(())
             } else {
-                Err(invalid(format!(
+                Err(crs_error(format!(
                     "effective geometry CRS is {:?}; pass --allow-unknown-crs to use it",
                     effective_target_crs
                 )))
@@ -253,18 +255,20 @@ fn validate_effective_crs(
 
 fn decode_wkb_geometry(wkb: &[u8]) -> Result<Geometry<f64>> {
     let wkb = read_wkb(wkb)
-        .map_err(|e| invalid_data(format!("Failed to decode WKB geometry from bytes: {}", e)))?;
+        .map_err(|e| geometry_error(format!("Failed to decode WKB geometry from bytes: {}", e)))?;
 
     Ok(wkb.to_geometry())
 }
 
 fn validate_area(area: f64) -> Result<()> {
     if !area.is_finite() {
-        return Err(invalid(format!("computed non-finite geometry area {area}")));
+        return Err(geometry_error(format!(
+            "computed non-finite geometry area {area}"
+        )));
     }
 
     if area <= 0.0 {
-        return Err(invalid(format!(
+        return Err(geometry_error(format!(
             "computed non-positive geometry area {area}"
         )));
     }
@@ -278,7 +282,7 @@ fn parse_reock_unit_from_wkb(wkb: &[u8], reprojector: Option<&Reprojector>) -> R
     match &geometry {
         Geometry::Polygon(_) | Geometry::MultiPolygon(_) => {}
         other => {
-            return Err(invalid(format!(
+            return Err(geometry_error(format!(
                 "Geometry from WKB is not a Polygon or MultiPolygon: {:?}",
                 other
             )));
@@ -293,7 +297,7 @@ fn parse_reock_unit_from_wkb(wkb: &[u8], reprojector: Option<&Reprojector>) -> R
                     .convert((x, y))
                     .map(|(x, y)| Coord { x, y })
             })
-            .map_err(|e| invalid_data(format!("Failed to reproject geometry from WKB: {e}")))?;
+            .map_err(|e| crs_error(format!("Failed to reproject geometry from WKB: {e}")))?;
     };
 
     let area = geometry.unsigned_area();
@@ -313,7 +317,7 @@ fn parse_reock_unit_from_wkb(wkb: &[u8], reprojector: Option<&Reprojector>) -> R
     }
 
     if convex_hull_points.len() < 3 {
-        return Err(invalid(
+        return Err(geometry_error(
             "computed convex hull has fewer than 3 distinct points",
         ));
     }
@@ -334,7 +338,7 @@ where
 {
     for i in 0..array.len() {
         if array.is_null(i) {
-            return Err(invalid(format!(
+            return Err(geometry_error(format!(
                 "Geometry column contains null value at index {}",
                 i
             )));
@@ -355,7 +359,7 @@ fn update_reock_units_with_batch(
     units: &mut Vec<ReockUnit>,
 ) -> Result<()> {
     let array = batch.column_by_name(geometry_column).ok_or_else(|| {
-        invalid(format!(
+        geoparquet_error(format!(
             "Geometry column '{geometry_column}' not found in RecordBatch"
         ))
     })?;
@@ -365,7 +369,7 @@ fn update_reock_units_with_batch(
     } else if let Some(binary) = array.as_any().downcast_ref::<LargeBinaryArray>() {
         update_units_with_wkb_binary_array(binary, reprojector, units)
     } else {
-        Err(invalid(format!(
+        Err(geometry_error(format!(
             "Geometry column '{geometry_column}' has Arrow type {:?}; expected WKB binary",
             array.data_type()
         )))
@@ -377,22 +381,14 @@ fn build_reock_geometry(
     geometry_column: &str,
     reprojector: Option<Reprojector>,
 ) -> Result<ReockGeometry> {
-    let reader = record_batch_reader_builder.build().map_err(|e| {
-        invalid_data(format!(
-            "Failed to build Parquet RecordBatchReader for geometry column '{}': {}",
-            geometry_column, e
-        ))
-    })?;
+    let reader = record_batch_reader_builder
+        .build()
+        .map_err(Error::Parquet)?;
 
     let mut units = Vec::new();
 
     for batch in reader {
-        let batch = batch.map_err(|e| {
-            invalid_data(format!(
-                "Failed to read RecordBatch from Parquet file for geometry column '{}': {}",
-                geometry_column, e
-            ))
-        })?;
+        let batch = batch.map_err(|e| Error::Arrow(e.to_string()))?;
 
         update_reock_units_with_batch(&batch, geometry_column, reprojector.as_ref(), &mut units)?;
     }
@@ -424,13 +420,8 @@ pub fn load_reock_units_from_geoparquet(
 
     let geo_meta = record_batch_reader_builder
         .geoparquet_metadata()
-        .ok_or_else(|| invalid("No GeoParquet metadata found in the Parquet file"))?
-        .map_err(|e| {
-            invalid_data(format!(
-                "Failed to read GeoParquet metadata from Parquet file: {}",
-                e
-            ))
-        })?;
+        .ok_or_else(|| geoparquet_error("No GeoParquet metadata found in the Parquet file"))?
+        .map_err(|e| geoparquet_error(format!("Failed to read GeoParquet metadata: {}", e)))?;
 
     let resolved_geometry_column = resolve_geometry_column(&geo_meta, geometry_column)?;
     let geo_col_meta = require_geo_column_metadata(&geo_meta, &resolved_geometry_column)?;

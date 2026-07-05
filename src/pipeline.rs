@@ -19,7 +19,7 @@
 //! a fixed district set across the whole ensemble.
 
 use crate::district::{observed_assignment_districts, validate_district_set_unchanged};
-use crate::error::{BenError, Result};
+use crate::error::{Error, Result};
 use crate::input::BenSource;
 use ben::io::reader::DecodeFrame;
 use ben::BenVariant;
@@ -76,7 +76,7 @@ impl LengthGuard {
         match self.check {
             AssignmentLengthCheck::MatchesGraph(expected) => {
                 if actual != expected {
-                    return Err(BenError::AssignmentLength { actual, expected });
+                    return Err(Error::AssignmentLength { actual, expected });
                 }
             }
             AssignmentLengthCheck::UniformWithinFile => match self.established {
@@ -173,7 +173,7 @@ where
     if let Some(expected) = graph_node_count {
         // Graph-driven metrics index assignment[node_idx], so fail before `process` can panic.
         if assignment.len() != expected {
-            return Err(BenError::AssignmentLength {
+            return Err(Error::AssignmentLength {
                 actual: assignment.len(),
                 expected,
             });

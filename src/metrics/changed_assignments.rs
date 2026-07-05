@@ -2,7 +2,7 @@ use crate::cli::build_output_path;
 use crate::district::{
     observe_district, observed_assignment_districts, validate_district_set_unchanged, MAX_DISTRICTS,
 };
-use crate::error::BenError;
+use crate::error::Error;
 use crate::input::BenSource;
 use crate::output::parquet::write_changed_assignments;
 use crate::pipeline::{
@@ -366,7 +366,7 @@ pub fn tally_and_save_changed_assignments(
         };
 
     if full_count == 0 {
-        return Err(BenError::NoData);
+        return Err(Error::NoData);
     }
 
     let final_count = finalize_changed_counts(&diff_count, line_count, normalize);

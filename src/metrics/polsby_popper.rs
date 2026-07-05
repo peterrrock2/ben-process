@@ -294,7 +294,7 @@ fn run_incremental_twodelta_polsby_popper(
                 ..
             } => {
                 if snapshot.len() != graph.node_count {
-                    return Err(crate::error::BenError::AssignmentLength {
+                    return Err(crate::error::Error::AssignmentLength {
                         actual: snapshot.len(),
                         expected: graph.node_count,
                     });

@@ -1,4 +1,4 @@
-use crate::error::{BenError, Result};
+use crate::error::{Error, Result};
 
 /// Upper bound on district ids supported by the dense bitmask path.
 ///
@@ -15,7 +15,7 @@ pub(crate) const MAX_DISTRICTS: u16 = 128;
 #[inline]
 pub(crate) fn observe_district(observed: &mut u128, district_id: u16) -> Result<()> {
     if district_id >= MAX_DISTRICTS {
-        return Err(BenError::DistrictLimitExceeded {
+        return Err(Error::DistrictLimitExceeded {
             id: district_id,
             limit: MAX_DISTRICTS,
         });
@@ -89,7 +89,7 @@ pub(crate) fn validate_district_set_unchanged(
         ));
     }
 
-    Err(BenError::DistrictSetChanged(format!(
+    Err(Error::DistrictSetChanged(format!(
         "{}; every plan in the ensemble must use the same district labels to stream {} output with a fixed schema",
         parts.join("; "),
         output_name
