@@ -366,6 +366,34 @@ where
         on_row,
         show_progress,
         max_samples,
+        BATCH,
+    )
+}
+
+pub fn run_pipeline_with_batch_size<Row, P, F>(
+    source: &BenSource,
+    length_check: AssignmentLengthCheck,
+    district_set_label: &str,
+    process: P,
+    on_row: F,
+    show_progress: bool,
+    max_samples: Option<usize>,
+    batch_size: usize,
+) -> Result<()>
+where
+    Row: Send,
+    P: Fn(&[u16], u16) -> Result<(u128, Row)> + Sync,
+    F: FnMut(u64, u32, u64, Row) -> Result<()>,
+{
+    run_pipeline_core(
+        source,
+        length_check,
+        Some(district_set_label),
+        process,
+        on_row,
+        show_progress,
+        max_samples,
+        batch_size.max(1),
     )
 }
 
@@ -394,6 +422,7 @@ where
         on_row,
         show_progress,
         max_samples,
+        BATCH,
     )
 }
 
@@ -407,6 +436,7 @@ fn run_pipeline_core<Row, P, F>(
     mut on_row: F,
     show_progress: bool,
     max_samples: Option<usize>,
+    batch_size: usize,
 ) -> Result<()>
 where
     Row: Send,
@@ -445,14 +475,14 @@ where
 
     if variant == BenVariant::TwoDelta {
         let mut records = source.open_reader()?;
-        let mut batch: Vec<(Vec<u16>, u16)> = Vec::with_capacity(BATCH);
+        let mut batch: Vec<(Vec<u16>, u16)> = Vec::with_capacity(batch_size);
         while remaining_samples != Some(0) {
             let Some(record_res) = records.next() else {
                 break;
             };
             let (assignment, n_reps) = record_res?;
             batch.push((assignment, capped_reps(&mut remaining_samples, n_reps)));
-            if batch.len() == BATCH {
+            if batch.len() == batch_size {
                 let results = process_assignment_batch(&process, graph_node_count, &batch)?;
                 forward_results(
                     results,
@@ -478,14 +508,14 @@ where
         )?;
     } else {
         let mut frames = source.open_frames()?;
-        let mut batch: Vec<(DecodeFrame, u16)> = Vec::with_capacity(BATCH);
+        let mut batch: Vec<(DecodeFrame, u16)> = Vec::with_capacity(batch_size);
         while remaining_samples != Some(0) {
             let Some(frame_res) = frames.next() else {
                 break;
             };
             let (frame, n_reps) = frame_res?;
             batch.push((frame, capped_reps(&mut remaining_samples, n_reps)));
-            if batch.len() == BATCH {
+            if batch.len() == batch_size {
                 let results = process_batch(&process, graph_node_count, &batch)?;
                 forward_results(
                     results,

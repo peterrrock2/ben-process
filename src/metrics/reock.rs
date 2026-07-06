@@ -3,8 +3,8 @@ use crate::geometry::ReockGeometries;
 use crate::input::BenSource;
 use crate::output::parquet::DistrictMetricWriter;
 use crate::pipeline::{
-    capped_reps, make_progress_bar, parquet_compression, run_pipeline, AssignmentLengthCheck,
-    PARQUET_BATCH_ROWS,
+    capped_reps, make_progress_bar, parquet_compression, run_pipeline_with_batch_size,
+    AssignmentLengthCheck, PARQUET_BATCH_ROWS,
 };
 use ben::io::reader::TwoDeltaFrameEvent;
 use ben::BenVariant;
@@ -610,7 +610,7 @@ pub fn tally_and_save_reock(
             max_samples,
         )?;
     } else {
-        run_pipeline(
+        run_pipeline_with_batch_size(
             source,
             AssignmentLengthCheck::MatchesGeometryFile(reock_geometries.units.len()),
             // The pipeline enforces a fixed district set, so the schema fixed from the first row
@@ -628,6 +628,7 @@ pub fn tally_and_save_reock(
             },
             show_progress,
             max_samples,
+            rayon::current_num_threads(),
         )?;
     }
 
