@@ -218,6 +218,30 @@ fn add_node(
     nodes_by_district[district].push(node);
 }
 
+fn compute_district_score(
+    reock_geometries: &ReockGeometries,
+    nodes_by_district: &[Vec<usize>],
+    area_by_district: &[f64],
+    district: usize,
+    scratch: &mut Vec<Coord<f64>>,
+    rng: &mut fastrand::Rng,
+) -> crate::error::Result<f64> {
+    let points = nodes_by_district.get(district).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("District {district} not found in nodes_by_district"),
+        )
+    })?;
+
+    scratch.clear();
+    for &node in points {
+        let current_unit = &reock_geometries.units[node];
+        scratch.extend_from_slice(&current_unit.convex_hull_points);
+    }
+
+    reock_score(scratch, area_by_district[district], rng)
+}
+
 fn reock_rows(
     assignment: &[u16],
     reock_geometries: &ReockGeometries,
@@ -278,7 +302,9 @@ struct IncrementalReock<'g> {
     reock_geometries: &'g ReockGeometries,
     state: ReockState,
     hull_point_scratch: Vec<Coord<f64>>,
+    hull_point_scratch_b: Vec<Coord<f64>>,
     rng: fastrand::Rng,
+    rng_b: fastrand::Rng,
 }
 
 impl<'g> IncrementalReock<'g> {
@@ -294,7 +320,9 @@ impl<'g> IncrementalReock<'g> {
                 node_position: vec![0usize; reock_geometries.units.len()],
             },
             hull_point_scratch: Vec::new(),
+            hull_point_scratch_b: Vec::new(),
             rng: fastrand::Rng::with_seed(REOCK_SHUFFLE_SEED),
+            rng_b: fastrand::Rng::with_seed(REOCK_SHUFFLE_SEED ^ 0xd1b5_4a32_d192_ed03),
         }
     }
 
@@ -332,25 +360,61 @@ impl<'g> IncrementalReock<'g> {
     }
 
     fn recompute_score(&mut self, district: usize) -> crate::error::Result<()> {
-        let points = self.state.nodes_by_district.get(district).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("District {district} not found in nodes_by_district"),
-            )
-        })?;
-
-        self.hull_point_scratch.clear();
-        for &node in points {
-            let current_unit = &self.reock_geometries.units[node];
-            self.hull_point_scratch
-                .extend_from_slice(&current_unit.convex_hull_points);
-        }
-
-        self.state.scores[district] = reock_score(
+        self.state.scores[district] = compute_district_score(
+            self.reock_geometries,
+            &self.state.nodes_by_district,
+            &self.state.area_by_district,
+            district,
             &mut self.hull_point_scratch,
-            self.state.area_by_district[district],
             &mut self.rng,
         )?;
+
+        Ok(())
+    }
+
+    fn recompute_scores(&mut self, districts: &[usize]) -> crate::error::Result<()> {
+        if districts.len() == 2 {
+            let left = districts[0];
+            let right = districts[1];
+            let reock_geometries = self.reock_geometries;
+            let nodes_by_district = &self.state.nodes_by_district;
+            let area_by_district = &self.state.area_by_district;
+            let left_scratch = &mut self.hull_point_scratch;
+            let right_scratch = &mut self.hull_point_scratch_b;
+            let left_rng = &mut self.rng;
+            let right_rng = &mut self.rng_b;
+
+            let (left_score, right_score) = rayon::join(
+                || {
+                    compute_district_score(
+                        reock_geometries,
+                        nodes_by_district,
+                        area_by_district,
+                        left,
+                        left_scratch,
+                        left_rng,
+                    )
+                },
+                || {
+                    compute_district_score(
+                        reock_geometries,
+                        nodes_by_district,
+                        area_by_district,
+                        right,
+                        right_scratch,
+                        right_rng,
+                    )
+                },
+            );
+
+            self.state.scores[left] = left_score?;
+            self.state.scores[right] = right_score?;
+            return Ok(());
+        }
+
+        for &district in districts {
+            self.recompute_score(district)?;
+        }
 
         Ok(())
     }
@@ -405,14 +469,17 @@ impl<'g> IncrementalReock<'g> {
         touched.sort_unstable();
         touched.dedup();
 
+        let mut recompute_districts = Vec::new();
         for district in touched {
             if self.state.node_counts[district] == 0 {
                 self.state.scores[district] = 0.0;
                 continue;
             }
 
-            self.recompute_score(district)?;
+            recompute_districts.push(district);
         }
+
+        self.recompute_scores(&recompute_districts)?;
 
         Ok(())
     }
