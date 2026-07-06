@@ -78,7 +78,7 @@ fn in_circle(p: Coord, circle: &Circle) -> bool {
 }
 
 // Randomized incremental minimum enclosing circle over a point cloud.
-fn compute_minimum_enclosing_circle_area(mut points: Vec<Coord<f64>>) -> Option<f64> {
+fn compute_minimum_enclosing_circle_area(points: &mut [Coord<f64>]) -> Option<f64> {
     if points.len() < 2 {
         return None;
     }
@@ -122,7 +122,7 @@ fn compute_minimum_enclosing_circle_area(mut points: Vec<Coord<f64>>) -> Option<
 }
 
 /// Compute the Reock score for a district given its point cloud and convex hull area.
-fn reock_score(point_cloud: Vec<Coord<f64>>, hull_area: f64) -> crate::error::Result<f64> {
+fn reock_score(point_cloud: &mut [Coord<f64>], hull_area: f64) -> crate::error::Result<f64> {
     let mec_area = compute_minimum_enclosing_circle_area(point_cloud).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -249,12 +249,12 @@ fn reock_rows(
 
     let mut scores = vec![0.0; MAX_DISTRICTS as usize];
 
-    for (district, points) in district_hull_points.into_iter().enumerate() {
+    for (district, mut points) in district_hull_points.into_iter().enumerate() {
         if node_counts[district] == 0 {
             continue;
         }
 
-        scores[district] = reock_score(points, area_by_district[district])?;
+        scores[district] = reock_score(&mut points, area_by_district[district])?;
     }
 
     Ok(ReockState {
@@ -270,6 +270,7 @@ fn reock_rows(
 struct IncrementalReock<'g> {
     reock_geometries: &'g ReockGeometries,
     state: ReockState,
+    hull_point_scratch: Vec<Coord<f64>>,
 }
 
 impl<'g> IncrementalReock<'g> {
@@ -284,6 +285,7 @@ impl<'g> IncrementalReock<'g> {
                 nodes_by_district: vec![Vec::new(); MAX_DISTRICTS as usize],
                 node_position: vec![0usize; reock_geometries.units.len()],
             },
+            hull_point_scratch: Vec::new(),
         }
     }
 
@@ -328,14 +330,17 @@ impl<'g> IncrementalReock<'g> {
             )
         })?;
 
-        let mut hull_points = Vec::new();
+        self.hull_point_scratch.clear();
         for &node in points {
             let current_unit = &self.reock_geometries.units[node];
-            hull_points.extend(current_unit.convex_hull_points.iter().copied());
+            self.hull_point_scratch
+                .extend_from_slice(&current_unit.convex_hull_points);
         }
 
-        self.state.scores[district] =
-            reock_score(hull_points, self.state.area_by_district[district])?;
+        self.state.scores[district] = reock_score(
+            &mut self.hull_point_scratch,
+            self.state.area_by_district[district],
+        )?;
 
         Ok(())
     }
@@ -371,12 +376,11 @@ impl<'g> IncrementalReock<'g> {
             }
 
             observe_district(&mut self.state.observed, old)?;
-            observe_district(&mut self.state.observed, new)?;
 
             if old == new {
-                touched.push(old as usize);
                 continue;
             }
+            observe_district(&mut self.state.observed, new)?;
 
             let old = old as usize;
             let new = new as usize;
@@ -576,8 +580,8 @@ mod tests {
         );
     }
 
-    fn mec_area_for_points(points: Vec<Coord<f64>>) -> Option<f64> {
-        compute_minimum_enclosing_circle_area(points)
+    fn mec_area_for_points(mut points: Vec<Coord<f64>>) -> Option<f64> {
+        compute_minimum_enclosing_circle_area(&mut points)
     }
 
     /// Exhaustively checks every 2-point diameter circle and every 3-point circumcircle.
@@ -782,20 +786,20 @@ mod tests {
 
     #[test]
     fn reock_score_unit_square_is_two_over_pi() {
-        let score = reock_score(square_points(0.0, 0.0), 1.0).unwrap();
+        let score = reock_score(&mut square_points(0.0, 0.0), 1.0).unwrap();
 
         assert_close(score, 2.0 / std::f64::consts::PI);
     }
 
     #[test]
     fn reock_score_rejects_invalid_area() {
-        assert!(reock_score(square_points(0.0, 0.0), 0.0).is_err());
-        assert!(reock_score(square_points(0.0, 0.0), f64::NAN).is_err());
+        assert!(reock_score(&mut square_points(0.0, 0.0), 0.0).is_err());
+        assert!(reock_score(&mut square_points(0.0, 0.0), f64::NAN).is_err());
     }
 
     #[test]
     fn reock_score_rejects_impossible_score_above_one() {
-        let err = reock_score(square_points(0.0, 0.0), 2.0).unwrap_err();
+        let err = reock_score(&mut square_points(0.0, 0.0), 2.0).unwrap_err();
 
         assert!(err.to_string().contains("impossible Reock score"));
     }
