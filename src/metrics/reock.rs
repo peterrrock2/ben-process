@@ -8,7 +8,7 @@ use crate::pipeline::{
 };
 use ben::io::reader::TwoDeltaFrameEvent;
 use ben::BenVariant;
-use geo::{ConvexHull, Coord, Point};
+use geo::Coord;
 use rand::seq::SliceRandom;
 use std::fs::File;
 use std::io;
@@ -77,18 +77,8 @@ fn in_circle(p: Coord, circle: &Circle) -> bool {
     dist_sq <= circle.radius.powi(2) + EPS
 }
 
-// Randomized incremental minimum enclosing circle over convex-hull vertices.
-fn compute_minimum_enclosing_circle_area(hull: &geo::Polygon<f64>) -> Option<f64> {
-    let mut points: Vec<Coord<f64>> = hull.exterior().points().map(|p: Point| p.0).collect();
-
-    if points.len() < 2 {
-        return None;
-    }
-
-    if points[0] == points[points.len() - 1] {
-        points.pop();
-    }
-
+// Randomized incremental minimum enclosing circle over a point cloud.
+fn compute_minimum_enclosing_circle_area(mut points: Vec<Coord<f64>>) -> Option<f64> {
     if points.len() < 2 {
         return None;
     }
@@ -133,8 +123,7 @@ fn compute_minimum_enclosing_circle_area(hull: &geo::Polygon<f64>) -> Option<f64
 
 /// Compute the Reock score for a district given its point cloud and convex hull area.
 fn reock_score(point_cloud: Vec<Coord<f64>>, hull_area: f64) -> crate::error::Result<f64> {
-    let hull = geo::MultiPoint::from(point_cloud).convex_hull();
-    let mec_area = compute_minimum_enclosing_circle_area(&hull).ok_or_else(|| {
+    let mec_area = compute_minimum_enclosing_circle_area(point_cloud).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             "Failed to compute minimum enclosing circle area for one of the districts.",
@@ -571,17 +560,9 @@ pub fn tally_and_save_reock(
 mod tests {
     use super::*;
     use crate::geometry::ReockUnit;
-    use geo::LineString;
 
     fn coord(x: f64, y: f64) -> Coord<f64> {
         Coord { x, y }
-    }
-
-    fn polygon(points: &[(f64, f64)]) -> geo::Polygon<f64> {
-        geo::Polygon::new(
-            LineString::from(points.iter().map(|&(x, y)| coord(x, y)).collect::<Vec<_>>()),
-            vec![],
-        )
     }
 
     fn assert_close(actual: f64, expected: f64) {
@@ -596,8 +577,7 @@ mod tests {
     }
 
     fn mec_area_for_points(points: Vec<Coord<f64>>) -> Option<f64> {
-        let hull = geo::MultiPoint::from(points).convex_hull();
-        compute_minimum_enclosing_circle_area(&hull)
+        compute_minimum_enclosing_circle_area(points)
     }
 
     /// Exhaustively checks every 2-point diameter circle and every 3-point circumcircle.
@@ -716,36 +696,30 @@ mod tests {
 
     #[test]
     fn mec_unit_square_uses_diagonal_circle() {
-        let poly = polygon(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)]);
-
-        let area = compute_minimum_enclosing_circle_area(&poly).unwrap();
+        let area = mec_area_for_points(square_points(0.0, 0.0)).unwrap();
 
         assert_close(area, std::f64::consts::PI / 2.0);
     }
 
     #[test]
     fn mec_right_triangle_uses_hypotenuse_circle() {
-        let poly = polygon(&[(0.0, 0.0), (4.0, 0.0), (0.0, 3.0), (0.0, 0.0)]);
-
-        let area = compute_minimum_enclosing_circle_area(&poly).unwrap();
+        let area =
+            mec_area_for_points(vec![coord(0.0, 0.0), coord(4.0, 0.0), coord(0.0, 3.0)]).unwrap();
 
         assert_close(area, std::f64::consts::PI * 6.25);
     }
 
     #[test]
     fn mec_collinear_points_use_largest_diameter() {
-        let poly = polygon(&[(0.0, 0.0), (0.0, 2.0), (0.0, 5.0), (0.0, 0.0)]);
-
-        let area = compute_minimum_enclosing_circle_area(&poly).unwrap();
+        let area =
+            mec_area_for_points(vec![coord(0.0, 0.0), coord(0.0, 2.0), coord(0.0, 5.0)]).unwrap();
 
         assert_close(area, std::f64::consts::PI * 6.25);
     }
 
     #[test]
     fn mec_returns_none_for_less_than_two_distinct_points() {
-        let poly = polygon(&[(1.0, 1.0), (1.0, 1.0)]);
-
-        assert!(compute_minimum_enclosing_circle_area(&poly).is_none());
+        assert!(mec_area_for_points(vec![coord(1.0, 1.0)]).is_none());
     }
 
     #[test]
