@@ -397,6 +397,7 @@ dependencies = [
  "binary-ensemble",
  "clap 4.5.60",
  "env_logger",
+ "fastrand",
  "geo",
  "geo-traits",
  "geo-types",

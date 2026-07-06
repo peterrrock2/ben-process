@@ -9,11 +9,11 @@ use crate::pipeline::{
 use ben::io::reader::TwoDeltaFrameEvent;
 use ben::BenVariant;
 use geo::Coord;
-use rand::seq::SliceRandom;
 use std::fs::File;
 use std::io;
 
 const EPS: f64 = 1e-9;
+const REOCK_SHUFFLE_SEED: u64 = 0x9e37_79b9_7f4a_7c15;
 
 #[derive(Debug, Clone, Copy)]
 struct Circle {
@@ -78,13 +78,15 @@ fn in_circle(p: Coord, circle: &Circle) -> bool {
 }
 
 // Randomized incremental minimum enclosing circle over a point cloud.
-fn compute_minimum_enclosing_circle_area(points: &mut [Coord<f64>]) -> Option<f64> {
+fn compute_minimum_enclosing_circle_area(
+    points: &mut [Coord<f64>],
+    rng: &mut fastrand::Rng,
+) -> Option<f64> {
     if points.len() < 2 {
         return None;
     }
 
-    let mut rng = rand::rng();
-    points.shuffle(&mut rng);
+    rng.shuffle(points);
 
     let p0 = points[0];
     let p1 = points[1];
@@ -122,8 +124,12 @@ fn compute_minimum_enclosing_circle_area(points: &mut [Coord<f64>]) -> Option<f6
 }
 
 /// Compute the Reock score for a district given its point cloud and convex hull area.
-fn reock_score(point_cloud: &mut [Coord<f64>], hull_area: f64) -> crate::error::Result<f64> {
-    let mec_area = compute_minimum_enclosing_circle_area(point_cloud).ok_or_else(|| {
+fn reock_score(
+    point_cloud: &mut [Coord<f64>],
+    hull_area: f64,
+    rng: &mut fastrand::Rng,
+) -> crate::error::Result<f64> {
+    let mec_area = compute_minimum_enclosing_circle_area(point_cloud, rng).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             "Failed to compute minimum enclosing circle area for one of the districts.",
@@ -222,6 +228,7 @@ fn reock_rows(
     let mut node_counts = vec![0u32; MAX_DISTRICTS as usize];
     let mut nodes_by_district = vec![Vec::new(); MAX_DISTRICTS as usize];
     let mut node_position = vec![0usize; reock_geometries.units.len()];
+    let mut rng = fastrand::Rng::with_seed(REOCK_SHUFFLE_SEED);
 
     if assignment.len() != reock_geometries.units.len() {
         return Err(crate::error::Error::AssignmentLength {
@@ -254,7 +261,7 @@ fn reock_rows(
             continue;
         }
 
-        scores[district] = reock_score(&mut points, area_by_district[district])?;
+        scores[district] = reock_score(&mut points, area_by_district[district], &mut rng)?;
     }
 
     Ok(ReockState {
@@ -271,6 +278,7 @@ struct IncrementalReock<'g> {
     reock_geometries: &'g ReockGeometries,
     state: ReockState,
     hull_point_scratch: Vec<Coord<f64>>,
+    rng: fastrand::Rng,
 }
 
 impl<'g> IncrementalReock<'g> {
@@ -286,6 +294,7 @@ impl<'g> IncrementalReock<'g> {
                 node_position: vec![0usize; reock_geometries.units.len()],
             },
             hull_point_scratch: Vec::new(),
+            rng: fastrand::Rng::with_seed(REOCK_SHUFFLE_SEED),
         }
     }
 
@@ -340,6 +349,7 @@ impl<'g> IncrementalReock<'g> {
         self.state.scores[district] = reock_score(
             &mut self.hull_point_scratch,
             self.state.area_by_district[district],
+            &mut self.rng,
         )?;
 
         Ok(())
@@ -581,7 +591,8 @@ mod tests {
     }
 
     fn mec_area_for_points(mut points: Vec<Coord<f64>>) -> Option<f64> {
-        compute_minimum_enclosing_circle_area(&mut points)
+        let mut rng = fastrand::Rng::with_seed(REOCK_SHUFFLE_SEED);
+        compute_minimum_enclosing_circle_area(&mut points, &mut rng)
     }
 
     /// Exhaustively checks every 2-point diameter circle and every 3-point circumcircle.
@@ -786,20 +797,23 @@ mod tests {
 
     #[test]
     fn reock_score_unit_square_is_two_over_pi() {
-        let score = reock_score(&mut square_points(0.0, 0.0), 1.0).unwrap();
+        let mut rng = fastrand::Rng::with_seed(REOCK_SHUFFLE_SEED);
+        let score = reock_score(&mut square_points(0.0, 0.0), 1.0, &mut rng).unwrap();
 
         assert_close(score, 2.0 / std::f64::consts::PI);
     }
 
     #[test]
     fn reock_score_rejects_invalid_area() {
-        assert!(reock_score(&mut square_points(0.0, 0.0), 0.0).is_err());
-        assert!(reock_score(&mut square_points(0.0, 0.0), f64::NAN).is_err());
+        let mut rng = fastrand::Rng::with_seed(REOCK_SHUFFLE_SEED);
+        assert!(reock_score(&mut square_points(0.0, 0.0), 0.0, &mut rng).is_err());
+        assert!(reock_score(&mut square_points(0.0, 0.0), f64::NAN, &mut rng).is_err());
     }
 
     #[test]
     fn reock_score_rejects_impossible_score_above_one() {
-        let err = reock_score(&mut square_points(0.0, 0.0), 2.0).unwrap_err();
+        let mut rng = fastrand::Rng::with_seed(REOCK_SHUFFLE_SEED);
+        let err = reock_score(&mut square_points(0.0, 0.0), 2.0, &mut rng).unwrap_err();
 
         assert!(err.to_string().contains("impossible Reock score"));
     }
