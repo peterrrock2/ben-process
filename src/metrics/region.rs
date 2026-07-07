@@ -1,14 +1,14 @@
-use crate::district::{
-    observe_district, observed_assignment_districts, validate_district_set_unchanged, MAX_DISTRICTS,
-};
+use crate::district::{observe_district, observed_assignment_districts, MAX_DISTRICTS};
 use crate::graph::Graph;
 use crate::input::BenSource;
+use crate::metrics::twodelta::{
+    run_incremental_twodelta, DeltaChange, IncrementalTwoDeltaMetric, TwoDeltaRow,
+    TwoDeltaRunOptions,
+};
 use crate::output::parquet::U32KeyedMetricWriter;
 use crate::pipeline::{
-    capped_reps, make_progress_bar, parquet_compression, run_pipeline, AssignmentLengthCheck,
-    PARQUET_BATCH_ROWS,
+    parquet_compression, run_pipeline, AssignmentLengthCheck, PARQUET_BATCH_ROWS,
 };
-use ben::io::reader::TwoDeltaFrameEvent;
 use ben::BenVariant;
 use std::fs::File;
 use std::io;
@@ -198,41 +198,20 @@ impl<'g> IncrementalRegionMetrics<'g> {
     /// Apply one delta event to the maintained region metrics and district set.
     fn update_delta(
         &mut self,
-        before: &[u16],
-        changes: &[(usize, u16, u16)],
+        _before: &[u16],
+        changes: &[DeltaChange],
     ) -> crate::error::Result<()> {
-        for &(node, old, new) in changes {
-            let Some(&current) = before.get(node) else {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "TwoDelta delta references node {node} outside assignment length {}",
-                        before.len()
-                    ),
-                )
-                .into());
-            };
-            if current != old {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "TwoDelta delta old label mismatch at node {node}: \
-                         expected {current}, got {old}",
-                    ),
-                )
-                .into());
-            }
-
-            observe_district(&mut self.observed, old)?;
-            observe_district(&mut self.observed, new)?;
-            if old == new {
+        for change in changes {
+            observe_district(&mut self.observed, change.old)?;
+            observe_district(&mut self.observed, change.new)?;
+            if change.old == change.new {
                 continue;
             }
 
-            self.node_counts[new as usize] += 1;
-            self.node_counts[old as usize] -= 1;
-            if self.node_counts[old as usize] == 0 {
-                self.observed &= !(1u128 << old);
+            self.node_counts[change.new as usize] += 1;
+            self.node_counts[change.old as usize] -= 1;
+            if self.node_counts[change.old as usize] == 0 {
+                self.observed &= !(1u128 << change.old);
             }
 
             for (&column_index, key_state) in self
@@ -240,14 +219,32 @@ impl<'g> IncrementalRegionMetrics<'g> {
                 .iter()
                 .zip(self.key_states.iter_mut())
             {
-                if let Some(region) = self.graph.region_columns[column_index][node] {
-                    key_state.remove(region, old);
-                    key_state.add(region, new);
+                if let Some(region) = self.graph.region_columns[column_index][change.node] {
+                    key_state.remove(region, change.old);
+                    key_state.add(region, change.new);
                 }
             }
         }
 
         Ok(())
+    }
+}
+
+impl IncrementalTwoDeltaMetric for IncrementalRegionMetrics<'_> {
+    fn seed(&mut self, assignment: &[u16]) -> crate::error::Result<()> {
+        IncrementalRegionMetrics::seed(self, assignment)
+    }
+
+    fn update_delta(
+        &mut self,
+        before: &[u16],
+        changes: &[DeltaChange],
+    ) -> crate::error::Result<()> {
+        IncrementalRegionMetrics::update_delta(self, before, changes)
+    }
+
+    fn observed(&self) -> u128 {
+        self.observed
     }
 }
 
@@ -261,104 +258,6 @@ fn push_region_rows(
 ) -> crate::error::Result<()> {
     for (key, value) in key_list.iter().zip(values) {
         writer.push_row(step, n_reps, accepted, (key.clone(), value))?;
-    }
-    Ok(())
-}
-
-/// Run region metrics directly from TwoDelta events, reseeding on snapshots and patching deltas.
-#[allow(clippy::too_many_arguments)]
-fn run_incremental_twodelta_region_metric(
-    graph: &Graph,
-    source: &BenSource,
-    writer: &mut U32KeyedMetricWriter,
-    key_list: &[String],
-    region_column_indices: &[usize],
-    metric: RegionMetric,
-    metric_column_name: &str,
-    show_progress: bool,
-    max_samples: Option<usize>,
-) -> crate::error::Result<()> {
-    let progress_bar = if show_progress {
-        Some(make_progress_bar(match max_samples {
-            Some(n) => n,
-            None => source.count_samples()?,
-        }))
-    } else {
-        None
-    };
-
-    let mut remaining_samples = max_samples;
-    let mut assignment: Option<Vec<u16>> = None;
-    let mut expected_observed: Option<u128> = None;
-    let mut state = IncrementalRegionMetrics::new(graph, region_column_indices);
-    let mut step = 1u64;
-
-    for (accepted, event) in (1u64..).zip(source.open_reader()?.into_twodelta_events()) {
-        if remaining_samples == Some(0) {
-            break;
-        }
-
-        let n_reps = match event? {
-            TwoDeltaFrameEvent::Snapshot {
-                assignment: snapshot,
-                count,
-                ..
-            } => {
-                if snapshot.len() != graph.node_count {
-                    return Err(crate::error::Error::AssignmentLength {
-                        actual: snapshot.len(),
-                        expected: graph.node_count,
-                    });
-                }
-                state.seed(&snapshot)?;
-                assignment = Some(snapshot);
-                capped_reps(&mut remaining_samples, count)
-            }
-            TwoDeltaFrameEvent::Delta { changes, count } => {
-                let assignment = assignment.as_mut().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "TwoDelta delta event appeared before an initial snapshot",
-                    )
-                })?;
-                let changes = changes
-                    .into_iter()
-                    .map(|(node, old, new)| (node as usize, old, new))
-                    .collect::<Vec<_>>();
-                state.update_delta(assignment, &changes)?;
-                for (node, _old, new) in changes {
-                    assignment[node] = new;
-                }
-                capped_reps(&mut remaining_samples, count)
-            }
-        };
-
-        match expected_observed {
-            None => expected_observed = Some(state.observed),
-            Some(expected) => {
-                validate_district_set_unchanged(state.observed, expected, metric_column_name)?;
-            }
-        }
-
-        push_region_rows(
-            writer,
-            key_list,
-            step,
-            n_reps as u32,
-            accepted,
-            state
-                .key_states
-                .iter()
-                .map(|key_state| key_state.value(metric)),
-        )?;
-        step += n_reps as u64;
-        if let Some(progress_bar) = &progress_bar {
-            progress_bar.inc(n_reps as u64);
-        }
-    }
-
-    if let Some(progress_bar) = progress_bar {
-        progress_bar.finish_and_clear();
     }
     Ok(())
 }
@@ -404,21 +303,43 @@ pub fn tally_and_save_region_metric(
     );
 
     if source.variant()? == BenVariant::TwoDelta {
-        run_incremental_twodelta_region_metric(
-            &graph,
+        let mut state = IncrementalRegionMetrics::new(&graph, &region_column_indices);
+        run_incremental_twodelta(
             source,
-            &mut writer,
-            &key_list,
-            &region_column_indices,
-            metric,
-            metric_column_name,
-            show_progress,
-            max_samples,
+            TwoDeltaRunOptions {
+                expected_len: graph.node_count,
+                expected_len_label: "graph node count",
+                output_name: metric_column_name,
+                show_progress,
+                max_samples,
+            },
+            &mut state,
+            |state,
+             TwoDeltaRow {
+                 step,
+                 n_reps,
+                 accepted,
+             }| {
+                push_region_rows(
+                    &mut writer,
+                    &key_list,
+                    step,
+                    n_reps,
+                    accepted,
+                    state
+                        .key_states
+                        .iter()
+                        .map(|key_state| key_state.value(metric)),
+                )
+            },
         )?;
     } else {
         run_pipeline(
             source,
-            AssignmentLengthCheck::MatchesGraph(graph.node_count),
+            AssignmentLengthCheck::Exact {
+                expected: graph.node_count,
+                label: "graph node count",
+            },
             // The pipeline enforces a fixed district set across the ensemble for region modes too.
             metric_column_name,
             |assignment, _n_reps| {
@@ -465,7 +386,8 @@ pub fn tally_and_save_region_metric(
 #[cfg(test)]
 mod tests {
     use super::{
-        region_metric_column_name, region_metric_for_key, IncrementalRegionMetrics, RegionMetric,
+        region_metric_column_name, region_metric_for_key, DeltaChange, IncrementalRegionMetrics,
+        RegionMetric,
     };
     use crate::graph::Graph;
     use crate::output::parquet::U32KeyedMetricWriter;
@@ -506,19 +428,22 @@ mod tests {
     }
 
     #[test]
-    fn incremental_region_metrics_rejects_delta_old_label_mismatch() {
+    fn incremental_region_metrics_updates_delta() {
         let graph = graph_with_region_column(vec![Some(0), Some(0), Some(1)], 2);
         let before = vec![1, 1, 2];
-        let changes = vec![(1usize, 2u16, 1u16)];
+        let changes = vec![DeltaChange {
+            node: 1,
+            old: 1,
+            new: 2,
+        }];
         let mut state = IncrementalRegionMetrics::new(&graph, &[0]);
 
         state.seed(&before).unwrap();
-        let err = state.update_delta(&before, &changes).unwrap_err();
+        state.update_delta(&before, &changes).unwrap();
 
-        assert!(
-            err.to_string().contains("old label mismatch"),
-            "unexpected error: {err}",
-        );
+        assert_eq!(state.key_states[0].splits, 1);
+        assert_eq!(state.key_states[0].pieces, 3);
+        assert_eq!(state.observed, (1u128 << 1) | (1u128 << 2));
     }
 
     #[test]

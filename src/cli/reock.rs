@@ -50,7 +50,7 @@ pub fn run(args: ReockArgs, show_progress: bool) -> crate::error::Result<()> {
     )?;
 
     let output_path = build_output_path(
-        &args.common.ben_file(),
+        args.common.ben_file(),
         "_reock.parquet",
         args.common.output_dir(),
     );

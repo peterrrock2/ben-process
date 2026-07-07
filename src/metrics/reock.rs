@@ -1,12 +1,15 @@
-use crate::district::{observe_district, validate_district_set_unchanged, MAX_DISTRICTS};
+use crate::district::{observe_district, MAX_DISTRICTS};
 use crate::geometry::ReockGeometries;
 use crate::input::BenSource;
+use crate::metrics::twodelta::{
+    run_incremental_twodelta, DeltaChange, IncrementalTwoDeltaMetric, TwoDeltaRow,
+    TwoDeltaRunOptions,
+};
 use crate::output::parquet::DistrictMetricWriter;
 use crate::pipeline::{
-    capped_reps, make_progress_bar, parquet_compression, run_pipeline_with_batch_size,
-    AssignmentLengthCheck, PARQUET_BATCH_ROWS,
+    parquet_compression, run_pipeline_with_batch_size, AssignmentLengthCheck, PipelineBatchOptions,
+    PARQUET_BATCH_ROWS,
 };
-use ben::io::reader::TwoDeltaFrameEvent;
 use ben::BenVariant;
 use geo::Coord;
 use std::fs::File;
@@ -174,8 +177,8 @@ struct ReockState {
 }
 
 fn remove_node(
-    node_position: &mut Vec<usize>,
-    nodes_by_district: &mut Vec<Vec<usize>>,
+    node_position: &mut [usize],
+    nodes_by_district: &mut [Vec<usize>],
     district: usize,
     node: usize,
 ) -> crate::error::Result<()> {
@@ -209,8 +212,8 @@ fn remove_node(
 }
 
 fn add_node(
-    node_position: &mut Vec<usize>,
-    nodes_by_district: &mut Vec<Vec<usize>>,
+    node_position: &mut [usize],
+    nodes_by_district: &mut [Vec<usize>],
     district: usize,
     node: usize,
 ) {
@@ -257,7 +260,9 @@ fn reock_rows(
     if assignment.len() != reock_geometries.units.len() {
         return Err(crate::error::Error::AssignmentLength {
             actual: assignment.len(),
+            actual_label: "BEN assignment length",
             expected: reock_geometries.units.len(),
+            expected_label: "geometry row count",
         });
     }
 
@@ -422,45 +427,24 @@ impl<'g> IncrementalReock<'g> {
     /// Apply one delta event to the maintained area, membership, and score state.
     fn update_delta(
         &mut self,
-        before: &[u16],
-        changes: &[(usize, u16, u16)],
+        _before: &[u16],
+        changes: &[DeltaChange],
     ) -> crate::error::Result<()> {
         let mut touched = Vec::new();
 
-        for &(node, old, new) in changes {
-            let Some(&current) = before.get(node) else {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "TwoDelta delta references node {node} outside assignment length {}",
-                        before.len()
-                    ),
-                )
-                .into());
-            };
-            if current != old {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "TwoDelta delta old label mismatch at node {node}: \
-                         expected {current}, got {old}",
-                    ),
-                )
-                .into());
-            }
+        for change in changes {
+            observe_district(&mut self.state.observed, change.old)?;
 
-            observe_district(&mut self.state.observed, old)?;
-
-            if old == new {
+            if change.old == change.new {
                 continue;
             }
-            observe_district(&mut self.state.observed, new)?;
+            observe_district(&mut self.state.observed, change.new)?;
 
-            let old = old as usize;
-            let new = new as usize;
+            let old = change.old as usize;
+            let new = change.new as usize;
 
-            self.remove_node_from_district(node, old as u16)?;
-            self.add_node_to_district(node, new as u16);
+            self.remove_node_from_district(change.node, change.old)?;
+            self.add_node_to_district(change.node, change.new);
 
             touched.push(old);
             touched.push(new);
@@ -493,94 +477,22 @@ impl<'g> IncrementalReock<'g> {
     }
 }
 
-/// Run Reock directly from TwoDelta events, reseeding on snapshots and patching deltas.
-fn run_incremental_twodelta_reock(
-    reock_geometries: &ReockGeometries,
-    source: &BenSource,
-    writer: &mut DistrictMetricWriter,
-    show_progress: bool,
-    max_samples: Option<usize>,
-) -> crate::error::Result<()> {
-    let progress_bar = if show_progress {
-        Some(make_progress_bar(match max_samples {
-            Some(n) => n,
-            None => source.count_samples()?,
-        }))
-    } else {
-        None
-    };
-
-    let mut remaining_samples = max_samples;
-    let mut assignment: Option<Vec<u16>> = None;
-    let mut expected_observed: Option<u128> = None;
-    let mut inc_state = IncrementalReock::new(&reock_geometries);
-    let mut step = 1u64;
-
-    for (accepted, event) in (1u64..).zip(source.open_reader()?.into_twodelta_events()) {
-        if remaining_samples == Some(0) {
-            break;
-        }
-
-        let n_reps = match event? {
-            TwoDeltaFrameEvent::Snapshot {
-                assignment: snapshot,
-                count,
-                ..
-            } => {
-                if snapshot.len() != reock_geometries.units.len() {
-                    return Err(crate::error::Error::AssignmentLength {
-                        actual: snapshot.len(),
-                        expected: reock_geometries.units.len(),
-                    });
-                }
-                inc_state.seed(&snapshot)?;
-                assignment = Some(snapshot);
-                capped_reps(&mut remaining_samples, count)
-            }
-            TwoDeltaFrameEvent::Delta { changes, count } => {
-                let assignment = assignment.as_mut().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "TwoDelta delta event appeared before an initial snapshot",
-                    )
-                })?;
-                let changes = changes
-                    .into_iter()
-                    .map(|(node, old, new)| (node as usize, old, new))
-                    .collect::<Vec<_>>();
-                inc_state.update_delta(assignment, &changes)?;
-                for (node, _old, new) in changes {
-                    assignment[node] = new;
-                }
-                capped_reps(&mut remaining_samples, count)
-            }
-        };
-
-        match expected_observed {
-            None => expected_observed = Some(inc_state.observed()),
-            Some(expected) => {
-                validate_district_set_unchanged(inc_state.observed(), expected, "reock")?;
-            }
-        }
-
-        let scores = inc_state.scores();
-        writer.push_row(
-            step,
-            n_reps as u32,
-            accepted,
-            (inc_state.observed(), &scores),
-        )?;
-        step += n_reps as u64;
-        if let Some(progress_bar) = &progress_bar {
-            progress_bar.inc(n_reps as u64);
-        }
+impl IncrementalTwoDeltaMetric for IncrementalReock<'_> {
+    fn seed(&mut self, assignment: &[u16]) -> crate::error::Result<()> {
+        IncrementalReock::seed(self, assignment)
     }
 
-    if let Some(progress_bar) = progress_bar {
-        progress_bar.finish_and_clear();
+    fn update_delta(
+        &mut self,
+        before: &[u16],
+        changes: &[DeltaChange],
+    ) -> crate::error::Result<()> {
+        IncrementalReock::update_delta(self, before, changes)
     }
 
-    Ok(())
+    fn observed(&self) -> u128 {
+        self.observed()
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -602,17 +514,34 @@ pub fn tally_and_save_reock(
     );
 
     if source.variant()? == BenVariant::TwoDelta {
-        run_incremental_twodelta_reock(
-            &reock_geometries,
+        let mut state = IncrementalReock::new(&reock_geometries);
+        run_incremental_twodelta(
             source,
-            &mut writer,
-            show_progress,
-            max_samples,
+            TwoDeltaRunOptions {
+                expected_len: reock_geometries.units.len(),
+                expected_len_label: "geometry row count",
+                output_name: "reock",
+                show_progress,
+                max_samples,
+            },
+            &mut state,
+            |state,
+             TwoDeltaRow {
+                 step,
+                 n_reps,
+                 accepted,
+             }| {
+                let scores = state.scores();
+                writer.push_row(step, n_reps, accepted, (state.observed(), &scores))
+            },
         )?;
     } else {
         run_pipeline_with_batch_size(
             source,
-            AssignmentLengthCheck::MatchesGeometryFile(reock_geometries.units.len()),
+            AssignmentLengthCheck::Exact {
+                expected: reock_geometries.units.len(),
+                label: "geometry row count",
+            },
             // The pipeline enforces a fixed district set, so the schema fixed from the first row
             // holds.
             "reock",
@@ -626,9 +555,11 @@ pub fn tally_and_save_reock(
             |step, n_reps, accepted, (scores, observed)| {
                 writer.push_row(step, n_reps, accepted, (observed, &scores))
             },
-            show_progress,
-            max_samples,
-            rayon::current_num_threads(),
+            PipelineBatchOptions {
+                show_progress,
+                max_samples,
+                batch_size: rayon::current_num_threads(),
+            },
         )?;
     }
 
@@ -931,24 +862,29 @@ mod tests {
         let mut incremental = IncrementalReock::new(&geometry);
         incremental.seed(&assignment).unwrap();
 
-        let changes = vec![(1, 0, 1), (4, 1, 0), (2, 0, 0)];
+        let changes = vec![
+            DeltaChange {
+                node: 1,
+                old: 0,
+                new: 1,
+            },
+            DeltaChange {
+                node: 4,
+                old: 1,
+                new: 0,
+            },
+            DeltaChange {
+                node: 2,
+                old: 0,
+                new: 0,
+            },
+        ];
         incremental.update_delta(&assignment, &changes).unwrap();
-        for &(node, _old, new) in &changes {
-            assignment[node] = new;
+        for change in &changes {
+            assignment[change.node] = change.new;
         }
 
         let expected = reock_rows(&assignment, &geometry).unwrap();
         assert_states_match(&incremental.state, &expected);
-    }
-
-    #[test]
-    fn incremental_delta_rejects_bad_change_records() {
-        let geometry = incremental_test_geometry();
-        let assignment = vec![0, 0, 0, 1, 1, 1];
-        let mut incremental = IncrementalReock::new(&geometry);
-        incremental.seed(&assignment).unwrap();
-
-        assert!(incremental.update_delta(&assignment, &[(0, 1, 0)]).is_err());
-        assert!(incremental.update_delta(&assignment, &[(6, 0, 1)]).is_err());
     }
 }
