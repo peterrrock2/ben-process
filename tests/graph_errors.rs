@@ -154,7 +154,7 @@ fn graph_backed_modes_report_assignment_length_mismatch() {
     ]);
 
     assert!(
-        stderr.contains("BEN assignment has 4 entries but graph has 6 nodes"),
+        stderr.contains("BEN assignment length is 4 but graph node count is 6"),
         "stderr should explain assignment length mismatch, got: {stderr}"
     );
 }

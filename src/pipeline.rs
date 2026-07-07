@@ -46,20 +46,32 @@ pub const PARQUET_BATCH_ROWS: usize = 512 * 512;
 const BATCH: usize = 256;
 
 /// How every decoded assignment's length is validated. There is deliberately no opt-out: every
-/// mode checks one of these two contracts.
+/// mode checks one of these contracts.
 #[derive(Clone, Copy)]
 pub enum AssignmentLengthCheck {
-    /// Graph-driven modes: every frame must have exactly the graph's node count. A mismatched
-    /// frame fails before the metric runs (a too-long assignment would otherwise be silently
-    /// truncated, a too-short one would panic deep in a metric).
-    MatchesGraph(usize),
+    /// Every frame must have exactly this length. A mismatched frame fails before the metric runs
+    /// so too-long assignments are not silently truncated and too-short assignments do not panic
+    /// deep in a metric.
+    Exact {
+        expected: usize,
+        label: &'static str,
+    },
     /// Graph-free modes: the first frame's length becomes the expectation for the rest of the
     /// file, so a corrupt mixed-length ensemble errors instead of being processed as-is.
     UniformWithinFile,
-    /// Geometry driven modes: every frame must have exactly the geometry file's node count.
-    /// A mismatched frame fails before the metric runs (a too-long assignment would
-    /// otherwise be silently truncated, a too-short one would panic deep in a metric).
-    MatchesGeometryFile(usize),
+}
+
+pub struct PipelineBatchOptions {
+    pub show_progress: bool,
+    pub max_samples: Option<usize>,
+    pub batch_size: usize,
+}
+
+struct PipelineCoreOptions<'a> {
+    district_set_label: Option<&'a str>,
+    show_progress: bool,
+    max_samples: Option<usize>,
+    batch_size: usize,
 }
 
 /// Serial enforcement of [`AssignmentLengthCheck`], in BEN-file order.
@@ -78,14 +90,14 @@ impl LengthGuard {
 
     fn check(&mut self, actual: usize) -> Result<()> {
         match self.check {
-            AssignmentLengthCheck::MatchesGraph(expected) => {
+            AssignmentLengthCheck::Exact { expected, label } => {
                 if actual != expected {
-                    return Err(Error::AssignmentLength { actual, expected });
-                }
-            }
-            AssignmentLengthCheck::MatchesGeometryFile(expected) => {
-                if actual != expected {
-                    return Err(Error::AssignmentLength { actual, expected });
+                    return Err(Error::AssignmentLength {
+                        actual,
+                        actual_label: "BEN assignment length",
+                        expected,
+                        expected_label: label,
+                    });
                 }
             }
             AssignmentLengthCheck::UniformWithinFile => match self.established {
@@ -172,19 +184,21 @@ fn decode_frame(frame: &DecodeFrame) -> io::Result<Vec<u16>> {
 
 fn run_metric_on_assignment<Row, P>(
     process: &P,
-    graph_node_count: Option<usize>,
+    exact_assignment_len: Option<(usize, &'static str)>,
     assignment: &[u16],
     count: u16,
 ) -> Result<(u16, usize, u128, Row)>
 where
     P: Fn(&[u16], u16) -> Result<(u128, Row)> + Sync,
 {
-    if let Some(expected) = graph_node_count {
-        // Graph-driven metrics index assignment[node_idx], so fail before `process` can panic.
+    if let Some((expected, label)) = exact_assignment_len {
+        // Exact-length metrics index assignment[node_idx], so fail before `process` can panic.
         if assignment.len() != expected {
             return Err(Error::AssignmentLength {
                 actual: assignment.len(),
+                actual_label: "BEN assignment length",
                 expected,
+                expected_label: label,
             });
         }
     }
@@ -194,7 +208,7 @@ where
 
 fn process_batch<Row, P>(
     process: &P,
-    graph_node_count: Option<usize>,
+    exact_assignment_len: Option<(usize, &'static str)>,
     frames: &[(DecodeFrame, u16)],
 ) -> Result<Vec<(u16, usize, u128, Row)>>
 where
@@ -205,7 +219,7 @@ where
         .par_iter()
         .map(|(frame, count)| -> Result<(u16, usize, u128, Row)> {
             let assignment = decode_frame(frame)?;
-            run_metric_on_assignment(process, graph_node_count, &assignment, *count)
+            run_metric_on_assignment(process, exact_assignment_len, &assignment, *count)
         })
         .collect::<Vec<_>>()
         .into_iter()
@@ -214,7 +228,7 @@ where
 
 fn process_assignment_batch<Row, P>(
     process: &P,
-    graph_node_count: Option<usize>,
+    exact_assignment_len: Option<(usize, &'static str)>,
     records: &[(Vec<u16>, u16)],
 ) -> Result<Vec<(u16, usize, u128, Row)>>
 where
@@ -224,7 +238,7 @@ where
     records
         .par_iter()
         .map(|(assignment, count)| {
-            run_metric_on_assignment(process, graph_node_count, assignment, *count)
+            run_metric_on_assignment(process, exact_assignment_len, assignment, *count)
         })
         .collect::<Vec<_>>()
         .into_iter()
@@ -335,12 +349,12 @@ where
 /// `process` takes `(&[u16], u16)` = `(assignment, n_reps)` and is invoked inside the rayon pool;
 /// it must be `Sync` and produce `Send` rows.
 ///
-/// `length_check` is [`AssignmentLengthCheck::MatchesGraph`] (the graph's node count) for
-/// graph-driven modes — every decoded assignment is asserted to match it before `process` runs, so
-/// a BEN file that disagrees with the graph fails loudly instead of mistallying — or
-/// [`AssignmentLengthCheck::UniformWithinFile`] for modes that don't tie assignments to a graph;
-/// there, the first frame fixes the expected length and the check runs before each row reaches
-/// `on_row`.
+/// `length_check` is [`AssignmentLengthCheck::Exact`] for modes tied to an external row count
+/// (graph nodes, geometry rows, ...): every decoded assignment is asserted to match it before
+/// `process` runs, so a BEN file that disagrees with the input fails loudly instead of mistallying.
+/// Modes that do not tie assignments to an external input use
+/// [`AssignmentLengthCheck::UniformWithinFile`]; there, the first frame fixes the expected length
+/// and the check runs before each row reaches `on_row`.
 ///
 /// The total sample count needed to size the progress bar is computed here (a single extra pass
 /// over the file) only when `show_progress` is set, so `-q/--quiet` runs never pay for it.
@@ -361,12 +375,14 @@ where
     run_pipeline_core(
         source,
         length_check,
-        Some(district_set_label),
         process,
         on_row,
-        show_progress,
-        max_samples,
-        BATCH,
+        PipelineCoreOptions {
+            district_set_label: Some(district_set_label),
+            show_progress,
+            max_samples,
+            batch_size: BATCH,
+        },
     )
 }
 
@@ -376,9 +392,7 @@ pub fn run_pipeline_with_batch_size<Row, P, F>(
     district_set_label: &str,
     process: P,
     on_row: F,
-    show_progress: bool,
-    max_samples: Option<usize>,
-    batch_size: usize,
+    options: PipelineBatchOptions,
 ) -> Result<()>
 where
     Row: Send,
@@ -388,12 +402,14 @@ where
     run_pipeline_core(
         source,
         length_check,
-        Some(district_set_label),
         process,
         on_row,
-        show_progress,
-        max_samples,
-        batch_size.max(1),
+        PipelineCoreOptions {
+            district_set_label: Some(district_set_label),
+            show_progress: options.show_progress,
+            max_samples: options.max_samples,
+            batch_size: options.batch_size.max(1),
+        },
     )
 }
 
@@ -416,13 +432,15 @@ where
     run_pipeline_core(
         source,
         length_check,
-        None,
         // The unchecked district set: `DistrictSetGuard` ignores it when no label is given.
         move |assignment, n_reps| Ok((0u128, process(assignment, n_reps)?)),
         on_row,
-        show_progress,
-        max_samples,
-        BATCH,
+        PipelineCoreOptions {
+            district_set_label: None,
+            show_progress,
+            max_samples,
+            batch_size: BATCH,
+        },
     )
 }
 
@@ -431,12 +449,9 @@ where
 fn run_pipeline_core<Row, P, F>(
     source: &BenSource,
     length_check: AssignmentLengthCheck,
-    district_set_label: Option<&str>,
     process: P,
     mut on_row: F,
-    show_progress: bool,
-    max_samples: Option<usize>,
-    batch_size: usize,
+    options: PipelineCoreOptions<'_>,
 ) -> Result<()>
 where
     Row: Send,
@@ -450,8 +465,8 @@ where
         .unwrap_or_default();
     log::info!("Reading {:?}...", basename);
 
-    let progress_bar = if show_progress {
-        Some(make_progress_bar(match max_samples {
+    let progress_bar = if options.show_progress {
+        Some(make_progress_bar(match options.max_samples {
             Some(n) => n,
             None => source.count_samples()?,
         }))
@@ -461,29 +476,28 @@ where
 
     let mut sample_count: u64 = 1;
     let mut accepted_count: u64 = 1;
-    let mut remaining_samples = max_samples;
-    // The parallel pre-check inside `process_batch` only applies to `MatchesGraph`; the serial
-    // guards below enforce both contracts in BEN-file order before each row reaches `on_row`.
-    let graph_node_count = match length_check {
-        AssignmentLengthCheck::MatchesGraph(node_count) => Some(node_count),
-        AssignmentLengthCheck::MatchesGeometryFile(geo_count) => Some(geo_count),
+    let mut remaining_samples = options.max_samples;
+    // The parallel pre-check applies to exact-length modes; the serial guards below enforce every
+    // contract in BEN-file order before each row reaches `on_row`.
+    let exact_assignment_len = match length_check {
+        AssignmentLengthCheck::Exact { expected, label } => Some((expected, label)),
         AssignmentLengthCheck::UniformWithinFile => None,
     };
     let mut length_guard = LengthGuard::new(length_check);
-    let mut district_guard = DistrictSetGuard::new(district_set_label);
+    let mut district_guard = DistrictSetGuard::new(options.district_set_label);
     let variant = source.variant()?;
 
     if variant == BenVariant::TwoDelta {
         let mut records = source.open_reader()?;
-        let mut batch: Vec<(Vec<u16>, u16)> = Vec::with_capacity(batch_size);
+        let mut batch: Vec<(Vec<u16>, u16)> = Vec::with_capacity(options.batch_size);
         while remaining_samples != Some(0) {
             let Some(record_res) = records.next() else {
                 break;
             };
             let (assignment, n_reps) = record_res?;
             batch.push((assignment, capped_reps(&mut remaining_samples, n_reps)));
-            if batch.len() == batch_size {
-                let results = process_assignment_batch(&process, graph_node_count, &batch)?;
+            if batch.len() == options.batch_size {
+                let results = process_assignment_batch(&process, exact_assignment_len, &batch)?;
                 forward_results(
                     results,
                     &mut length_guard,
@@ -496,7 +510,7 @@ where
                 batch.clear();
             }
         }
-        let results = process_assignment_batch(&process, graph_node_count, &batch)?;
+        let results = process_assignment_batch(&process, exact_assignment_len, &batch)?;
         forward_results(
             results,
             &mut length_guard,
@@ -508,15 +522,15 @@ where
         )?;
     } else {
         let mut frames = source.open_frames()?;
-        let mut batch: Vec<(DecodeFrame, u16)> = Vec::with_capacity(batch_size);
+        let mut batch: Vec<(DecodeFrame, u16)> = Vec::with_capacity(options.batch_size);
         while remaining_samples != Some(0) {
             let Some(frame_res) = frames.next() else {
                 break;
             };
             let (frame, n_reps) = frame_res?;
             batch.push((frame, capped_reps(&mut remaining_samples, n_reps)));
-            if batch.len() == batch_size {
-                let results = process_batch(&process, graph_node_count, &batch)?;
+            if batch.len() == options.batch_size {
+                let results = process_batch(&process, exact_assignment_len, &batch)?;
                 forward_results(
                     results,
                     &mut length_guard,
@@ -529,7 +543,7 @@ where
                 batch.clear();
             }
         }
-        let results = process_batch(&process, graph_node_count, &batch)?;
+        let results = process_batch(&process, exact_assignment_len, &batch)?;
         forward_results(
             results,
             &mut length_guard,
@@ -541,7 +555,7 @@ where
         )?;
     }
 
-    if let Some(requested) = max_samples {
+    if let Some(requested) = options.max_samples {
         let processed = requested - remaining_samples.unwrap_or(0);
         if processed < requested {
             log::info!(
@@ -587,6 +601,13 @@ mod tests {
         file
     }
 
+    fn exact_graph(expected: usize) -> AssignmentLengthCheck {
+        AssignmentLengthCheck::Exact {
+            expected,
+            label: "graph node count",
+        }
+    }
+
     #[test]
     fn count_samples_and_frames_diverge_for_mkvchain_repetitions() {
         let ben_file = write_ben_file(
@@ -609,7 +630,7 @@ mod tests {
         let mut rows = Vec::new();
         run_label_invariant_pipeline(
             &ben_source(&ben_file),
-            AssignmentLengthCheck::MatchesGraph(4),
+            exact_graph(4),
             |assignment, n_reps| Ok((assignment[0], n_reps)),
             |step, n_reps, accepted, row| {
                 rows.push((step, n_reps, accepted, row));
@@ -638,7 +659,7 @@ mod tests {
         let mut rows = Vec::new();
         run_label_invariant_pipeline(
             &ben_source(&ben_file),
-            AssignmentLengthCheck::MatchesGraph(4),
+            exact_graph(4),
             |assignment, n_reps| Ok((assignment[0], n_reps)),
             |step, n_reps, accepted, row| {
                 rows.push((step, n_reps, accepted, row));
@@ -661,7 +682,7 @@ mod tests {
         let mut standard_rows = Vec::new();
         run_label_invariant_pipeline(
             &ben_source(&standard_file),
-            AssignmentLengthCheck::MatchesGraph(4),
+            exact_graph(4),
             |assignment, n_reps| Ok((assignment.to_vec(), n_reps)),
             |step, n_reps, accepted, row| {
                 standard_rows.push((step, n_reps, accepted, row));
@@ -675,7 +696,7 @@ mod tests {
         let mut twodelta_rows = Vec::new();
         run_label_invariant_pipeline(
             &ben_source(&twodelta_file),
-            AssignmentLengthCheck::MatchesGraph(4),
+            exact_graph(4),
             |assignment, n_reps| Ok((assignment.to_vec(), n_reps)),
             |step, n_reps, accepted, row| {
                 twodelta_rows.push((step, n_reps, accepted, row));
@@ -704,7 +725,7 @@ mod tests {
         let mut rows = Vec::new();
         run_label_invariant_pipeline(
             &ben_source(&ben_file),
-            AssignmentLengthCheck::MatchesGraph(4),
+            exact_graph(4),
             |assignment, n_reps| Ok((assignment[0], n_reps)),
             |step, n_reps, accepted, row| {
                 rows.push((step, n_reps, accepted, row));
@@ -751,7 +772,7 @@ mod tests {
         let ben_file = write_ben_file(BenVariant::Standard, &[vec![0, 1, 2, 1]]);
         run_label_invariant_pipeline(
             &ben_source(&ben_file),
-            AssignmentLengthCheck::MatchesGraph(expected_len),
+            exact_graph(expected_len),
             |assignment, _n_reps| Ok(assignment.len()),
             |_step, _n_reps, _accepted, _row| Ok(()),
             false,
@@ -766,7 +787,7 @@ mod tests {
         let err = run_pipeline_with_expected_len(3).unwrap_err();
         assert_eq!(
             err.to_string(),
-            "BEN assignment has 4 entries but graph has 3 nodes"
+            "BEN assignment length is 4 but graph node count is 3"
         );
     }
 
@@ -775,7 +796,7 @@ mod tests {
         let err = run_pipeline_with_expected_len(5).unwrap_err();
         assert_eq!(
             err.to_string(),
-            "BEN assignment has 4 entries but graph has 5 nodes"
+            "BEN assignment length is 4 but graph node count is 5"
         );
     }
 
@@ -822,7 +843,7 @@ mod tests {
         let mut rows = Vec::new();
         run_label_invariant_pipeline(
             &ben_source(&ben_file),
-            AssignmentLengthCheck::MatchesGraph(2),
+            exact_graph(2),
             |assignment, _n_reps| Ok(assignment[0]),
             |step, n_reps, accepted, marker| {
                 rows.push((step, n_reps, accepted, marker));
@@ -851,7 +872,7 @@ mod tests {
         let ben_file = write_ben_file(BenVariant::Standard, &[vec![1, 1, 2, 2], vec![1, 1, 1, 1]]);
         let err = run_pipeline(
             &ben_source(&ben_file),
-            AssignmentLengthCheck::MatchesGraph(4),
+            exact_graph(4),
             "cut-edges",
             |assignment, _n_reps| {
                 let mut observed = 0u128;

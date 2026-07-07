@@ -40,9 +40,14 @@ pub enum Error {
     #[error("CRS error: {0}")]
     Crs(String),
 
-    /// A decoded BEN assignment's length disagrees with the graph's node count.
-    #[error("BEN assignment has {actual} entries but graph has {expected} nodes")]
-    AssignmentLength { actual: usize, expected: usize },
+    /// A decoded BEN assignment's length disagrees with an exact-length input contract.
+    #[error("{actual_label} is {actual} but {expected_label} is {expected}")]
+    AssignmentLength {
+        actual: usize,
+        actual_label: &'static str,
+        expected: usize,
+        expected_label: &'static str,
+    },
 
     /// A district id is at or beyond the dense `u128`-bitmask limit.
     #[error("district id {id} exceeds current {limit}-district limit; widen the observed bitmask")]

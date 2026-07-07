@@ -28,7 +28,7 @@ fn failed_cut_edges_run_leaves_no_output_file() {
         "-q",
     ]);
     assert!(
-        stderr.contains("BEN assignment has 4 entries but graph has 6 nodes"),
+        stderr.contains("BEN assignment length is 4 but graph node count is 6"),
         "unexpected stderr: {stderr}"
     );
     assert!(
