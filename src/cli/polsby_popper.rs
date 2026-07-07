@@ -1,4 +1,7 @@
 use super::{build_output_path, resolve_graph, CommonArgs};
+use crate::geometry::{
+    load_polsby_popper_geometry_from_geoparquet, PolsbyPopperGeometryLoadOptions,
+};
 use crate::graph::{EdgeWeightRequest, GraphLoadRequest};
 use crate::input;
 use crate::metrics;
@@ -18,6 +21,18 @@ pub struct PolsbyPopperArgs {
     pub boundary_perim_key: Option<String>,
     #[arg(long)]
     pub shared_perim_key: Option<String>,
+    #[arg(long)]
+    pub geometry_file: Option<String>,
+    #[arg(long)]
+    pub geometry_column: Option<String>,
+    #[arg(long)]
+    pub allow_geographic_crs: bool,
+    #[arg(long)]
+    pub allow_unknown_crs: bool,
+    #[arg(long)]
+    pub target_crs: Option<String>,
+    #[arg(long)]
+    pub source_crs: Option<String>,
     /// Stop after this many expanded samples.
     #[arg(long)]
     pub max_samples: Option<usize>,
@@ -27,6 +42,47 @@ pub struct PolsbyPopperArgs {
 }
 
 pub fn run(args: PolsbyPopperArgs, show_progress: bool) -> crate::error::Result<()> {
+    let resolved = input::resolve(args.common.ben_file())?;
+    let need_adjacency = resolved.source.variant()? == BenVariant::TwoDelta;
+
+    if let Some(geometry_file) = &args.geometry_file {
+        let graph = resolve_graph(
+            args.graph_file.as_deref(),
+            &resolved,
+            GraphLoadRequest {
+                need_adjacency,
+                ..Default::default()
+            },
+        )?;
+        let geometry = load_polsby_popper_geometry_from_geoparquet(
+            geometry_file,
+            PolsbyPopperGeometryLoadOptions {
+                geometry_column: args.geometry_column.as_deref(),
+                source_crs: args.source_crs.as_deref(),
+                target_crs: args.target_crs.as_deref(),
+                allow_geographic_crs: args.allow_geographic_crs,
+                allow_unknown_crs: args.allow_unknown_crs,
+            },
+            &graph.edges,
+            graph.node_count,
+        )?;
+        let output_file = build_output_path(
+            args.common.ben_file(),
+            "_polsby_popper.parquet",
+            args.common.output_dir(),
+        );
+
+        return metrics::polsby_popper::tally_and_save_polsby_popper_from_geometry(
+            graph,
+            &resolved.source,
+            output_file.as_str(),
+            geometry,
+            show_progress,
+            args.max_samples,
+            args.high_compression,
+        );
+    }
+
     let area_key = args.area_key.clone().unwrap_or_else(|| "area".to_string());
     let shared_perim_key = args
         .shared_perim_key
@@ -55,8 +111,6 @@ pub fn run(args: PolsbyPopperArgs, show_progress: bool) -> crate::error::Result<
         partial_numeric_keys.push(boundary_perim_key.clone());
     }
 
-    let resolved = input::resolve(args.common.ben_file())?;
-    let need_adjacency = resolved.source.variant()? == BenVariant::TwoDelta;
     let graph = resolve_graph(
         args.graph_file.as_deref(),
         &resolved,

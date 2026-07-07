@@ -1,4 +1,5 @@
 use crate::district::{observe_district, validate_district_set_unchanged, MAX_DISTRICTS};
+use crate::geometry::PolsbyPopperGeometries;
 use crate::graph::Graph;
 use crate::input::BenSource;
 use crate::metrics::twodelta::PostDeltaLabels;
@@ -380,6 +381,57 @@ pub fn tally_and_save_polsby_popper(
         derive_total_perimeters(boundary_perimeters, &graph.edges, shared_perimeters)
     };
 
+    let area_values = area_values.to_vec();
+    let shared_perimeters = shared_perimeters.to_vec();
+
+    tally_and_save_polsby_popper_from_values(
+        graph,
+        source,
+        out_file_name,
+        area_values,
+        total_perimeters,
+        shared_perimeters,
+        show_progress,
+        max_samples,
+        high_compression,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn tally_and_save_polsby_popper_from_geometry(
+    graph: Graph,
+    source: &BenSource,
+    out_file_name: &str,
+    geometry: PolsbyPopperGeometries,
+    show_progress: bool,
+    max_samples: Option<usize>,
+    high_compression: bool,
+) -> crate::error::Result<()> {
+    tally_and_save_polsby_popper_from_values(
+        graph,
+        source,
+        out_file_name,
+        geometry.area_values,
+        geometry.total_perimeter_values,
+        geometry.shared_perimeters,
+        show_progress,
+        max_samples,
+        high_compression,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn tally_and_save_polsby_popper_from_values(
+    graph: Graph,
+    source: &BenSource,
+    out_file_name: &str,
+    area_values: Vec<f64>,
+    total_perimeters: Vec<f64>,
+    shared_perimeters: Vec<f64>,
+    show_progress: bool,
+    max_samples: Option<usize>,
+    high_compression: bool,
+) -> crate::error::Result<()> {
     // The writer fixes its district-column schema from the first row's observed set and creates
     // the output file at that point; a run that fails before decoding a plan leaves no file.
     let out_path = out_file_name.to_string();
@@ -394,9 +446,9 @@ pub fn tally_and_save_polsby_popper(
             &graph,
             source,
             &mut writer,
-            area_values,
+            &area_values,
             &total_perimeters,
-            shared_perimeters,
+            &shared_perimeters,
             show_progress,
             max_samples,
         )?;
@@ -410,10 +462,10 @@ pub fn tally_and_save_polsby_popper(
             |assignment, _n_reps| {
                 let (scores, _n_districts, observed) = polsby_popper_rows(
                     assignment,
-                    area_values,
+                    &area_values,
                     &total_perimeters,
                     &graph.edges,
-                    shared_perimeters,
+                    &shared_perimeters,
                 )?;
                 Ok((observed, (scores, observed)))
             },
