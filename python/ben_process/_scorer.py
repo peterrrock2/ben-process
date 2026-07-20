@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import math
 import numbers
@@ -56,6 +57,8 @@ class PlanScorer:
         self._tally_keys = []
         self._metrics = {}
         self._rust_backend_scorer = None
+        self._default_ben_source = None
+        self._bendl_custom_asset_names = None
 
         if graph is not None:
             self.add_graph(graph)
@@ -69,6 +72,51 @@ class PlanScorer:
                 allow_geographic_crs=allow_geographic_crs,
                 allow_unknown_crs=allow_unknown_crs,
             )
+
+    @classmethod
+    def from_bendl(
+        cls,
+        path,
+        *,
+        geometry_asset_name=None,
+        node_id=None,
+        geometry_column=None,
+        source_crs=None,
+        target_crs=None,
+        allow_geographic_crs=False,
+        allow_unknown_crs=False,
+    ):
+        path = os.fspath(path)
+        graph_bytes, custom_asset_names, geometry_bytes = (
+            _rust_backend.load_bendl_assets(path, geometry_asset_name)
+        )
+        if graph_bytes is None and geometry_asset_name is None:
+            raise ValueError(
+                "BENDL bundle has no embedded graph; geometry_asset_name is required; "
+                f"available custom assets: {custom_asset_names!r}"
+            )
+        if graph_bytes is not None and geometry_asset_name is not None and node_id is None:
+            raise ValueError(
+                "node_id is required when a BENDL bundle provides both graph and geometry"
+            )
+
+        scorer = cls()
+        if graph_bytes is not None:
+            node_order, graph = _graph_snapshot_from_adjacency_json(graph_bytes)
+            scorer._set_graph_snapshot(node_order, graph)
+        if geometry_bytes is not None:
+            scorer.add_gdf(
+                _read_geoparquet_bytes(geometry_bytes),
+                node_id=node_id,
+                geometry_column=geometry_column,
+                source_crs=source_crs,
+                target_crs=target_crs,
+                allow_geographic_crs=allow_geographic_crs,
+                allow_unknown_crs=allow_unknown_crs,
+            )
+        scorer._default_ben_source = path
+        scorer._bendl_custom_asset_names = tuple(custom_asset_names)
+        return scorer
 
     def add_graph(self, graph):
         if self._graph_frozen:
@@ -103,16 +151,23 @@ class PlanScorer:
             edge_data.append(dict(data))
 
         ordered = sorted(zip(edges, edge_data), key=lambda item: item[0])
-        self._graph = _GraphSnapshot(
-            node_data=node_data,
-            edges=tuple(edge for edge, _ in ordered),
-            edge_data=tuple(data for _, data in ordered),
+        self._set_graph_snapshot(
+            self._node_order,
+            _GraphSnapshot(
+                node_data=node_data,
+                edges=tuple(edge for edge, _ in ordered),
+                edge_data=tuple(data for _, data in ordered),
+            ),
         )
+        return self
+
+    def _set_graph_snapshot(self, node_order, graph):
+        self._establish_or_validate_order(tuple(node_order), "graph nodes")
+        self._graph = graph
         self._prepared_node_keys.clear()
         self._prepared_edge_keys.clear()
         self._prepared_edges = False
         self._rust_backend_scorer = None
-        return self
 
     def add_gdf(
         self,
@@ -233,9 +288,9 @@ class PlanScorer:
     def score_ben_file(self, output_dir, *, source=None):
         backend = self._prepare_rust_backend()
         if source is None:
-            raise ValueError(
-                "source is required unless the scorer was created with PlanScorer.from_bendl"
-            )
+            source = self._default_ben_source
+        if source is None:
+            raise ValueError("source is required unless the scorer came from PlanScorer.from_bendl")
         backend.score_ben_file(
             os.fspath(output_dir),
             os.fspath(source),
@@ -420,6 +475,11 @@ class PlanScorer:
 
     def _require_geometry(self, metric):
         if self._geometry is None:
+            if self._bendl_custom_asset_names is not None:
+                raise RuntimeError(
+                    f"{metric} requires an explicit BENDL geometry_asset_name; "
+                    f"available custom assets: {list(self._bendl_custom_asset_names)!r}"
+                )
             raise RuntimeError(f"{metric} requires a geometry resource")
         return self._geometry
 
@@ -430,6 +490,92 @@ class PlanScorer:
 def _graph_flag(graph, name):
     value = getattr(graph, name, False)
     return bool(value() if callable(value) else value)
+
+
+def _graph_snapshot_from_adjacency_json(contents):
+    try:
+        data = json.loads(contents)
+    except (TypeError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"failed to parse embedded graph JSON: {error}") from error
+    if not isinstance(data, dict):
+        raise ValueError("embedded graph JSON must be an object")
+    if data.get("directed") is not False:
+        raise ValueError("embedded graph must be marked undirected")
+    if data.get("multigraph") is not False:
+        raise ValueError("embedded graph must be marked as a simple graph")
+
+    nodes = data.get("nodes")
+    adjacency = data.get("adjacency")
+    if not isinstance(nodes, list) or not all(isinstance(node, dict) for node in nodes):
+        raise ValueError("embedded graph nodes must be a list of objects")
+    if not isinstance(adjacency, list) or len(adjacency) != len(nodes):
+        raise ValueError("embedded graph adjacency must have one list per node")
+
+    nodes_with_id = sum("id" in node for node in nodes)
+    if nodes_with_id not in {0, len(nodes)}:
+        raise ValueError('embedded graph node "id" must be present on every node or none')
+    node_order = tuple(
+        node["id"] if nodes_with_id else index for index, node in enumerate(nodes)
+    )
+    try:
+        node_index = {key: index for index, key in enumerate(node_order)}
+    except TypeError as error:
+        raise ValueError("embedded graph node ids must be hashable JSON scalars") from error
+    if len(node_index) != len(nodes):
+        raise ValueError("embedded graph node ids must be unique")
+
+    edge_data = {}
+    for source, neighbors in enumerate(adjacency):
+        if not isinstance(neighbors, list):
+            raise ValueError(f"embedded graph adjacency entry {source} must be a list")
+        for target_data in neighbors:
+            if not isinstance(target_data, dict) or "id" not in target_data:
+                raise ValueError(
+                    f"embedded graph adjacency entry {source} has an edge without an id"
+                )
+            try:
+                target = node_index[target_data["id"]]
+            except (KeyError, TypeError) as error:
+                raise ValueError(
+                    f"embedded graph adjacency entry {source} references an unknown node id"
+                ) from error
+            if source == target:
+                raise ValueError(f"embedded graph contains a self-loop at node {source}")
+
+            edge = (min(source, target), max(source, target))
+            attributes = {key: value for key, value in target_data.items() if key != "id"}
+            existing = edge_data.setdefault(edge, {})
+            for key, value in attributes.items():
+                if (
+                    key in existing
+                    and existing[key] is not None
+                    and value is not None
+                    and existing[key] != value
+                ):
+                    raise ValueError(
+                        f"embedded graph edge {edge} has conflicting values for {key!r}"
+                    )
+                if value is not None or key not in existing:
+                    existing[key] = value
+
+    ordered = sorted(edge_data.items())
+    return node_order, _GraphSnapshot(
+        node_data=tuple(
+            {key: value for key, value in node.items() if key != "id"} for node in nodes
+        ),
+        edges=tuple(edge for edge, _ in ordered),
+        edge_data=tuple(attributes for _, attributes in ordered),
+    )
+
+
+def _read_geoparquet_bytes(contents):
+    try:
+        import geopandas
+    except ImportError as error:
+        raise ImportError(
+            "reading a BENDL geometry asset requires ben-process[geometry]"
+        ) from error
+    return geopandas.read_parquet(io.BytesIO(contents))
 
 
 def _required_graph_inputs(metric):
