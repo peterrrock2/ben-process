@@ -24,6 +24,26 @@ Or run directly with:
 cargo run -- <args...>
 ```
 
+## Python API
+
+Build the extension into a virtual environment with `maturin develop`, then prepare resources once
+and score assignment vectors repeatedly:
+
+```python
+from ben_process import PlanScorer
+from ben_process.metrics import Tally
+
+scorer = PlanScorer(graph).add_metric(Tally(keys=["POP", "VAP"]))
+result = scorer.compute_many(assignments)
+
+result.values       # float64 NumPy array
+result.columns      # (metric, subkey, district_id) tuples
+result.to_pandas()  # optional pandas adapter
+result.to_arrow()   # optional Arrow adapter
+```
+
+`PlanScorer` also accepts GeoDataFrames for Rust-backed Reock and Polsby-Popper scoring.
+
 ## CLI
 
 ```text
