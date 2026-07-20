@@ -54,6 +54,22 @@ scorer.score_ben_file("scores/", source="plans.bendl")
 The directory contains `manifest.json` plus one Parquet table per metric output. Existing output
 paths are never overwritten.
 
+Build a scorer directly from a BENDL bundle with an embedded graph and, optionally, one explicitly
+named GeoParquet asset:
+
+```python
+scorer = PlanScorer.from_bendl(
+    "plans.bendl",
+    geometry_asset_name="units.parquet",
+    node_id="GEOID",
+    target_crs="EPSG:26913",
+)
+```
+
+Geometry assets are selected by exact name and read from the bundle in memory. When both graph and
+geometry assets are present, `node_id` is required to align their independent row orders. The
+bundle becomes the default source for `scorer.score_ben_file("scores/")`.
+
 ## CLI
 
 ```text
