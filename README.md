@@ -455,3 +455,17 @@ ben-process extract-unique-plans \
   --ben-file runs/plans.jsonl.ben \
   --output-dir out
 ```
+
+## Acceptance harness
+
+Run the end-to-end Python scoring checks against a deterministic 1,000-step chain generated from
+the latest commit on RustReCom's `0.1.4` branch:
+
+```bash
+task acceptance-rustrecom
+```
+
+The harness compares CLI and Python outputs for Tally, Reock, and both Polsby-Popper input modes.
+It also checks the combined run's metric order and verifies that its step and repetition metadata
+cover exactly 1,000 samples. The RustReCom checkout and generated artifacts are temporary; failed
+runs retain their working directory for inspection.

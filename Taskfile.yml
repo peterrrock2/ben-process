@@ -16,6 +16,11 @@ tasks:
     cmds:
       - cargo test
 
+  acceptance-rustrecom:
+    desc: Compare CLI and Python scoring on a 1,000-step RustReCom chain
+    cmds:
+      - uv run --no-project --with-editable '.[geometry,arrow]' python scripts/acceptance_rustrecom.py
+
   format:
     desc: Format code with rustfmt
     cmds:
