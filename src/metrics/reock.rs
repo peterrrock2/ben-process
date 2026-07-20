@@ -42,6 +42,11 @@ impl PreparedReock {
         self.score_checked_assignment(assignment)
     }
 
+    #[cfg(feature = "python")]
+    pub(crate) fn node_count(&self) -> usize {
+        self.geometry.units.len()
+    }
+
     fn score_checked_assignment(
         &self,
         assignment: &[u16],
@@ -341,7 +346,7 @@ fn reock_rows(
     })
 }
 
-struct IncrementalReock<'g> {
+pub(crate) struct IncrementalReock<'g> {
     reock_geometries: &'g ReockGeometries,
     state: ReockState,
     hull_point_scratch: Vec<Coord<f64>>,
@@ -351,7 +356,8 @@ struct IncrementalReock<'g> {
 }
 
 impl<'g> IncrementalReock<'g> {
-    fn new(reock_geometries: &'g ReockGeometries) -> Self {
+    pub(crate) fn new(metric: &'g PreparedReock) -> Self {
+        let reock_geometries = &metric.geometry;
         Self {
             reock_geometries,
             state: ReockState {
@@ -513,6 +519,16 @@ impl<'g> IncrementalReock<'g> {
     fn observed(&self) -> u128 {
         self.state.observed
     }
+
+    #[cfg(feature = "python")]
+    pub(crate) fn output(&self) -> PreparedMetricOutput {
+        PreparedMetricOutput {
+            values: self.scores(),
+            table_count: 1,
+            district_slots: MAX_DISTRICTS as usize,
+            observed: self.observed(),
+        }
+    }
 }
 
 impl IncrementalTwoDeltaMetric for IncrementalReock<'_> {
@@ -553,7 +569,7 @@ pub fn tally_and_save_reock(
     );
 
     if source.variant()? == BenVariant::TwoDelta {
-        let mut state = IncrementalReock::new(&metric.geometry);
+        let mut state = IncrementalReock::new(&metric);
         run_incremental_twodelta(
             source,
             TwoDeltaRunOptions {
@@ -904,8 +920,9 @@ mod tests {
     #[test]
     fn incremental_delta_matches_full_recompute_after_moves() {
         let geometry = incremental_test_geometry();
+        let metric = PreparedReock::new(geometry);
         let mut assignment = vec![0, 0, 0, 1, 1, 1];
-        let mut incremental = IncrementalReock::new(&geometry);
+        let mut incremental = IncrementalReock::new(&metric);
         incremental.seed(&assignment).unwrap();
 
         let changes = vec![
@@ -930,7 +947,7 @@ mod tests {
             assignment[change.node] = change.new;
         }
 
-        let expected = reock_rows(&assignment, &geometry).unwrap();
+        let expected = reock_rows(&assignment, &metric.geometry).unwrap();
         assert_states_match(&incremental.state, &expected);
     }
 }

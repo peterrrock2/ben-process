@@ -98,7 +98,7 @@ impl Graph {
     }
 }
 
-fn build_csr_adjacency(node_count: usize, edges: &[(u32, u32)]) -> CsrAdjacency {
+pub(crate) fn build_csr_adjacency(node_count: usize, edges: &[(u32, u32)]) -> CsrAdjacency {
     let mut offsets = vec![0u32; node_count + 1];
     for &(u, v) in edges {
         offsets[u as usize + 1] += 1;

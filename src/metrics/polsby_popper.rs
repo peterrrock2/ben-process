@@ -1,6 +1,6 @@
 use crate::district::{observe_district, MAX_DISTRICTS};
 use crate::geometry::PolsbyPopperGeometries;
-use crate::graph::Graph;
+use crate::graph::{build_csr_adjacency, CsrAdjacency, Graph};
 use crate::input::BenSource;
 use crate::metrics::twodelta::{
     run_incremental_twodelta, DeltaChange, IncrementalTwoDeltaMetric, PostDeltaLabels, TwoDeltaRow,
@@ -22,6 +22,7 @@ pub struct PreparedPolsbyPopper {
     total_perimeter_values: Vec<f64>,
     edges: Vec<(u32, u32)>,
     shared_perimeters: Vec<f64>,
+    adjacency: CsrAdjacency,
 }
 
 impl PreparedPolsbyPopper {
@@ -69,12 +70,14 @@ impl PreparedPolsbyPopper {
             .into());
         }
 
+        let adjacency = build_csr_adjacency(node_count, &edges);
         Ok(Self {
             node_count,
             area_values,
             total_perimeter_values,
             edges,
             shared_perimeters,
+            adjacency,
         })
     }
 
@@ -138,6 +141,16 @@ impl PreparedPolsbyPopper {
             "assignment length",
         )?;
         self.score_checked_assignment(assignment)
+    }
+
+    #[cfg(feature = "python")]
+    pub(crate) fn node_count(&self) -> usize {
+        self.node_count
+    }
+
+    fn neighbors(&self, node: usize) -> &[(u32, u32)] {
+        &self.adjacency.neighbors
+            [self.adjacency.offsets[node] as usize..self.adjacency.offsets[node + 1] as usize]
     }
 
     fn score_checked_assignment(
@@ -241,11 +254,8 @@ fn polsby_popper_rows(
 ///
 /// `update_delta` expects `before` to still be the pre-delta assignment; the caller applies the
 /// changes only after node totals and incident-edge perimeter adjustments have been patched.
-struct IncrementalPolsbyPopper<'g> {
-    graph: &'g Graph,
-    area_values: &'g [f64],
-    total_perimeter_values: &'g [f64],
-    shared_perimeters: &'g [f64],
+pub(crate) struct IncrementalPolsbyPopper<'g> {
+    metric: &'g PreparedPolsbyPopper,
     area_by_district: Vec<f64>,
     perimeter_by_district: Vec<f64>,
     node_counts: Vec<u32>,
@@ -256,23 +266,15 @@ struct IncrementalPolsbyPopper<'g> {
 }
 
 impl<'g> IncrementalPolsbyPopper<'g> {
-    fn new(
-        graph: &'g Graph,
-        area_values: &'g [f64],
-        total_perimeter_values: &'g [f64],
-        shared_perimeters: &'g [f64],
-    ) -> Self {
+    pub(crate) fn new(metric: &'g PreparedPolsbyPopper) -> Self {
         Self {
-            graph,
-            area_values,
-            total_perimeter_values,
-            shared_perimeters,
+            metric,
             area_by_district: vec![0.0; MAX_DISTRICTS as usize],
             perimeter_by_district: vec![0.0; MAX_DISTRICTS as usize],
             node_counts: vec![0; MAX_DISTRICTS as usize],
             observed: 0,
-            post_delta_labels: PostDeltaLabels::new(graph.node_count),
-            seen_edges: vec![0; graph.edges.len()],
+            post_delta_labels: PostDeltaLabels::new(metric.node_count),
+            seen_edges: vec![0; metric.edges.len()],
             gen: 0,
         }
     }
@@ -288,15 +290,16 @@ impl<'g> IncrementalPolsbyPopper<'g> {
             observe_district(&mut self.observed, district)?;
             let district = district as usize;
             self.node_counts[district] += 1;
-            self.area_by_district[district] += self.area_values[node];
-            self.perimeter_by_district[district] += self.total_perimeter_values[node];
+            self.area_by_district[district] += self.metric.area_values[node];
+            self.perimeter_by_district[district] += self.metric.total_perimeter_values[node];
         }
 
-        for (edge_index, &(node_u, node_v)) in self.graph.edges.iter().enumerate() {
+        for (edge_index, &(node_u, node_v)) in self.metric.edges.iter().enumerate() {
             let district_u = assignment[node_u as usize] as usize;
             let district_v = assignment[node_v as usize] as usize;
             if district_u == district_v {
-                self.perimeter_by_district[district_u] -= 2.0 * self.shared_perimeters[edge_index];
+                self.perimeter_by_district[district_u] -=
+                    2.0 * self.metric.shared_perimeters[edge_index];
             }
         }
 
@@ -323,29 +326,29 @@ impl<'g> IncrementalPolsbyPopper<'g> {
             if self.node_counts[old] == 0 {
                 self.observed &= !(1u128 << old);
             }
-            self.area_by_district[old] -= self.area_values[change.node];
-            self.area_by_district[new] += self.area_values[change.node];
-            self.perimeter_by_district[old] -= self.total_perimeter_values[change.node];
-            self.perimeter_by_district[new] += self.total_perimeter_values[change.node];
+            self.area_by_district[old] -= self.metric.area_values[change.node];
+            self.area_by_district[new] += self.metric.area_values[change.node];
+            self.perimeter_by_district[old] -= self.metric.total_perimeter_values[change.node];
+            self.perimeter_by_district[new] += self.metric.total_perimeter_values[change.node];
         }
 
         self.post_delta_labels.refresh(changes);
         self.gen += 1;
         for change in changes {
-            for &(_neighbor, edge_index) in self.graph.neighbors(change.node) {
+            for &(_neighbor, edge_index) in self.metric.neighbors(change.node) {
                 let edge_index = edge_index as usize;
                 if self.seen_edges[edge_index] == self.gen {
                     continue;
                 }
                 self.seen_edges[edge_index] = self.gen;
-                let (u, v) = self.graph.edges[edge_index];
+                let (u, v) = self.metric.edges[edge_index];
                 let u = u as usize;
                 let v = v as usize;
                 let before_u = before[u] as usize;
                 let before_v = before[v] as usize;
                 let after_u = self.post_delta_labels.label(before, u) as usize;
                 let after_v = self.post_delta_labels.label(before, v) as usize;
-                let shared_perimeter = self.shared_perimeters[edge_index];
+                let shared_perimeter = self.metric.shared_perimeters[edge_index];
                 if before_u == before_v {
                     self.perimeter_by_district[before_u] += 2.0 * shared_perimeter;
                 }
@@ -378,6 +381,16 @@ impl<'g> IncrementalPolsbyPopper<'g> {
             *score = polsby_popper_score(self.area_by_district[district], perimeter);
         }
         Ok(scores)
+    }
+
+    #[cfg(feature = "python")]
+    pub(crate) fn output(&self) -> crate::error::Result<PreparedMetricOutput> {
+        Ok(PreparedMetricOutput {
+            values: self.scores()?,
+            table_count: 1,
+            district_slots: MAX_DISTRICTS as usize,
+            observed: self.observed,
+        })
     }
 }
 
@@ -503,12 +516,7 @@ fn tally_and_save_polsby_popper_from_values(
     );
 
     if source.variant()? == BenVariant::TwoDelta && graph.adjacency.is_some() {
-        let mut state = IncrementalPolsbyPopper::new(
-            &graph,
-            &metric.area_values,
-            &metric.total_perimeter_values,
-            &metric.shared_perimeters,
-        );
+        let mut state = IncrementalPolsbyPopper::new(&metric);
         run_incremental_twodelta(
             source,
             TwoDeltaRunOptions {
@@ -563,25 +571,6 @@ mod tests {
         derive_total_perimeters, polsby_popper_rows, polsby_popper_score, DeltaChange,
         IncrementalPolsbyPopper, PreparedPolsbyPopper,
     };
-    use crate::graph::{CsrAdjacency, Graph};
-    use std::collections::HashMap;
-
-    fn graph_with_path_adjacency() -> Graph {
-        Graph {
-            node_count: 4,
-            attr_columns: vec![],
-            attr_index: HashMap::new(),
-            region_columns: vec![],
-            region_index: HashMap::new(),
-            region_id_counts: vec![],
-            edges: vec![(0, 1), (1, 2), (2, 3)],
-            edge_weights: None,
-            adjacency: Some(CsrAdjacency {
-                offsets: vec![0, 1, 3, 5, 6],
-                neighbors: vec![(1, 0), (0, 0), (2, 1), (1, 1), (3, 2), (2, 2)],
-            }),
-        }
-    }
 
     #[test]
     fn polsby_popper_score_returns_zero_for_nonpositive_perimeter() {
@@ -643,18 +632,20 @@ mod tests {
 
     #[test]
     fn incremental_polsby_popper_updates_delta() {
-        let graph = graph_with_path_adjacency();
         let before = vec![1, 1, 2, 2];
         let changes = vec![DeltaChange {
             node: 1,
             old: 1,
             new: 2,
         }];
-        let area = vec![1.0; 4];
-        let total_perimeter = vec![4.0; 4];
-        let shared_perimeter = vec![1.0; 3];
-        let mut state =
-            IncrementalPolsbyPopper::new(&graph, &area, &total_perimeter, &shared_perimeter);
+        let metric = PreparedPolsbyPopper::new(
+            vec![1.0; 4],
+            vec![4.0; 4],
+            vec![(0, 1), (1, 2), (2, 3)],
+            vec![1.0; 3],
+        )
+        .unwrap();
+        let mut state = IncrementalPolsbyPopper::new(&metric);
 
         state.seed(&before).unwrap();
         state.update_delta(&before, &changes).unwrap();

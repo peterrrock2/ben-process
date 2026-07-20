@@ -86,6 +86,16 @@ impl PreparedTally {
         self.score_checked_assignment(assignment)
     }
 
+    #[cfg(feature = "python")]
+    pub(crate) fn node_count(&self) -> usize {
+        self.node_count
+    }
+
+    #[cfg(feature = "python")]
+    pub(crate) fn table_count(&self) -> usize {
+        self.columns.len()
+    }
+
     fn score_checked_assignment(
         &self,
         assignment: &[u16],
@@ -104,7 +114,7 @@ impl PreparedTally {
 ///
 /// `update_delta` expects `before` to still be the pre-delta assignment; the caller applies the
 /// changes after the totals and district counts are patched.
-struct IncrementalTallies<'g> {
+pub(crate) struct IncrementalTallies<'g> {
     metric: &'g PreparedTally,
     totals: Vec<f64>,
     node_counts: Vec<u32>,
@@ -112,7 +122,7 @@ struct IncrementalTallies<'g> {
 }
 
 impl<'g> IncrementalTallies<'g> {
-    fn new(metric: &'g PreparedTally) -> Self {
+    pub(crate) fn new(metric: &'g PreparedTally) -> Self {
         Self {
             metric,
             totals: vec![0.0; metric.columns.len() * MAX_DISTRICTS as usize],
@@ -163,6 +173,16 @@ impl<'g> IncrementalTallies<'g> {
         }
 
         Ok(())
+    }
+
+    #[cfg(feature = "python")]
+    pub(crate) fn output(&self) -> PreparedMetricOutput {
+        PreparedMetricOutput {
+            values: self.totals.clone(),
+            table_count: self.metric.columns.len(),
+            district_slots: MAX_DISTRICTS as usize,
+            observed: self.observed,
+        }
     }
 }
 
