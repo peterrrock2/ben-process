@@ -68,6 +68,59 @@ def square_wkb(x, y=0.0):
 
 
 class ScoringTests(unittest.TestCase):
+    def test_run_manifest_preserves_metric_order_and_normalized_options(self):
+        scorer = PlanScorer()
+        scorer.add_metric(Tally(["POP", "VAP"]))
+        scorer.add_metric(Reock())
+        scorer.add_metric(
+            PolsbyPopper(
+                source="graph",
+                area_key="AREA",
+                perim_key="PERIM",
+                shared_perim_key="SHARED",
+            )
+        )
+
+        self.assertEqual(
+            scorer._manifest_metrics(),
+            [
+                {
+                    "metric_key": "tally",
+                    "output_slug": "tally",
+                    "options": {"keys": ["POP", "VAP"]},
+                    "tables": [
+                        {"subkey": "POP", "path": "tally/0000.parquet"},
+                        {"subkey": "VAP", "path": "tally/0001.parquet"},
+                    ],
+                },
+                {
+                    "metric_key": "reock",
+                    "output_slug": "reock",
+                    "options": {},
+                    "tables": [
+                        {"subkey": None, "path": "reock/scores.parquet"}
+                    ],
+                },
+                {
+                    "metric_key": "polsby_popper",
+                    "output_slug": "polsby_popper",
+                    "options": {
+                        "source": "graph",
+                        "area_key": "AREA",
+                        "perim_key": "PERIM",
+                        "boundary_perim_key": None,
+                        "shared_perim_key": "SHARED",
+                    },
+                    "tables": [
+                        {
+                            "subkey": None,
+                            "path": "polsby_popper/scores.parquet",
+                        }
+                    ],
+                },
+            ],
+        )
+
     def test_tally_normalizes_assignments_to_graph_order(self):
         graph = Graph(
             {
