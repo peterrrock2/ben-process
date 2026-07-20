@@ -13,6 +13,7 @@ use crate::pipeline::{run_pipeline, AssignmentLengthCheck};
 use ben::BenVariant;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::PyBytes;
 use serde_json::Value;
 
 enum RustBackedMetric {
@@ -532,9 +533,36 @@ fn value_error(error: crate::error::Error) -> PyErr {
     PyValueError::new_err(error.to_string())
 }
 
+type PyBendlAssets = (Option<Py<PyBytes>>, Vec<String>, Option<Py<PyBytes>>);
+
+#[pyfunction]
+#[pyo3(signature = (path, asset_name=None))]
+fn load_bendl_assets(
+    py: Python<'_>,
+    path: String,
+    asset_name: Option<String>,
+) -> PyResult<PyBendlAssets> {
+    let assets = py
+        .detach(|| {
+            crate::input::load_bendl_assets(&path, asset_name.as_deref())
+                .map_err(|error| error.to_string())
+        })
+        .map_err(PyValueError::new_err)?;
+    Ok((
+        assets
+            .embedded_graph
+            .map(|bytes| PyBytes::new(py, &bytes).unbind()),
+        assets.custom_asset_names,
+        assets
+            .selected_asset
+            .map(|bytes| PyBytes::new(py, &bytes).unbind()),
+    ))
+}
+
 #[pymodule]
 fn _rust_backend(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<RustBackendScorer>()?;
+    module.add_function(wrap_pyfunction!(load_bendl_assets, module)?)?;
     Ok(())
 }
 

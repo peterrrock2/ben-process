@@ -17,7 +17,7 @@
 
 use crate::error::invalid_data;
 use ben::format::banners::has_known_banner_prefix;
-use ben::io::bundle::format::{ASSET_TYPE_GRAPH, BENDL_MAGIC};
+use ben::io::bundle::format::{ASSET_TYPE_CUSTOM, ASSET_TYPE_GRAPH, BENDL_MAGIC};
 use ben::io::bundle::{BendlReader, ExactLen};
 use ben::io::reader::{BenStreamFrameReader, BenStreamReader, BenWireFormat};
 use ben::BenVariant;
@@ -184,6 +184,71 @@ pub struct ResolvedInput {
     pub embedded_graph: Option<Vec<u8>>,
 }
 
+/// Checksum-verified bundle resources needed by the Python convenience constructor.
+#[derive(Debug)]
+pub struct BendlAssets {
+    pub embedded_graph: Option<Vec<u8>>,
+    pub custom_asset_names: Vec<String>,
+    pub selected_asset: Option<Vec<u8>>,
+}
+
+/// Read the embedded graph and one exact-name custom asset from a BENDL bundle.
+pub fn load_bendl_assets(
+    file_path: &str,
+    selected_name: Option<&str>,
+) -> crate::error::Result<BendlAssets> {
+    let path = PathBuf::from(file_path);
+    if sniff(&path)? != InputKind::Bundle {
+        return Err(invalid_data(format!("{file_path:?} is not a BENDL bundle")).into());
+    }
+
+    let mut reader = BendlReader::open(File::open(path)?).map_err(io::Error::from)?;
+    let custom_entries: Vec<_> = reader
+        .assets()
+        .iter()
+        .filter(|entry| entry.asset_type == ASSET_TYPE_CUSTOM)
+        .cloned()
+        .collect();
+    let custom_asset_names = custom_entries
+        .iter()
+        .map(|entry| entry.name.clone())
+        .collect::<Vec<_>>();
+    let selected_entry = selected_name
+        .map(|name| {
+            custom_entries
+                .iter()
+                .find(|entry| entry.name == name)
+                .cloned()
+                .ok_or_else(|| {
+                    invalid_data(format!(
+                        "custom asset {name:?} not found; available custom assets: {custom_asset_names:?}"
+                    ))
+                })
+        })
+        .transpose()?;
+    let graph_entry = reader.find_asset_by_type(ASSET_TYPE_GRAPH).cloned();
+    let embedded_graph = graph_entry
+        .map(|entry| {
+            reader
+                .asset_bytes(&entry)
+                .map_err(|error| invalid_data(error.to_string()))
+        })
+        .transpose()?;
+    let selected_asset = selected_entry
+        .map(|entry| {
+            reader
+                .asset_bytes(&entry)
+                .map_err(|error| invalid_data(error.to_string()))
+        })
+        .transpose()?;
+
+    Ok(BendlAssets {
+        embedded_graph,
+        custom_asset_names,
+        selected_asset,
+    })
+}
+
 /// Sniff `ben_file` and resolve it to a [`BenSource`] (and, for a bundle, its embedded graph). The
 /// extension is never consulted.
 pub fn resolve(ben_file: &str) -> crate::error::Result<ResolvedInput> {
@@ -269,15 +334,44 @@ fn resolve_bundle(path: PathBuf) -> crate::error::Result<ResolvedInput> {
 
 #[cfg(test)]
 mod tests {
-    use super::{sniff, InputKind};
-    use std::io::Write;
-    use tempfile::NamedTempFile;
+    use super::{load_bendl_assets, sniff, InputKind};
+    use ben::io::bundle::format::{AssignmentFormat, ASSET_TYPE_GRAPH};
+    use ben::io::bundle::{AddAssetOptions, BendlReader, BendlWriter};
+    use ben::io::writer::BenStreamWriter;
+    use ben::BenVariant;
+    use std::fs::{File, OpenOptions};
+    use std::io::{Seek, SeekFrom, Write};
+    use tempfile::{tempdir, NamedTempFile};
 
     fn sniff_bytes(bytes: &[u8]) -> std::io::Result<InputKind> {
         let mut f = NamedTempFile::new().unwrap();
         f.write_all(bytes).unwrap();
         f.flush().unwrap();
         sniff(f.path())
+    }
+
+    fn write_asset_bundle(path: &std::path::Path) {
+        let mut writer =
+            BendlWriter::new(File::create(path).unwrap(), AssignmentFormat::Ben).unwrap();
+        writer
+            .add_json_asset(ASSET_TYPE_GRAPH, "graph.json", br#"{"nodes":[]}"#)
+            .unwrap();
+        writer
+            .add_custom_asset(
+                "units.parquet",
+                b"geometry",
+                AddAssetOptions::defaults().raw(),
+            )
+            .unwrap();
+        writer
+            .add_custom_asset("notes.txt", b"notes", AddAssetOptions::defaults().raw())
+            .unwrap();
+        let mut session = writer.into_stream_session().unwrap();
+        {
+            let mut stream = BenStreamWriter::for_ben(&mut session, BenVariant::Standard).unwrap();
+            stream.finish().unwrap();
+        }
+        session.finish_into_writer(0).finish().unwrap();
     }
 
     #[test]
@@ -323,5 +417,48 @@ mod tests {
     fn sniff_rejects_empty_file() {
         let err = sniff_bytes(b"").unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn load_bendl_assets_selects_exact_custom_name() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("assets.bendl");
+        write_asset_bundle(&path);
+
+        let assets = load_bendl_assets(path.to_str().unwrap(), Some("units.parquet")).unwrap();
+        assert_eq!(assets.embedded_graph.unwrap(), br#"{"nodes":[]}"#);
+        assert_eq!(assets.custom_asset_names, ["units.parquet", "notes.txt"]);
+        assert_eq!(assets.selected_asset.unwrap(), b"geometry");
+    }
+
+    #[test]
+    fn load_bendl_assets_names_available_custom_assets_on_miss() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("assets.bendl");
+        write_asset_bundle(&path);
+
+        let error = load_bendl_assets(path.to_str().unwrap(), Some("missing.parquet")).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("missing.parquet"));
+        assert!(message.contains("units.parquet"));
+        assert!(message.contains("notes.txt"));
+    }
+
+    #[test]
+    fn load_bendl_assets_verifies_selected_asset_checksum() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("assets.bendl");
+        write_asset_bundle(&path);
+        let entry = BendlReader::open(File::open(&path).unwrap())
+            .unwrap()
+            .find_asset_by_name("units.parquet")
+            .unwrap()
+            .clone();
+        let mut file = OpenOptions::new().write(true).open(&path).unwrap();
+        file.seek(SeekFrom::Start(entry.payload_offset)).unwrap();
+        file.write_all(b"X").unwrap();
+
+        let error = load_bendl_assets(path.to_str().unwrap(), Some("units.parquet")).unwrap_err();
+        assert!(error.to_string().to_lowercase().contains("checksum"));
     }
 }
