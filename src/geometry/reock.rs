@@ -1,5 +1,5 @@
 use super::wkb::{decode_wkb_geometry, geometry_to_multipolygon, reproject_geometry, Reprojector};
-use super::{geometry_error, validate_area};
+use super::{geometry_error, prepare_wkb_reprojector, validate_area, WkbGeometryLoadOptions};
 use crate::error::{Error, Result};
 use arrow_array::types::ByteArrayType;
 use arrow_array::{Array, BinaryArray, GenericByteArray, LargeBinaryArray, RecordBatch};
@@ -16,6 +16,20 @@ pub struct ReockUnit {
 #[derive(Debug)]
 pub struct ReockGeometries {
     pub units: Vec<ReockUnit>,
+}
+
+impl ReockGeometries {
+    pub fn from_wkb<W: AsRef<[u8]>>(
+        rows: &[W],
+        options: WkbGeometryLoadOptions<'_>,
+    ) -> Result<Self> {
+        let reprojector = prepare_wkb_reprojector(options)?;
+        let units = rows
+            .iter()
+            .map(|row| parse_reock_unit_from_wkb(row.as_ref(), reprojector.as_ref()))
+            .collect::<Result<_>>()?;
+        Ok(Self { units })
+    }
 }
 
 fn parse_reock_unit_from_wkb(wkb: &[u8], reprojector: Option<&Reprojector>) -> Result<ReockUnit> {

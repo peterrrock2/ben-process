@@ -100,6 +100,19 @@ pub(super) fn build_reprojector(
     }))
 }
 
+pub(super) fn build_wkb_reprojector(
+    source_crs: Option<&str>,
+    target_crs: Option<&str>,
+) -> Result<Option<Reprojector>> {
+    if target_crs.is_some() && source_crs.is_none() {
+        return Err(crs_error(
+            "WKB geometry CRS is unknown; pass source_crs to reproject",
+        ));
+    }
+
+    build_reprojector(Some(&Value::Null), source_crs, target_crs)
+}
+
 pub(super) fn classify_effective_source_crs(
     source_crs_metadata: Option<&Value>,
     source_crs_override: Option<&str>,

@@ -12,6 +12,14 @@ pub use geoparquet::{
 pub use polsby_popper::PolsbyPopperGeometries;
 pub use reock::{ReockGeometries, ReockUnit};
 
+/// CRS controls for geometry supplied directly as ordered WKB rows.
+pub struct WkbGeometryLoadOptions<'a> {
+    pub source_crs: Option<&'a str>,
+    pub target_crs: Option<&'a str>,
+    pub allow_geographic_crs: bool,
+    pub allow_unknown_crs: bool,
+}
+
 fn geoparquet_error(message: impl Into<String>) -> Error {
     Error::GeoParquet(message.into())
 }
@@ -29,6 +37,28 @@ enum CrsStatus {
     Projected,
     Geographic,
     Unknown,
+}
+
+fn prepare_wkb_reprojector(
+    options: WkbGeometryLoadOptions<'_>,
+) -> Result<Option<wkb::Reprojector>> {
+    let WkbGeometryLoadOptions {
+        source_crs,
+        target_crs,
+        allow_geographic_crs,
+        allow_unknown_crs,
+    } = options;
+    let reprojector = wkb::build_wkb_reprojector(source_crs, target_crs)?;
+    let effective_crs = match &reprojector {
+        Some(reprojector) => reprojector.transform_status,
+        None => match source_crs {
+            Some(source_crs) => wkb::classify_user_crs(source_crs)?,
+            None => CrsStatus::Unknown,
+        },
+    };
+
+    geoparquet::validate_effective_crs(effective_crs, allow_geographic_crs, allow_unknown_crs)?;
+    Ok(reprojector)
 }
 
 fn validate_area(area: f64) -> Result<()> {
@@ -149,9 +179,19 @@ mod tests {
         }
     }
 
+    fn test_wkb_options() -> WkbGeometryLoadOptions<'static> {
+        WkbGeometryLoadOptions {
+            source_crs: None,
+            target_crs: None,
+            allow_geographic_crs: false,
+            allow_unknown_crs: true,
+        }
+    }
+
     #[test]
     fn geoparquet_loaders_read_wkb_polygons_from_public_path() {
-        let file = write_test_geoparquet(vec![square_wkb(0.0, 0.0), square_wkb(1.0, 0.0)]);
+        let rows = vec![square_wkb(0.0, 0.0), square_wkb(1.0, 0.0)];
+        let file = write_test_geoparquet(rows.clone());
         let path = file.path().to_str().expect("temp path is utf-8");
 
         let reock = load_reock_units_from_geoparquet(path, test_load_options()).unwrap();
@@ -167,6 +207,29 @@ mod tests {
         assert_eq!(polsby.area_values, vec![1.0, 1.0]);
         assert_eq!(polsby.total_perimeter_values, vec![4.0, 4.0]);
         assert_eq!(polsby.shared_perimeters, vec![1.0]);
+
+        let reock = ReockGeometries::from_wkb(&rows, test_wkb_options()).unwrap();
+        assert_eq!(reock.units.len(), 2);
+        let polsby =
+            PolsbyPopperGeometries::from_wkb(&rows, test_wkb_options(), &[(0, 1)], 2).unwrap();
+        assert_eq!(polsby.shared_perimeters, vec![1.0]);
+    }
+
+    #[test]
+    fn ordered_wkb_requires_an_explicit_safe_crs_choice() {
+        let rows = vec![square_wkb(0.0, 0.0)];
+        let options = WkbGeometryLoadOptions {
+            source_crs: None,
+            target_crs: None,
+            allow_geographic_crs: false,
+            allow_unknown_crs: false,
+        };
+
+        let error = ReockGeometries::from_wkb(&rows, options).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("effective geometry CRS is Unknown"));
     }
 
     #[test]

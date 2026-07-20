@@ -69,7 +69,7 @@ fn validate_geometry_encoding(
     }
 }
 
-fn validate_effective_crs(
+pub(super) fn validate_effective_crs(
     effective_target_crs: CrsStatus,
     allow_geographic_crs: bool,
     allow_unknown_crs: bool,

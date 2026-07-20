@@ -1,5 +1,8 @@
 use super::wkb::{decode_wkb_geometry, geometry_to_multipolygon, reproject_geometry, Reprojector};
-use super::{geometry_error, geoparquet_error, validate_area, validate_length};
+use super::{
+    geometry_error, geoparquet_error, prepare_wkb_reprojector, validate_area, validate_length,
+    WkbGeometryLoadOptions,
+};
 use crate::error::{Error, Result};
 use arrow_array::types::ByteArrayType;
 use arrow_array::{Array, BinaryArray, GenericByteArray, LargeBinaryArray, RecordBatch};
@@ -13,6 +16,22 @@ pub struct PolsbyPopperGeometries {
     pub area_values: Vec<f64>,
     pub total_perimeter_values: Vec<f64>,
     pub shared_perimeters: Vec<f64>,
+}
+
+impl PolsbyPopperGeometries {
+    pub fn from_wkb<W: AsRef<[u8]>>(
+        rows: &[W],
+        options: WkbGeometryLoadOptions<'_>,
+        graph_edges: &[(u32, u32)],
+        graph_node_count: usize,
+    ) -> Result<Self> {
+        let reprojector = prepare_wkb_reprojector(options)?;
+        let units = rows
+            .iter()
+            .map(|row| parse_polsby_popper_unit_from_wkb(row.as_ref(), reprojector.as_ref()))
+            .collect::<Result<Vec<_>>>()?;
+        build_polsby_popper_geometry_from_units(units, graph_edges, graph_node_count)
+    }
 }
 
 #[derive(Debug)]
@@ -205,6 +224,14 @@ pub(super) fn build_polsby_popper_geometry(
         )?;
     }
 
+    build_polsby_popper_geometry_from_units(units, graph_edges, graph_node_count)
+}
+
+fn build_polsby_popper_geometry_from_units(
+    units: Vec<PolsbyPopperUnit>,
+    graph_edges: &[(u32, u32)],
+    graph_node_count: usize,
+) -> Result<PolsbyPopperGeometries> {
     if units.len() != graph_node_count {
         return Err(Error::AssignmentLength {
             actual: units.len(),
@@ -212,6 +239,14 @@ pub(super) fn build_polsby_popper_geometry(
             expected: graph_node_count,
             expected_label: "graph node count",
         });
+    }
+    if let Some(&(u, v)) = graph_edges
+        .iter()
+        .find(|&&(u, v)| u as usize >= graph_node_count || v as usize >= graph_node_count)
+    {
+        return Err(geometry_error(format!(
+            "graph edge ({u}, {v}) references a node outside graph node count {graph_node_count}"
+        )));
     }
 
     let mut shared_perimeters = Vec::with_capacity(graph_edges.len());
