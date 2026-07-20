@@ -44,6 +44,16 @@ result.to_arrow()   # optional Arrow adapter
 
 `PlanScorer` also accepts GeoDataFrames for Rust-backed Reock and Polsby-Popper scoring.
 
+Stream a BEN, XBEN, or BENDL ensemble into an atomic run directory without collecting scores in
+memory:
+
+```python
+scorer.score_ben_file("scores/", source="plans.bendl")
+```
+
+The directory contains `manifest.json` plus one Parquet table per metric output. Existing output
+paths are never overwritten.
+
 ## CLI
 
 ```text
