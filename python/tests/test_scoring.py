@@ -1,10 +1,16 @@
+import io
+import json
 import math
 import struct
+import sys
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 
 from ben_process import PlanScorer, PolsbyPopper, Reock, Tally
+from ben_process import _scorer as scorer_module
 
 
 class Nodes:
@@ -67,7 +73,128 @@ def square_wkb(x, y=0.0):
     return header + b"".join(struct.pack("<dd", *point) for point in points)
 
 
+def bundle_graph_bytes():
+    return json.dumps(
+        {
+            "directed": False,
+            "multigraph": False,
+            "graph": [],
+            "nodes": [
+                {"id": "a", "POP": 1},
+                {"id": "b", "POP": 2},
+            ],
+            "adjacency": [
+                [{"id": "b", "shared_perim": 1.0}],
+                [{"id": "a", "shared_perim": 1.0}],
+            ],
+        }
+    ).encode()
+
+
 class ScoringTests(unittest.TestCase):
+    def test_from_bendl_selects_and_aligns_named_geometry_asset(self):
+        requested_names = []
+
+        def load_assets(path, name):
+            self.assertEqual(path, "plans.bendl")
+            requested_names.append(name)
+            return bundle_graph_bytes(), ["units.parquet", "notes.txt"], b"geoparquet"
+
+        gdf = Gdf(
+            [square_wkb(2.0), square_wkb(0.0)],
+            GEOID=["b", "a"],
+        )
+        with (
+            patch.object(scorer_module._rust_backend, "load_bendl_assets", load_assets),
+            patch.object(scorer_module, "_read_geoparquet_bytes", return_value=gdf),
+        ):
+            scorer = PlanScorer.from_bendl(
+                "plans.bendl",
+                geometry_asset_name="units.parquet",
+                node_id="GEOID",
+                allow_unknown_crs=True,
+            )
+
+        self.assertEqual(requested_names, ["units.parquet"])
+        self.assertEqual(scorer._node_order, ("a", "b"))
+        self.assertEqual(scorer._geometry.rows, (square_wkb(0.0), square_wkb(2.0)))
+        self.assertEqual(scorer._default_ben_source, "plans.bendl")
+        result = scorer.add_metric(Tally(["POP"])).compute({"a": 1, "b": 2})
+        np.testing.assert_allclose(result.values, [[1.0, 2.0]])
+        calls = []
+        scorer._rust_backend_scorer = SimpleNamespace(
+            score_ben_file=lambda *args: calls.append(args)
+        )
+        scorer.score_ben_file("scores")
+        self.assertEqual(calls[0][:2], ("scores", "plans.bendl"))
+
+    def test_from_bendl_requires_node_id_for_independent_graph_and_geometry(self):
+        with patch.object(
+            scorer_module._rust_backend,
+            "load_bendl_assets",
+            return_value=(bundle_graph_bytes(), ["units.parquet"], b"geoparquet"),
+        ):
+            with self.assertRaisesRegex(ValueError, "node_id is required"):
+                PlanScorer.from_bendl(
+                    "plans.bendl",
+                    geometry_asset_name="units.parquet",
+                )
+
+    def test_from_bendl_geometry_establishes_order_without_graph(self):
+        gdf = Gdf([square_wkb(0.0), square_wkb(2.0)])
+        with (
+            patch.object(
+                scorer_module._rust_backend,
+                "load_bendl_assets",
+                return_value=(None, ["units.parquet"], b"geoparquet"),
+            ),
+            patch.object(scorer_module, "_read_geoparquet_bytes", return_value=gdf),
+        ):
+            scorer = PlanScorer.from_bendl(
+                "plans.bendl",
+                geometry_asset_name="units.parquet",
+                allow_unknown_crs=True,
+            )
+
+        self.assertEqual(scorer._node_order, (0, 1))
+
+    def test_from_bendl_does_not_guess_geometry_asset(self):
+        with patch.object(
+            scorer_module._rust_backend,
+            "load_bendl_assets",
+            return_value=(None, ["units.parquet", "notes.txt"], None),
+        ):
+            with self.assertRaisesRegex(ValueError, "units.parquet"):
+                PlanScorer.from_bendl("plans.bendl")
+
+    def test_bendl_geometry_metric_names_available_assets(self):
+        with patch.object(
+            scorer_module._rust_backend,
+            "load_bendl_assets",
+            return_value=(bundle_graph_bytes(), ["units.parquet", "blocks.parquet"], None),
+        ):
+            scorer = PlanScorer.from_bendl("plans.bendl").add_metric(Reock())
+
+        with self.assertRaisesRegex(RuntimeError, "blocks.parquet"):
+            scorer.compute([1, 2])
+
+    def test_bendl_geoparquet_loader_uses_bytes_io(self):
+        expected = object()
+
+        def read_parquet(source):
+            self.assertIsInstance(source, io.BytesIO)
+            self.assertEqual(source.read(), b"geoparquet")
+            return expected
+
+        with patch.dict(
+            sys.modules,
+            {"geopandas": SimpleNamespace(read_parquet=read_parquet)},
+        ):
+            self.assertIs(
+                scorer_module._read_geoparquet_bytes(b"geoparquet"),
+                expected,
+            )
+
     def test_run_manifest_preserves_metric_order_and_normalized_options(self):
         scorer = PlanScorer()
         scorer.add_metric(Tally(["POP", "VAP"]))
