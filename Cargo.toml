@@ -8,6 +8,11 @@ keywords = ["redistricting", "gerrychain", "binary-ensemble"]
 categories = ["command-line-utilities"]
 description = "A command-line utility for processing redistricting ensembles compressed in the binary-ensemble format."
 
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[features]
+python = ["dep:pyo3"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -26,6 +31,7 @@ log = "0.4"
 parquet = { version = "58.3.0", features = ["arrow"] }
 polars = { version = "0.53.0", features = ["parquet"] }
 proj = "0.31.0"
+pyo3 = { version = "0.29.0", optional = true }
 rand = "0.10.0"
 rayon = "1.10.0"
 serde = {version ="1.0.203", features = ["derive"]}

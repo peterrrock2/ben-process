@@ -12,6 +12,8 @@ pub mod input;
 pub mod metrics;
 mod output;
 pub mod pipeline;
+#[cfg(feature = "python")]
+mod python;
 
 use cli::Cli;
 
