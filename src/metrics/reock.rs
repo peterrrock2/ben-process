@@ -5,6 +5,7 @@ use crate::metrics::twodelta::{
     run_incremental_twodelta, DeltaChange, IncrementalTwoDeltaMetric, TwoDeltaRow,
     TwoDeltaRunOptions,
 };
+use crate::metrics::{validate_assignment_length, PreparedMetricOutput};
 use crate::output::parquet::DistrictMetricWriter;
 use crate::pipeline::{
     parquet_compression, run_pipeline_with_batch_size, AssignmentLengthCheck, PipelineBatchOptions,
@@ -17,6 +18,43 @@ use std::io;
 
 const EPS: f64 = 1e-9;
 const REOCK_SHUFFLE_SEED: u64 = 0x9e37_79b9_7f4a_7c15;
+
+#[derive(Debug)]
+pub struct PreparedReock {
+    geometry: ReockGeometries,
+}
+
+impl PreparedReock {
+    pub fn new(geometry: ReockGeometries) -> Self {
+        Self { geometry }
+    }
+
+    pub fn score_assignment(
+        &self,
+        assignment: &[u16],
+    ) -> crate::error::Result<PreparedMetricOutput> {
+        validate_assignment_length(
+            assignment,
+            self.geometry.units.len(),
+            "geometry row count",
+            "assignment length",
+        )?;
+        self.score_checked_assignment(assignment)
+    }
+
+    fn score_checked_assignment(
+        &self,
+        assignment: &[u16],
+    ) -> crate::error::Result<PreparedMetricOutput> {
+        let state = reock_rows(assignment, &self.geometry)?;
+        Ok(PreparedMetricOutput {
+            district_slots: state.scores.len(),
+            values: state.scores,
+            table_count: 1,
+            observed: state.observed,
+        })
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 struct Circle {
@@ -504,6 +542,7 @@ pub fn tally_and_save_reock(
     max_samples: Option<usize>,
     high_compression: bool,
 ) -> crate::error::Result<()> {
+    let metric = PreparedReock::new(reock_geometries);
     // The writer fixes its district-column schema from the first row's observed set and creates
     // the output file at that point; a run that fails before decoding a plan leaves no file.
     let out_path = out_file_name.to_string();
@@ -514,11 +553,11 @@ pub fn tally_and_save_reock(
     );
 
     if source.variant()? == BenVariant::TwoDelta {
-        let mut state = IncrementalReock::new(&reock_geometries);
+        let mut state = IncrementalReock::new(&metric.geometry);
         run_incremental_twodelta(
             source,
             TwoDeltaRunOptions {
-                expected_len: reock_geometries.units.len(),
+                expected_len: metric.geometry.units.len(),
                 expected_len_label: "geometry row count",
                 output_name: "reock",
                 show_progress,
@@ -539,7 +578,7 @@ pub fn tally_and_save_reock(
         run_pipeline_with_batch_size(
             source,
             AssignmentLengthCheck::Exact {
-                expected: reock_geometries.units.len(),
+                expected: metric.geometry.units.len(),
                 label: "geometry row count",
             },
             // The pipeline enforces a fixed district set, so the schema fixed from the first row
@@ -547,9 +586,8 @@ pub fn tally_and_save_reock(
             "reock",
             // process
             |assignment, _n_reps| {
-                let state = reock_rows(assignment, &reock_geometries)?;
-
-                Ok((state.observed, (state.scores, state.observed)))
+                let output = metric.score_checked_assignment(assignment)?;
+                Ok((output.observed, (output.values, output.observed)))
             },
             // on row
             |step, n_reps, accepted, (scores, observed)| {
@@ -832,6 +870,14 @@ mod tests {
         assert_close(state.scores[1], 8.0 / (5.0 * std::f64::consts::PI));
         assert_close(state.scores[2], 0.0);
         assert_node_positions_valid(&state);
+
+        let output = PreparedReock::new(geometry)
+            .score_assignment(&[0, 0, 1, 1])
+            .unwrap();
+        assert_close(
+            output.table(0).unwrap()[0],
+            8.0 / (5.0 * std::f64::consts::PI),
+        );
     }
 
     #[test]

@@ -6,6 +6,7 @@ use crate::metrics::twodelta::{
     run_incremental_twodelta, DeltaChange, IncrementalTwoDeltaMetric, PostDeltaLabels, TwoDeltaRow,
     TwoDeltaRunOptions,
 };
+use crate::metrics::{validate_assignment_length, PreparedMetricOutput};
 use crate::output::parquet::DistrictMetricWriter;
 use crate::pipeline::{
     parquet_compression, run_pipeline, AssignmentLengthCheck, PARQUET_BATCH_ROWS,
@@ -13,6 +14,151 @@ use crate::pipeline::{
 use ben::BenVariant;
 use std::fs::File;
 use std::io;
+
+#[derive(Debug)]
+pub struct PreparedPolsbyPopper {
+    node_count: usize,
+    area_values: Vec<f64>,
+    total_perimeter_values: Vec<f64>,
+    edges: Vec<(u32, u32)>,
+    shared_perimeters: Vec<f64>,
+}
+
+impl PreparedPolsbyPopper {
+    pub fn new(
+        area_values: Vec<f64>,
+        total_perimeter_values: Vec<f64>,
+        edges: Vec<(u32, u32)>,
+        shared_perimeters: Vec<f64>,
+    ) -> crate::error::Result<Self> {
+        let node_count = area_values.len();
+        if total_perimeter_values.len() != node_count {
+            return Err(crate::error::Error::AssignmentLength {
+                actual: total_perimeter_values.len(),
+                actual_label: "perimeter value count",
+                expected: node_count,
+                expected_label: "graph node count",
+            });
+        }
+        if shared_perimeters.len() != edges.len() {
+            return Err(crate::error::invalid_data(format!(
+                "shared perimeter count is {} but graph edge count is {}",
+                shared_perimeters.len(),
+                edges.len()
+            ))
+            .into());
+        }
+        if area_values.iter().any(|value| !value.is_finite())
+            || total_perimeter_values
+                .iter()
+                .any(|value| !value.is_finite())
+            || shared_perimeters.iter().any(|value| !value.is_finite())
+        {
+            return Err(crate::error::invalid_data(
+                "Polsby-Popper inputs contain a non-finite value",
+            )
+            .into());
+        }
+        if let Some(&(u, v)) = edges
+            .iter()
+            .find(|&&(u, v)| u as usize >= node_count || v as usize >= node_count)
+        {
+            return Err(crate::error::invalid_data(format!(
+                "graph edge ({u}, {v}) references a node outside graph node count {node_count}"
+            ))
+            .into());
+        }
+
+        Ok(Self {
+            node_count,
+            area_values,
+            total_perimeter_values,
+            edges,
+            shared_perimeters,
+        })
+    }
+
+    pub fn from_boundary_perimeters(
+        area_values: Vec<f64>,
+        boundary_perimeters: Vec<f64>,
+        edges: Vec<(u32, u32)>,
+        shared_perimeters: Vec<f64>,
+    ) -> crate::error::Result<Self> {
+        if boundary_perimeters.len() != area_values.len() {
+            return Err(crate::error::Error::AssignmentLength {
+                actual: boundary_perimeters.len(),
+                actual_label: "boundary perimeter value count",
+                expected: area_values.len(),
+                expected_label: "graph node count",
+            });
+        }
+        if shared_perimeters.len() != edges.len() {
+            return Err(crate::error::invalid_data(format!(
+                "shared perimeter count is {} but graph edge count is {}",
+                shared_perimeters.len(),
+                edges.len()
+            ))
+            .into());
+        }
+        if let Some(&(u, v)) = edges
+            .iter()
+            .find(|&&(u, v)| u as usize >= area_values.len() || v as usize >= area_values.len())
+        {
+            return Err(crate::error::invalid_data(format!(
+                "graph edge ({u}, {v}) references a node outside graph node count {}",
+                area_values.len()
+            ))
+            .into());
+        }
+        let total_perimeters =
+            derive_total_perimeters(&boundary_perimeters, &edges, &shared_perimeters);
+        Self::new(area_values, total_perimeters, edges, shared_perimeters)
+    }
+
+    pub fn from_geometry(
+        edges: Vec<(u32, u32)>,
+        geometry: PolsbyPopperGeometries,
+    ) -> crate::error::Result<Self> {
+        Self::new(
+            geometry.area_values,
+            geometry.total_perimeter_values,
+            edges,
+            geometry.shared_perimeters,
+        )
+    }
+
+    pub fn score_assignment(
+        &self,
+        assignment: &[u16],
+    ) -> crate::error::Result<PreparedMetricOutput> {
+        validate_assignment_length(
+            assignment,
+            self.node_count,
+            "graph node count",
+            "assignment length",
+        )?;
+        self.score_checked_assignment(assignment)
+    }
+
+    fn score_checked_assignment(
+        &self,
+        assignment: &[u16],
+    ) -> crate::error::Result<PreparedMetricOutput> {
+        let (values, district_slots, observed) = polsby_popper_rows(
+            assignment,
+            &self.area_values,
+            &self.total_perimeter_values,
+            &self.edges,
+            &self.shared_perimeters,
+        )?;
+        Ok(PreparedMetricOutput {
+            values,
+            table_count: 1,
+            district_slots: district_slots as usize,
+            observed,
+        })
+    }
+}
 
 #[inline]
 fn polsby_popper_score(area: f64, perimeter: f64) -> f64 {
@@ -341,6 +487,12 @@ fn tally_and_save_polsby_popper_from_values(
     max_samples: Option<usize>,
     high_compression: bool,
 ) -> crate::error::Result<()> {
+    let metric = PreparedPolsbyPopper::new(
+        area_values,
+        total_perimeters,
+        graph.edges.clone(),
+        shared_perimeters,
+    )?;
     // The writer fixes its district-column schema from the first row's observed set and creates
     // the output file at that point; a run that fails before decoding a plan leaves no file.
     let out_path = out_file_name.to_string();
@@ -353,9 +505,9 @@ fn tally_and_save_polsby_popper_from_values(
     if source.variant()? == BenVariant::TwoDelta && graph.adjacency.is_some() {
         let mut state = IncrementalPolsbyPopper::new(
             &graph,
-            &area_values,
-            &total_perimeters,
-            &shared_perimeters,
+            &metric.area_values,
+            &metric.total_perimeter_values,
+            &metric.shared_perimeters,
         );
         run_incremental_twodelta(
             source,
@@ -388,14 +540,8 @@ fn tally_and_save_polsby_popper_from_values(
             // holds.
             "polsby-popper",
             |assignment, _n_reps| {
-                let (scores, _n_districts, observed) = polsby_popper_rows(
-                    assignment,
-                    &area_values,
-                    &total_perimeters,
-                    &graph.edges,
-                    &shared_perimeters,
-                )?;
-                Ok((observed, (scores, observed)))
+                let output = metric.score_checked_assignment(assignment)?;
+                Ok((output.observed, (output.values, output.observed)))
             },
             |step, n_reps, accepted, (scores, observed)| {
                 writer.push_row(step, n_reps, accepted, (observed, &scores))
@@ -415,7 +561,7 @@ fn tally_and_save_polsby_popper_from_values(
 mod tests {
     use super::{
         derive_total_perimeters, polsby_popper_rows, polsby_popper_score, DeltaChange,
-        IncrementalPolsbyPopper,
+        IncrementalPolsbyPopper, PreparedPolsbyPopper,
     };
     use crate::graph::{CsrAdjacency, Graph};
     use std::collections::HashMap;
@@ -483,6 +629,16 @@ mod tests {
         assert_eq!(scores[0], 0.0);
         assert!((scores[1] - expected).abs() < 1e-12);
         assert!((scores[2] - expected).abs() < 1e-12);
+
+        let metric = PreparedPolsbyPopper::new(
+            vec![1.0; 4],
+            vec![4.0; 4],
+            vec![(0, 1), (1, 2), (2, 3)],
+            vec![1.0; 3],
+        )
+        .unwrap();
+        let output = metric.score_assignment(&[1, 1, 2, 2]).unwrap();
+        assert!((output.table(0).unwrap()[1] - expected).abs() < 1e-12);
     }
 
     #[test]

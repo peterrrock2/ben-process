@@ -6,6 +6,7 @@ use crate::metrics::twodelta::{
     run_incremental_twodelta, DeltaChange, IncrementalTwoDeltaMetric, TwoDeltaRow,
     TwoDeltaRunOptions,
 };
+use crate::metrics::{validate_assignment_length, PreparedMetricOutput};
 use crate::output::parquet::DistrictMetricWriter;
 use crate::pipeline::{
     parquet_compression, run_pipeline, AssignmentLengthCheck, PARQUET_BATCH_ROWS,
@@ -19,19 +20,14 @@ use std::fs::{create_dir_all, File};
 /// `totals` is a flat `Vec<f64>` of shape `[n_keys * n_districts]`, where
 /// `n_districts = max(assignment) + 1`. `observed` has bit `d` set iff district `d` appeared in
 /// this sample's assignment.
-fn tally_keys(
-    graph: &Graph,
+fn tally_columns(
+    columns: &[Vec<f64>],
     assignment: &[u16],
-    attr_column_indices: &[usize],
 ) -> crate::error::Result<(Vec<f64>, u16, u128)> {
-    // The assignment is guaranteed to have one entry per graph node by `run_pipeline`'s length
-    // check; this hot loop relies on that invariant when indexing `assignment[node_index]` below.
     let (n_districts, observed) = observed_assignment_districts(assignment)?;
     let n_districts = n_districts as usize;
-    let n_keys = attr_column_indices.len();
-    let mut totals = vec![0.0f64; n_keys * n_districts];
-    for (key_index, &column_index) in attr_column_indices.iter().enumerate() {
-        let column = &graph.attr_columns[column_index];
+    let mut totals = vec![0.0f64; columns.len() * n_districts];
+    for (key_index, column) in columns.iter().enumerate() {
         let offset = key_index * n_districts;
         for (node_index, &value) in column.iter().enumerate() {
             totals[offset + assignment[node_index] as usize] += value;
@@ -40,24 +36,86 @@ fn tally_keys(
     Ok((totals, n_districts as u16, observed))
 }
 
+#[derive(Debug)]
+pub struct PreparedTally {
+    columns: Vec<Vec<f64>>,
+    node_count: usize,
+}
+
+impl PreparedTally {
+    pub fn new(columns: Vec<Vec<f64>>) -> crate::error::Result<Self> {
+        let node_count = columns.first().map_or(0, Vec::len);
+        if columns.is_empty() {
+            return Err(crate::error::invalid_data(
+                "a prepared tally requires at least one numeric column",
+            )
+            .into());
+        }
+        for (index, column) in columns.iter().enumerate() {
+            if column.len() != node_count {
+                return Err(crate::error::Error::AssignmentLength {
+                    actual: column.len(),
+                    actual_label: "tally column length",
+                    expected: node_count,
+                    expected_label: "graph node count",
+                });
+            }
+            if column.iter().any(|value| !value.is_finite()) {
+                return Err(crate::error::invalid_data(format!(
+                    "tally column {index} contains a non-finite value"
+                ))
+                .into());
+            }
+        }
+        Ok(Self {
+            columns,
+            node_count,
+        })
+    }
+
+    pub fn score_assignment(
+        &self,
+        assignment: &[u16],
+    ) -> crate::error::Result<PreparedMetricOutput> {
+        validate_assignment_length(
+            assignment,
+            self.node_count,
+            "graph node count",
+            "assignment length",
+        )?;
+        self.score_checked_assignment(assignment)
+    }
+
+    fn score_checked_assignment(
+        &self,
+        assignment: &[u16],
+    ) -> crate::error::Result<PreparedMetricOutput> {
+        let (values, district_slots, observed) = tally_columns(&self.columns, assignment)?;
+        Ok(PreparedMetricOutput {
+            values,
+            table_count: self.columns.len(),
+            district_slots: district_slots as usize,
+            observed,
+        })
+    }
+}
+
 /// Maintains per-key district totals across TwoDelta events.
 ///
 /// `update_delta` expects `before` to still be the pre-delta assignment; the caller applies the
 /// changes after the totals and district counts are patched.
 struct IncrementalTallies<'g> {
-    graph: &'g Graph,
-    attr_column_indices: &'g [usize],
+    metric: &'g PreparedTally,
     totals: Vec<f64>,
     node_counts: Vec<u32>,
     observed: u128,
 }
 
 impl<'g> IncrementalTallies<'g> {
-    fn new(graph: &'g Graph, attr_column_indices: &'g [usize]) -> Self {
+    fn new(metric: &'g PreparedTally) -> Self {
         Self {
-            graph,
-            attr_column_indices,
-            totals: vec![0.0; attr_column_indices.len() * MAX_DISTRICTS as usize],
+            metric,
+            totals: vec![0.0; metric.columns.len() * MAX_DISTRICTS as usize],
             node_counts: vec![0; MAX_DISTRICTS as usize],
             observed: 0,
         }
@@ -72,10 +130,9 @@ impl<'g> IncrementalTallies<'g> {
         for (node, &district) in assignment.iter().enumerate() {
             observe_district(&mut self.observed, district)?;
             self.node_counts[district as usize] += 1;
-            for (key_index, &column_index) in self.attr_column_indices.iter().enumerate() {
+            for (key_index, column) in self.metric.columns.iter().enumerate() {
                 let offset = key_index * MAX_DISTRICTS as usize;
-                self.totals[offset + district as usize] +=
-                    self.graph.attr_columns[column_index][node];
+                self.totals[offset + district as usize] += column[node];
             }
         }
 
@@ -97,8 +154,8 @@ impl<'g> IncrementalTallies<'g> {
                 self.observed &= !(1u128 << change.old);
             }
 
-            for (key_index, &column_index) in self.attr_column_indices.iter().enumerate() {
-                let value = self.graph.attr_columns[column_index][change.node];
+            for (key_index, column) in self.metric.columns.iter().enumerate() {
+                let value = column[change.node];
                 let offset = key_index * MAX_DISTRICTS as usize;
                 self.totals[offset + change.old as usize] -= value;
                 self.totals[offset + change.new as usize] += value;
@@ -165,6 +222,12 @@ pub fn tally_and_save_from_key_list(
                 .unwrap_or_else(|| panic!("key {:?} not pre-loaded on graph", key))
         })
         .collect();
+    let metric = PreparedTally::new(
+        attr_column_indices
+            .iter()
+            .map(|&index| graph.attr_columns[index].clone())
+            .collect(),
+    )?;
 
     // One writer per key, each owning its output path. No file (and no tallies directory) is
     // created here: the writer defers that to the first decoded assignment, so a run that fails
@@ -188,7 +251,7 @@ pub fn tally_and_save_from_key_list(
         .collect();
 
     if source.variant()? == BenVariant::TwoDelta {
-        let mut state = IncrementalTallies::new(&graph, &attr_column_indices);
+        let mut state = IncrementalTallies::new(&metric);
         run_incremental_twodelta(
             source,
             TwoDeltaRunOptions {
@@ -227,9 +290,11 @@ pub fn tally_and_save_from_key_list(
             // schema each writer fixes from its first row holds for the whole run.
             "tally",
             |assignment, _n_reps| {
-                let (totals, n_districts, observed) =
-                    tally_keys(&graph, assignment, &attr_column_indices)?;
-                Ok((observed, (totals, n_districts, observed)))
+                let output = metric.score_checked_assignment(assignment)?;
+                Ok((
+                    output.observed,
+                    (output.values, output.district_slots, output.observed),
+                ))
             },
             |step, n_reps, accepted, (totals, n_districts, observed)| {
                 push_tally_rows(
@@ -239,7 +304,7 @@ pub fn tally_and_save_from_key_list(
                     accepted,
                     observed,
                     &totals,
-                    n_districts as usize,
+                    n_districts,
                 )
             },
             show_progress,
@@ -257,7 +322,7 @@ pub fn tally_and_save_from_key_list(
 
 #[cfg(test)]
 mod tests {
-    use super::{tally_keys, DeltaChange, IncrementalTallies};
+    use super::{tally_columns, DeltaChange, IncrementalTallies, PreparedTally};
     use crate::graph::Graph;
     use std::collections::HashMap;
 
@@ -279,11 +344,17 @@ mod tests {
     fn tally_keys_accumulates_multiple_keys_and_sparse_district_ids() {
         let graph = graph_with_attr_columns(vec![vec![1.0, 2.0, 3.0], vec![10.0, 20.0, 30.0]]);
 
-        let (totals, n_districts, observed) = tally_keys(&graph, &[1, 3, 1], &[0, 1]).unwrap();
+        let (totals, n_districts, observed) =
+            tally_columns(&graph.attr_columns, &[1, 3, 1]).unwrap();
 
         assert_eq!(n_districts, 4);
         assert_eq!(observed, (1u128 << 1) | (1u128 << 3));
         assert_eq!(totals, vec![0.0, 4.0, 0.0, 2.0, 0.0, 40.0, 0.0, 20.0]);
+
+        let metric = PreparedTally::new(graph.attr_columns.clone()).unwrap();
+        let output = metric.score_assignment(&[1, 3, 1]).unwrap();
+        assert_eq!(output.table(0), Some(&[0.0, 4.0, 0.0, 2.0][..]));
+        assert_eq!(output.table(1), Some(&[0.0, 40.0, 0.0, 20.0][..]));
     }
 
     #[test]
@@ -295,7 +366,8 @@ mod tests {
             old: 1,
             new: 2,
         }];
-        let mut state = IncrementalTallies::new(&graph, &[0]);
+        let metric = PreparedTally::new(graph.attr_columns.clone()).unwrap();
+        let mut state = IncrementalTallies::new(&metric);
 
         state.seed(&before).unwrap();
         state.update_delta(&before, &changes).unwrap();
