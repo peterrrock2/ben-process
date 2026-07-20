@@ -672,6 +672,10 @@ mod tests {
     #[test]
     fn run_directory_writes_standard_mkvchain_and_twodelta() {
         let plans = vec![vec![1, 1, 2, 2], vec![1, 1, 2, 2], vec![1, 2, 2, 2]];
+        let direct_rows = test_scorer()
+            .score_many_inner(&[plans[0].clone(), plans[2].clone()])
+            .unwrap()
+            .0;
         for variant in [
             BenVariant::Standard,
             BenVariant::MkvChain,
@@ -729,6 +733,82 @@ mod tests {
                     "district_1",
                     "district_2",
                 ]
+            );
+
+            let expected_plan_rows = if variant == BenVariant::Standard {
+                vec![0, 0, 1]
+            } else {
+                vec![0, 1]
+            };
+            for (path, offset) in [
+                ("tally/0000.parquet", 0),
+                ("reock/scores.parquet", 2),
+                ("polsby_popper/scores.parquet", 4),
+            ] {
+                let table = ParquetReader::new(File::open(output.join(path)).unwrap())
+                    .finish()
+                    .unwrap();
+                assert_eq!(table.height(), expected_plan_rows.len());
+                let district_1 = table
+                    .column("district_1")
+                    .unwrap()
+                    .f64()
+                    .unwrap()
+                    .into_no_null_iter();
+                let district_2 = table
+                    .column("district_2")
+                    .unwrap()
+                    .f64()
+                    .unwrap()
+                    .into_no_null_iter();
+                for ((actual_1, actual_2), expected_row) in district_1
+                    .zip(district_2)
+                    .zip(expected_plan_rows.iter().map(|&index| &direct_rows[index]))
+                {
+                    assert!((actual_1 - expected_row[offset]).abs() < 1e-12);
+                    assert!((actual_2 - expected_row[offset + 1]).abs() < 1e-12);
+                }
+            }
+
+            let expected_steps = if variant == BenVariant::Standard {
+                vec![1, 2, 3]
+            } else {
+                vec![1, 3]
+            };
+            let expected_reps = if variant == BenVariant::Standard {
+                vec![1, 1, 1]
+            } else {
+                vec![2, 1]
+            };
+            assert_eq!(
+                table
+                    .column("step")
+                    .unwrap()
+                    .u64()
+                    .unwrap()
+                    .into_no_null_iter()
+                    .collect::<Vec<_>>(),
+                expected_steps
+            );
+            assert_eq!(
+                table
+                    .column("n_reps")
+                    .unwrap()
+                    .u32()
+                    .unwrap()
+                    .into_no_null_iter()
+                    .collect::<Vec<_>>(),
+                expected_reps
+            );
+            assert_eq!(
+                table
+                    .column("accepted_count")
+                    .unwrap()
+                    .u64()
+                    .unwrap()
+                    .into_no_null_iter()
+                    .collect::<Vec<_>>(),
+                (1..=expected_plan_rows.len() as u64).collect::<Vec<_>>()
             );
         }
     }

@@ -320,7 +320,13 @@ class ScoringTests(unittest.TestCase):
         np.testing.assert_allclose(derived.compute([0, 0]).values, [[2 * math.pi / 9]])
 
     def test_compute_once_matches_prepared_scorer(self):
-        graph = Graph({0: {"POP": 2}, 1: {"POP": 3}})
+        graph = Graph(
+            {
+                0: {"POP": 2, "area": 1, "perim": 4},
+                1: {"POP": 3, "area": 1, "perim": 4},
+            },
+            [(0, 1, {"shared_perim": 1})],
+        )
 
         prepared = PlanScorer(graph).add_metric(Tally(["POP"])).compute([0, 1])
         once = Tally.compute_once([0, 1], graph=graph, keys=["POP"])
@@ -329,8 +335,34 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(once.columns, prepared.columns)
 
         gdf = Gdf([square_wkb(0), square_wkb(1)])
+        prepared_reock = (
+            PlanScorer(geometry=gdf, allow_unknown_crs=True)
+            .add_metric(Reock())
+            .compute([0, 0])
+        )
         reock = Reock.compute_once([0, 0], geometry=gdf, allow_unknown_crs=True)
-        self.assertAlmostEqual(reock.values[0, 0], 8 / (5 * math.pi))
+        np.testing.assert_allclose(reock.values, prepared_reock.values)
+        self.assertEqual(reock.columns, prepared_reock.columns)
+
+        for source, geometry in [("graph", None), ("geometry", gdf)]:
+            metric = PolsbyPopper(
+                source=source,
+                perim_key="perim" if source == "graph" else None,
+            )
+            scorer = PlanScorer(graph)
+            if geometry is not None:
+                scorer.add_gdf(geometry, allow_unknown_crs=True)
+            prepared_polsby = scorer.add_metric(metric).compute([0, 0])
+            once_polsby = PolsbyPopper.compute_once(
+                [0, 0],
+                graph=graph,
+                geometry=geometry,
+                source=source,
+                perim_key="perim" if source == "graph" else None,
+                allow_unknown_crs=True,
+            )
+            np.testing.assert_allclose(once_polsby.values, prepared_polsby.values)
+            self.assertEqual(once_polsby.columns, prepared_polsby.columns)
 
     def test_resource_snapshots_ignore_caller_mutation(self):
         graph = Graph({0: {"POP": 2}, 1: {"POP": 3}})
