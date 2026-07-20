@@ -1,0 +1,21 @@
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "ben-process"
+dynamic = ["version"]
+description = "Fast scoring and processing for binary redistricting ensembles"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.23"]
+
+[project.optional-dependencies]
+arrow = ["pyarrow"]
+geometry = ["geopandas"]
+pandas = ["pandas"]
+
+[tool.maturin]
+features = ["python"]
+module-name = "ben_process._rust_backend"
+python-source = "python"
