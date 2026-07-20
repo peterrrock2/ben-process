@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import math
 import numbers
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -227,6 +229,67 @@ class PlanScorer:
         else:
             normalized = [self._normalize_assignment(row) for row in assignments]
         return self._score(backend, normalized)
+
+    def score_ben_file(self, output_dir, *, source=None):
+        backend = self._prepare_rust_backend()
+        if source is None:
+            raise ValueError(
+                "source is required unless the scorer was created with PlanScorer.from_bendl"
+            )
+        backend.score_ben_file(
+            os.fspath(output_dir),
+            os.fspath(source),
+            json.dumps(self._manifest_metrics(), separators=(",", ":")),
+        )
+
+    def _manifest_metrics(self):
+        metrics = []
+        for key in self._metric_order:
+            if key == "tally":
+                metrics.append(
+                    {
+                        "metric_key": key,
+                        "output_slug": key,
+                        "options": {"keys": self._tally_keys},
+                        "tables": [
+                            {
+                                "subkey": subkey,
+                                "path": f"tally/{index:04}.parquet",
+                            }
+                            for index, subkey in enumerate(self._tally_keys)
+                        ],
+                    }
+                )
+                continue
+
+            metric = self._metrics[key]
+            options = {}
+            if isinstance(metric, PolsbyPopper):
+                options = {"source": metric.source}
+                if metric.source == "graph":
+                    options.update(
+                        {
+                            "area_key": metric.area_key or "area",
+                            "perim_key": metric.perim_key,
+                            "boundary_perim_key": (
+                                None
+                                if metric.perim_key is not None
+                                else metric.boundary_perim_key or "boundary_perim"
+                            ),
+                            "shared_perim_key": (
+                                metric.shared_perim_key or "shared_perim"
+                            ),
+                        }
+                    )
+            metrics.append(
+                {
+                    "metric_key": key,
+                    "output_slug": key,
+                    "options": options,
+                    "tables": [{"subkey": None, "path": f"{key}/scores.parquet"}],
+                }
+            )
+        return metrics
 
     def _prepare_rust_backend(self):
         if not self._metric_order:
